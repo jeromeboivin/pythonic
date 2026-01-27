@@ -524,3 +524,496 @@ class ToggleButton(tk.Canvas):
     def get_value(self):
         """Get enabled state"""
         return self.enabled
+
+class PatternEditor(tk.Canvas):
+    """
+    Pattern editor widget showing triggers, accents, fills, and length for a pattern channel
+    """
+
+    def __init__(self, parent, channel_id=0, pattern_length=16, num_steps=16,
+                 command=None, all_channels_command=None, length_change_callback=None, **kwargs):
+        """
+        Initialize pattern editor
+        
+        Args:
+            channel_id: Which drum channel this editor represents
+            pattern_length: Total steps in pattern (all channels)
+            num_steps: Number of steps to display
+            command: Callback when pattern changes (channel_id, step_index, lane_type, value)
+            all_channels_command: Callback for multi-channel operations (step_index, lane_type, value, muted_channels)
+            length_change_callback: Callback when pattern length is changed (new_length)
+        """
+        # Calculate dimensions - made more compact
+        step_width = 25
+        lane_height = 12  # Reduced from 20 to 12 for more compact display
+        num_lanes = 4  # triggers, accents, fills, length display
+        
+        width = num_steps * step_width + 40
+        height = num_lanes * lane_height + 10
+        
+        super().__init__(parent, width=width, height=height,
+                        bg='#2a2a3a', highlightthickness=1,
+                        highlightbackground='#4a4a5a', **kwargs)
+        
+        self.channel_id = channel_id
+        self.pattern_length = pattern_length
+        self.num_steps = num_steps
+        self.step_width = step_width
+        self.lane_height = lane_height
+        self.command = command
+        self.all_channels_command = all_channels_command
+        self.length_change_callback = length_change_callback
+        
+        # Pattern state
+        self.triggers = [False] * num_steps
+        self.accents = [False] * num_steps
+        self.fills = [False] * num_steps
+        
+        # Display state
+        self.current_position = 0  # Current playback position (green highlight)
+        
+        # Lane names
+        self.lanes = ['trig', 'acc', 'fill']
+        
+        # Mouse state
+        self.dragging = False
+        self.drag_lane = None
+        self.drag_start_x = 0
+        
+        # Draw initial
+        self._draw()
+        
+        # Bind events
+        self.bind('<Button-1>', self._on_click)
+        self.bind('<Control-Button-1>', self._on_ctrl_click)
+        self.bind('<Shift-Button-1>', self._on_shift_click)
+        self.bind('<B1-Motion>', self._on_drag)
+        self.bind('<ButtonRelease-1>', self._on_release)
+    
+    def set_pattern_data(self, triggers, accents, fills):
+        """Update pattern data from pattern manager"""
+        self.triggers = list(triggers)
+        self.accents = list(accents)
+        self.fills = list(fills)
+        self._draw()
+    
+    def set_current_position(self, position):
+        """Update current playback position"""
+        self.current_position = position
+        self._draw()
+    
+    def _get_lane_at_y(self, y):
+        """Determine which lane was clicked (trig, acc, fill, or length)"""
+        relative_y = y - 5
+        lane = int(relative_y / self.lane_height)
+        if lane >= 0 and lane < 3:
+            return self.lanes[lane]
+        elif lane == 3:
+            return 'length'
+        return None
+    
+    def _get_step_at_x(self, x):
+        """Determine which step was clicked"""
+        relative_x = x - 40
+        if relative_x < 0:
+            return None
+        step = int(relative_x / self.step_width)
+        if 0 <= step < self.num_steps:
+            return step
+        return None
+    
+    def _on_click(self, event):
+        """Handle click start"""
+        lane = self._get_lane_at_y(event.y)
+        step = self._get_step_at_x(event.x)
+        
+        if lane == 'length' and step is not None and self.length_change_callback:
+            # Click on length lane sets the pattern length to clicked step + 1
+            new_length = step + 1
+            self.pattern_length = new_length
+            self.length_change_callback(new_length)
+            self._draw()
+        elif lane and step is not None:
+            self.dragging = True
+            self.drag_lane = lane
+            self.drag_start_x = event.x
+            self._toggle_step(lane, step)
+    
+    def _on_ctrl_click(self, event):
+        """Handle Ctrl+Click: toggle both trigger and accent for a step"""
+        lane = self._get_lane_at_y(event.y)
+        step = self._get_step_at_x(event.x)
+        
+        if lane and step is not None and lane == 'trig':
+            # Toggle trigger
+            self.triggers[step] = not self.triggers[step]
+            # Also toggle accent if trigger is on
+            if self.triggers[step]:
+                self.accents[step] = not self.accents[step]
+            else:
+                # Clear accent and fill if trigger is turned off
+                self.accents[step] = False
+                self.fills[step] = False
+            
+            self._draw()
+            
+            # Call command callbacks
+            if self.command:
+                self.command(self.channel_id, step, 'trig', self.triggers[step])
+                self.command(self.channel_id, step, 'acc', self.accents[step])
+    
+    def _on_shift_click(self, event):
+        """Handle Shift+Click: apply to all unmuted channels (requires all_channels_command)"""
+        lane = self._get_lane_at_y(event.y)
+        step = self._get_step_at_x(event.x)
+        
+        if lane and step is not None and self.all_channels_command:
+            # Determine new value based on current state
+            if lane == 'trig':
+                new_value = not self.triggers[step]
+                self.triggers[step] = new_value
+            elif lane == 'acc':
+                new_value = not self.accents[step]
+                self.accents[step] = new_value
+            elif lane == 'fill':
+                new_value = not self.fills[step]
+                self.fills[step] = new_value
+            else:
+                return
+            
+            self._draw()
+            
+            # Call the all-channels callback with empty muted_channels set (all channels active)
+            self.all_channels_command(step, lane, new_value, set())
+
+    
+    def _on_drag(self, event):
+        """Handle drag to select multiple steps"""
+        if self.dragging and self.drag_lane:
+            # Allow continuous clicking across multiple steps
+            step = self._get_step_at_x(event.x)
+            if step is not None:
+                self._toggle_step(self.drag_lane, step)
+    
+    def _on_release(self, event):
+        """Handle drag end"""
+        self.dragging = False
+        self.drag_lane = None
+    
+    def _toggle_step(self, lane, step):
+        """Toggle a step in a lane"""
+        if lane == 'trig':
+            self.triggers[step] = not self.triggers[step]
+            # Clear accent/fill if trigger is off
+            if not self.triggers[step]:
+                self.accents[step] = False
+                self.fills[step] = False
+        elif lane == 'acc':
+            if self.triggers[step]:  # Only allow accent if trigger is on
+                self.accents[step] = not self.accents[step]
+        elif lane == 'fill':
+            if self.triggers[step]:  # Only allow fill if trigger is on
+                self.fills[step] = not self.fills[step]
+        
+        self._draw()
+        
+        # Call command callback
+        if self.command:
+            self.command(self.channel_id, step, lane, 
+                        self.triggers[step] if lane == 'trig' else
+                        self.accents[step] if lane == 'acc' else
+                        self.fills[step])
+    
+    def _draw(self):
+        """Draw the pattern editor"""
+        self.delete('all')
+        
+        # Draw background
+        self.create_rectangle(0, 0, self.winfo_width(), self.winfo_height(),
+                             fill='#2a2a3a', outline='#4a4a5a')
+        
+        # Draw lane labels on left
+        for i, lane_name in enumerate(self.lanes):
+            y = 5 + i * self.lane_height + self.lane_height // 2
+            self.create_text(15, y, text=lane_name, fill='#8888aa',
+                           font=('Segoe UI', 7), anchor='center')
+        
+        # Draw length indicator lane label
+        y = 5 + 3 * self.lane_height + self.lane_height // 2
+        self.create_text(15, y, text='len', fill='#8888aa',
+                       font=('Segoe UI', 7), anchor='center')
+        
+        # Draw steps for each lane
+        x_start = 40
+        
+        # Draw trigger lane
+        self._draw_lane(0, self.triggers, '#4488ff', '#3366cc')
+        
+        # Draw accent lane
+        self._draw_lane(1, self.accents, '#ffaa44', '#ff8822')
+        
+        # Draw fill lane
+        self._draw_lane(2, self.fills, '#4488ff', '#2266aa')
+        
+        # Draw length indicator lane
+        self._draw_length_lane()
+        
+        # Draw vertical grid lines
+        for step in range(self.num_steps + 1):
+            x = x_start + step * self.step_width
+            self.create_line(x, 0, x, self.winfo_height(),
+                           fill='#3a3a4a', dash=(2,))
+        
+        # Draw horizontal grid lines
+        for lane in range(4):
+            y = 5 + (lane + 1) * self.lane_height
+            self.create_line(x_start, y, x_start + self.num_steps * self.step_width, y,
+                           fill='#3a3a4a')
+        
+        # Draw current position indicator
+        current_x = x_start + self.current_position * self.step_width + self.step_width // 2
+        self.create_line(current_x, 0, current_x, self.winfo_height(),
+                       fill='#44ff88', width=2)
+    
+    def _draw_lane(self, lane_index, data, color_on, color_off):
+        """Draw a single lane of steps"""
+        x_start = 40
+        y_base = 5 + lane_index * self.lane_height
+        
+        for step, is_on in enumerate(data):
+            x = x_start + step * self.step_width + 2
+            y = y_base + 2
+            w = self.step_width - 4
+            h = self.lane_height - 4
+            
+            # Color based on state
+            color = color_on if is_on else color_off
+            
+            # Highlight if trigger is off (accent/fill only meaningful with trigger)
+            if lane_index > 0 and not self.triggers[step]:
+                color = '#444455'
+            
+            self.create_rectangle(x, y, x + w, y + h,
+                                fill=color, outline='#555566', width=1)
+            
+            # Draw a small indicator inside
+            if is_on:
+                self.create_oval(x + 2, y + 2, x + w - 2, y + h - 2,
+                               outline='#ffffff', width=1)
+    
+    def _draw_length_lane(self):
+        """Draw the pattern length indicator"""
+        lane_index = 3
+        x_start = 40
+        y_base = 5 + lane_index * self.lane_height
+        
+        # Show steps 0 to pattern_length
+        for step in range(self.num_steps):
+            x = x_start + step * self.step_width + 2
+            y = y_base + 2
+            w = self.step_width - 4
+            h = self.lane_height - 4
+            
+            # Check if this step is within pattern length
+            if step < self.pattern_length:
+                # Fill color for active pattern length
+                color = '#2255aa'
+            else:
+                # Dimmed for outside pattern length
+                color = '#222233'
+            
+            self.create_rectangle(x, y, x + w, y + h,
+                                fill=color, outline='#555566', width=1)
+            
+            # Draw step number
+            step_num = (step % 16) + 1
+            if step_num in [1, 5, 9, 13]:  # Every 4 steps
+                self.create_text(x + w // 2, y + h // 2, text=str(step_num),
+                               fill='#6688ff', font=('Segoe UI', 6))
+    
+    def get_triggers(self):
+        """Get current triggers"""
+        return list(self.triggers)
+    
+    def get_accents(self):
+        """Get current accents"""
+        return list(self.accents)
+    
+    def get_fills(self):
+        """Get current fills"""
+        return list(self.fills)
+
+
+class MatrixEditor(tk.Canvas):
+    """
+    Matrix Editor widget for editing all channels simultaneously
+    Shows a grid of channels (rows) vs steps (columns)
+    """
+
+    def __init__(self, parent, num_channels=8, num_steps=16, 
+                 command=None, **kwargs):
+        """
+        Initialize matrix editor
+        
+        Args:
+            num_channels: Number of drum channels
+            num_steps: Number of pattern steps
+            command: Callback when pattern changes (channel_id, step_index, value)
+        """
+        step_width = 25
+        channel_height = 20
+        
+        width = num_steps * step_width + 40
+        height = num_channels * channel_height + 10
+        
+        super().__init__(parent, width=width, height=height,
+                        bg='#2a2a3a', highlightthickness=1,
+                        highlightbackground='#4a4a5a', **kwargs)
+        
+        self.num_channels = num_channels
+        self.num_steps = num_steps
+        self.step_width = step_width
+        self.channel_height = channel_height
+        self.command = command
+        
+        # Pattern state (triggers only in matrix view)
+        self.matrix = [[False] * num_steps for _ in range(num_channels)]
+        
+        # Display state
+        self.current_position = 0
+        
+        # Draw initial
+        self._draw()
+        
+        # Bind events
+        self.bind('<Button-1>', self._on_click)
+        self.bind('<B1-Motion>', self._on_drag)
+        self.bind('<ButtonRelease-1>', self._on_release)
+        
+        # Interaction state
+        self.dragging = False
+        self.drag_channel = None
+    
+    def set_matrix_data(self, matrix):
+        """Update matrix data from pattern manager"""
+        self.matrix = [list(row) for row in matrix]
+        self._draw()
+    
+    def set_current_position(self, position):
+        """Update current playback position"""
+        self.current_position = position
+        self._draw()
+    
+    def _get_channel_at_y(self, y):
+        """Determine which channel was clicked"""
+        relative_y = y - 5
+        if relative_y < 0:
+            return None
+        channel = int(relative_y / self.channel_height)
+        if 0 <= channel < self.num_channels:
+            return channel
+        return None
+    
+    def _get_step_at_x(self, x):
+        """Determine which step was clicked"""
+        relative_x = x - 40
+        if relative_x < 0:
+            return None
+        step = int(relative_x / self.step_width)
+        if 0 <= step < self.num_steps:
+            return step
+        return None
+    
+    def _on_click(self, event):
+        """Handle click start"""
+        channel = self._get_channel_at_y(event.y)
+        step = self._get_step_at_x(event.x)
+        
+        if channel is not None and step is not None:
+            self.dragging = True
+            self.drag_channel = channel
+            self._toggle_cell(channel, step)
+    
+    def _on_drag(self, event):
+        """Handle drag to select multiple cells"""
+        if self.dragging and self.drag_channel is not None:
+            step = self._get_step_at_x(event.x)
+            if step is not None:
+                self._toggle_cell(self.drag_channel, step)
+    
+    def _on_release(self, event):
+        """Handle drag end"""
+        self.dragging = False
+        self.drag_channel = None
+    
+    def _toggle_cell(self, channel, step):
+        """Toggle a cell in the matrix"""
+        self.matrix[channel][step] = not self.matrix[channel][step]
+        self._draw()
+        
+        if self.command:
+            self.command(channel, step, self.matrix[channel][step])
+    
+    def _draw(self):
+        """Draw the matrix editor"""
+        self.delete('all')
+        
+        # Draw background
+        self.create_rectangle(0, 0, self.winfo_width(), self.winfo_height(),
+                             fill='#2a2a3a', outline='#4a4a5a')
+        
+        # Draw channel labels on left
+        for ch in range(self.num_channels):
+            y = 5 + ch * self.channel_height + self.channel_height // 2
+            self.create_text(15, y, text=f"ch{ch+1}", fill='#8888aa',
+                           font=('Segoe UI', 7), anchor='center')
+        
+        # Draw step numbers on top
+        x_start = 40
+        for step in range(self.num_steps):
+            if (step + 1) % 4 == 1:  # Every 4 steps
+                x = x_start + step * self.step_width + self.step_width // 2
+                self.create_text(x, -5, text=str(step + 1), fill='#6688ff',
+                               font=('Segoe UI', 6), anchor='center')
+        
+        # Draw matrix cells
+        for ch in range(self.num_channels):
+            for step in range(self.num_steps):
+                x = x_start + step * self.step_width + 2
+                y = 5 + ch * self.channel_height + 2
+                w = self.step_width - 4
+                h = self.channel_height - 4
+                
+                # Color based on trigger state
+                if self.matrix[ch][step]:
+                    color = '#4488ff'
+                    self.create_rectangle(x, y, x + w, y + h,
+                                        fill=color, outline='#555566', width=1)
+                    # Draw indicator
+                    self.create_oval(x + 2, y + 2, x + w - 2, y + h - 2,
+                                   outline='#ffffff', width=1)
+                else:
+                    color = '#333344'
+                    self.create_rectangle(x, y, x + w, y + h,
+                                        fill=color, outline='#555566', width=1)
+        
+        # Draw vertical grid lines
+        for step in range(self.num_steps + 1):
+            x = x_start + step * self.step_width
+            self.create_line(x, 0, x, self.winfo_height(),
+                           fill='#3a3a4a', dash=(2,))
+        
+        # Draw horizontal grid lines
+        for ch in range(self.num_channels + 1):
+            y = 5 + ch * self.channel_height
+            self.create_line(x_start, y, x_start + self.num_steps * self.step_width, y,
+                           fill='#3a3a4a')
+        
+        # Draw current position indicator
+        current_x = x_start + self.current_position * self.step_width + self.step_width // 2
+        self.create_line(current_x, 0, current_x, self.winfo_height(),
+                       fill='#44ff88', width=2)
+    
+    def get_matrix(self):
+        """Get current matrix state"""
+        return [list(row) for row in self.matrix]

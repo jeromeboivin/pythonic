@@ -169,6 +169,12 @@ class PythonicPresetParser:
         elif self.content[self.pos:self.pos+3] == 'Off' and (self.pos + 3 >= len(self.content) or not self.content[self.pos+3].isalnum()):
             self.pos += 3
             return False
+        elif self.content[self.pos:self.pos+4] == 'true' and (self.pos + 4 >= len(self.content) or not self.content[self.pos+4].isalnum()):
+            self.pos += 4
+            return True
+        elif self.content[self.pos:self.pos+5] == 'false' and (self.pos + 5 >= len(self.content) or not self.content[self.pos+5].isalnum()):
+            self.pos += 5
+            return False
         else:
             return self._parse_number_or_identifier()
 
@@ -268,6 +274,7 @@ class PythonicPresetParser:
             'tempo': preset_data.get('Tempo', 120),
             'drums': [],
             'mutes': preset_data.get('Mutes', [False] * 8),
+            'patterns': None,
         }
         if 'DrumPatches' in preset_data:
             for i in range(1, 9):
@@ -278,6 +285,11 @@ class PythonicPresetParser:
                     result['drums'].append(channel_data)
                 else:
                     result['drums'].append(self._default_channel())
+        
+        # Parse patterns if available
+        if 'Patterns' in preset_data:
+            result['patterns'] = self._convert_patterns(preset_data['Patterns'])
+        
         return result
 
     def _convert_drum_patch(self, patch: Dict) -> Dict:
@@ -336,6 +348,64 @@ class PythonicPresetParser:
             'osc_vel_sensitivity': 0.0,
             'noise_vel_sensitivity': 0.0,
             'mod_vel_sensitivity': 0.0,
+        }
+
+    def _convert_patterns(self, patterns_data: Dict) -> Dict:
+        """Convert pattern data from preset format to internal format"""
+        patterns = {}
+        
+        # Pattern names from preset file are lowercase (a-l)
+        pattern_names = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l']
+        
+        for pattern_name in pattern_names:
+            if pattern_name not in patterns_data:
+                continue
+                
+            pattern_block = patterns_data[pattern_name]
+            
+            # Get pattern properties
+            length = pattern_block.get('Length', 16)
+            chained = pattern_block.get('Chained', False)
+            
+            # Parse channels (1-8)
+            channels = {}
+            for channel_id in range(1, 9):
+                channel_key = str(channel_id)
+                if channel_key in pattern_block:
+                    channel_data = pattern_block[channel_key]
+                    channels[channel_id - 1] = self._parse_pattern_channel(
+                        channel_data, length
+                    )
+            
+            patterns[pattern_name.upper()] = {
+                'length': length,
+                'chained': chained,
+                'channels': channels
+            }
+        
+        return patterns
+    
+    def _parse_pattern_channel(self, channel_data: Dict, expected_length: int) -> Dict:
+        """Parse a single channel's pattern data"""
+        triggers_str = channel_data.get('Triggers', '')
+        accents_str = channel_data.get('Accents', '')
+        fills_str = channel_data.get('Fills', '')
+        
+        # Convert pattern strings to boolean lists
+        # '#' means on, '-' means off
+        triggers = [c == '#' for c in triggers_str]
+        accents = [c == '#' for c in accents_str]
+        fills = [c == '#' for c in fills_str]
+        
+        # Ensure all lists are the expected length
+        triggers = triggers[:expected_length] + [False] * max(0, expected_length - len(triggers))
+        accents = accents[:expected_length] + [False] * max(0, expected_length - len(accents))
+        fills = fills[:expected_length] + [False] * max(0, expected_length - len(fills))
+        
+        return {
+            'triggers': triggers,
+            'accents': accents,
+            'fills': fills
         }
 
 

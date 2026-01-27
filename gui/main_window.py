@@ -19,9 +19,10 @@ from pythonic.oscillator import WaveformType, PitchModMode
 from pythonic.noise import NoiseFilterMode, NoiseEnvelopeMode
 from pythonic.preset_manager import PresetManager
 from pythonic.preferences_manager import PreferencesManager
+from pythonic.pattern_manager import PatternManager
 from gui.widgets import (
     RotaryKnob, VerticalSlider, ChannelButton,
-    WaveformSelector, ModeSelector, ToggleButton
+    WaveformSelector, ModeSelector, ToggleButton, PatternEditor, MatrixEditor
 )
 
 try:
@@ -30,6 +31,13 @@ try:
 except ImportError:
     AUDIO_AVAILABLE = False
     print("Warning: sounddevice not available. Audio playback disabled.")
+
+try:
+    import mido
+    MIDI_AVAILABLE = True
+except ImportError:
+    MIDI_AVAILABLE = False
+    print("Warning: mido not available. MIDI export disabled.")
 
 
 class PythonicGUI:
@@ -68,6 +76,9 @@ class PythonicGUI:
         # Preset manager
         self.preset_manager = PresetManager(self.synth)
         
+        # Pattern manager
+        self.pattern_manager = PatternManager(num_channels=8, pattern_length=16)
+        
         # Audio state
         self.audio_stream = None
         self.audio_buffer = np.zeros((1024, 2), dtype=np.float32)
@@ -77,8 +88,16 @@ class PythonicGUI:
         self.selected_channel = 0
         self.updating_ui = False  # Prevent feedback loops
         
+        # Playback state
+        self.last_triggered_step = -1  # Track last triggered step to avoid double triggers
+        self.frames_since_last_step = 0
+        self.button_flash_state = False  # For flashing playing pattern button
+        
         # Build the interface
         self._build_ui()
+        
+        # Bind keyboard events
+        self.root.bind('<Key>', self._on_key_press)
         
         # Start audio if available
         if AUDIO_AVAILABLE:
@@ -86,6 +105,9 @@ class PythonicGUI:
         
         # Update UI with current channel
         self._update_ui_from_channel()
+        
+        # Start button state updates
+        self.root.after(250, self._toggle_button_flash)
         
         # Load the last preset if available
         self._load_last_preset()
@@ -101,6 +123,9 @@ class PythonicGUI:
         
         # Preset section (channel buttons)
         self._build_preset_section(main_frame)
+        
+        # Pattern section
+        self._build_pattern_section(main_frame)
         
         # Drum Patch section (main controls)
         self._build_drum_patch_section(main_frame)
@@ -206,6 +231,180 @@ class PythonicGUI:
                               command=lambda en, ch=i: self._on_mute_toggle(ch, en))
             btn.pack(side='left', padx=1)
             self.mute_buttons.append(btn)
+    
+    def _build_pattern_section(self, parent):
+        """Build the pattern editor section"""
+        pattern_frame = tk.LabelFrame(parent, text="pattern", 
+                                     font=('Segoe UI', 8),
+                                     fg=self.COLORS['text_dim'],
+                                     bg=self.COLORS['bg_medium'],
+                                     labelanchor='nw')
+        pattern_frame.pack(fill='x', pady=(0, 10))
+        
+        # Limit the pattern frame height to prevent it from taking over the screen
+        pattern_frame.pack_propagate(False)
+        pattern_frame.config(height=180)  # Fixed height for pattern section with 2 control rows
+        
+        # Top controls bar - Row 1
+        controls_row1 = tk.Frame(pattern_frame, bg=self.COLORS['bg_medium'])
+        controls_row1.pack(fill='x', padx=5, pady=(2, 0))
+        
+        # Matrix Editor toggle button (left side)
+        toggle_frame = tk.Frame(controls_row1, bg=self.COLORS['bg_medium'])
+        toggle_frame.pack(side='left', padx=2)
+        
+        self.matrix_toggle_btn = tk.Button(toggle_frame, text="⊞", width=2, height=1,
+                                          font=('Segoe UI', 8),
+                                          bg=self.COLORS['bg_light'],
+                                          fg=self.COLORS['text'],
+                                          command=self._on_matrix_toggle)
+        self.matrix_toggle_btn.pack(side='left', padx=1)
+        
+        # Pattern selection buttons (A-L)
+        btn_frame = tk.Frame(controls_row1, bg=self.COLORS['bg_medium'])
+        btn_frame.pack(side='left', padx=5)
+        
+        self.pattern_buttons = []
+        for i, name in enumerate(PatternManager.PATTERN_NAMES):
+            btn = tk.Button(btn_frame, text=name, width=2, height=1,
+                           font=('Segoe UI', 7),
+                           bg=self.COLORS['bg_light'],
+                           fg=self.COLORS['text'],
+                           command=lambda idx=i: self._on_pattern_select(idx))
+            btn.pack(side='left', padx=1)
+            # Bind right-click for context menu
+            btn.bind('<Button-3>', lambda e, idx=i: self._on_pattern_right_click(idx, e))
+            self.pattern_buttons.append(btn)
+        
+        # Mark first as selected
+        self.pattern_buttons[0].config(bg=self.COLORS['highlight'])
+        
+        # Play/Stop buttons (right side of row 1)
+        playback_frame = tk.Frame(controls_row1, bg=self.COLORS['bg_medium'])
+        playback_frame.pack(side='right', padx=2)
+        
+        tk.Button(playback_frame, text="▶ Play", width=6, height=1,
+                 font=('Segoe UI', 7),
+                 bg=self.COLORS['led_off'],
+                 fg=self.COLORS['text'],
+                 command=self._on_pattern_play).pack(side='left', padx=1)
+        
+        self.pattern_play_btn = tk.Button(playback_frame, text="⏹ Stop", width=6, height=1,
+                                         font=('Segoe UI', 7),
+                                         bg=self.COLORS['bg_light'],
+                                         fg=self.COLORS['text_dim'],
+                                         command=self._on_pattern_stop)
+        self.pattern_play_btn.pack(side='left', padx=1)
+        
+        # Fill rate control (right side of row 1)
+        fill_frame = tk.Frame(controls_row1, bg=self.COLORS['bg_medium'])
+        fill_frame.pack(side='right', padx=5)
+        
+        tk.Label(fill_frame, text="Fill Rate:", 
+                font=('Segoe UI', 7), fg=self.COLORS['text_dim'],
+                bg=self.COLORS['bg_medium']).pack(side='left', padx=(0, 5))
+        
+        self.fill_rate_var = tk.StringVar(value=str(self.pattern_manager.fill_rate))
+        self.fill_rate_combo = ttk.Combobox(fill_frame, textvariable=self.fill_rate_var,
+                                           values=['2', '3', '4', '5', '6', '7', '8'],
+                                           width=5, state='readonly')
+        self.fill_rate_combo.pack(side='left')
+        self.fill_rate_combo.bind('<<ComboboxSelected>>', self._on_fill_rate_change)
+        
+        # Controls bar - Row 2 (optional controls)
+        controls_row2 = tk.Frame(pattern_frame, bg=self.COLORS['bg_medium'])
+        controls_row2.pack(fill='x', padx=5, pady=(2, 2))
+        
+        # Chain buttons
+        chain_frame = tk.Frame(controls_row2, bg=self.COLORS['bg_medium'])
+        chain_frame.pack(side='left', padx=2)
+        
+        tk.Button(chain_frame, text="◀", width=3, height=1,
+                 font=('Segoe UI', 7),
+                 bg=self.COLORS['bg_light'],
+                 fg=self.COLORS['text_dim'],
+                 command=self._on_chain_previous).pack(side='left', padx=1)
+        
+        tk.Button(chain_frame, text="▶", width=3, height=1,
+                 font=('Segoe UI', 7),
+                 bg=self.COLORS['bg_light'],
+                 fg=self.COLORS['text_dim'],
+                 command=self._on_chain_next).pack(side='left', padx=1)
+        
+        # Copy/Paste/Menu buttons
+        clipboard_frame = tk.Frame(controls_row2, bg=self.COLORS['bg_medium'])
+        clipboard_frame.pack(side='right', padx=2)
+        
+        tk.Button(clipboard_frame, text="Menu", width=5, height=1,
+                 font=('Segoe UI', 7),
+                 bg=self.COLORS['accent'],
+                 fg=self.COLORS['text'],
+                 command=self._on_pattern_menu).pack(side='left', padx=1)
+        
+        tk.Button(clipboard_frame, text="Copy", width=5, height=1,
+                 font=('Segoe UI', 7),
+                 bg=self.COLORS['bg_light'],
+                 fg=self.COLORS['text_dim'],
+                 command=self._on_pattern_copy).pack(side='left', padx=1)
+        
+        tk.Button(clipboard_frame, text="Paste", width=5, height=1,
+                 font=('Segoe UI', 7),
+                 bg=self.COLORS['bg_light'],
+                 fg=self.COLORS['text_dim'],
+                 command=self._on_pattern_paste).pack(side='left', padx=1)
+        
+        # Main editors container (will switch between lane and matrix editors)
+        self.editors_container = tk.Frame(pattern_frame, bg=self.COLORS['bg_dark'])
+        self.editors_container.pack(fill='both', expand=True, padx=5, pady=2)
+        
+        # Create scrollable frame for pattern editors
+        canvas = tk.Canvas(self.editors_container, bg=self.COLORS['bg_dark'], 
+                          highlightthickness=0, height=100)
+        scrollbar = tk.Scrollbar(self.editors_container, orient="vertical", command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas, bg=self.COLORS['bg_dark'])
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        # Pattern editors for each channel (lane view)
+        self.editors_frame = scrollable_frame
+        
+        self.pattern_editors = []
+        for ch in range(8):
+            label_frame = tk.Frame(self.editors_frame, bg=self.COLORS['bg_dark'])
+            label_frame.pack(fill='x', pady=0)  # Reduced from pady=2 to pady=0
+            
+            # Channel label
+            tk.Label(label_frame, text=f"ch{ch+1}", width=5,
+                    font=('Segoe UI', 7), fg=self.COLORS['text_dim'],
+                    bg=self.COLORS['bg_dark'], anchor='w').pack(side='left', padx=2)
+            
+            # Pattern editor
+            editor = PatternEditor(label_frame, channel_id=ch, pattern_length=16,
+                                  num_steps=16,
+                                  command=self._on_pattern_edit,
+                                  length_change_callback=self._on_pattern_length_change)
+            editor.pack(side='left', fill='both', expand=True, padx=2)
+            self.pattern_editors.append(editor)
+        
+        # Matrix editor (hidden by default)
+        self.matrix_editor = MatrixEditor(self.editors_container, num_channels=8, 
+                                         num_steps=16,
+                                         command=self._on_matrix_edit)
+        self.matrix_editor.pack(fill='both', padx=5, pady=5)
+        self.matrix_editor.pack_forget()  # Hide by default
+        
+        # State to track which view is active
+        self.matrix_view_active = False
+
     
     def _build_drum_patch_section(self, parent):
         """Build the main drum patch editing section"""
@@ -714,6 +913,437 @@ class PythonicGUI:
             channel = self.synth.get_selected_channel()
             channel.mod_vel_sensitivity = value / 100.0
     
+    # ============ Pattern Callbacks ============
+    
+    def _on_pattern_select(self, pattern_index):
+        """Handle pattern selection"""
+        self.pattern_manager.select_pattern(pattern_index)
+        
+        # Update button states
+        self._update_pattern_button_states()
+        
+        # Update editors
+        self._update_pattern_editors()
+    
+    def _on_pattern_edit(self, channel_id, step, lane_type, value):
+        """Handle pattern editor edits"""
+        pattern = self.pattern_manager.get_selected_pattern()
+        channel = pattern.get_channel(channel_id)
+        
+        if lane_type == 'trig':
+            channel.set_trigger(step, value)
+        elif lane_type == 'acc':
+            channel.set_accent(step, value)
+        elif lane_type == 'fill':
+            channel.set_fill(step, value)
+    
+    def _on_pattern_length_change(self, new_length):
+        """Handle pattern length change"""
+        pattern = self.pattern_manager.get_selected_pattern()
+        pattern.set_length(new_length)
+        # Update all editors to reflect new length
+        for editor in self.pattern_editors:
+            editor.pattern_length = new_length
+            editor._draw()
+    
+    def _on_pattern_play(self):
+        """Start pattern playback"""
+        selected_idx = self.pattern_manager.selected_pattern_index
+        self.pattern_manager.start_playback(selected_idx)
+        self.frames_since_last_step = 0  # Reset frame counter
+        self.pattern_play_btn.config(text="⏹ Stop", bg=self.COLORS['led_on'])
+    
+    def _on_pattern_stop(self):
+        """Stop pattern playback"""
+        self.pattern_manager.stop_playback()
+        self.frames_since_last_step = 0
+        self.pattern_play_btn.config(text="⏹ Stop", bg=self.COLORS['bg_light'])
+        # Clear position display
+        if hasattr(self, 'pattern_editors'):
+            for editor in self.pattern_editors:
+                editor.set_current_position(-1)
+    
+    def _on_pattern_menu(self):
+        """Show pattern menu"""
+        menu = tk.Menu(self.root, tearoff=0)
+        
+        # Get current pattern index
+        idx = self.pattern_manager.selected_pattern_index
+        
+        menu.add_command(label="Cut Pattern", 
+                        command=lambda: self._pattern_menu_action('cut_pattern', idx))
+        menu.add_command(label="Copy Pattern",
+                        command=lambda: self._pattern_menu_action('copy_pattern', idx))
+        menu.add_command(label="Paste Pattern",
+                        command=lambda: self._pattern_menu_action('paste_pattern', idx))
+        menu.add_separator()
+        menu.add_command(label="Exchange Pattern",
+                        command=lambda: self._pattern_menu_action('exchange_pattern', idx))
+        menu.add_separator()
+        menu.add_command(label="Shift Left",
+                        command=lambda: self._pattern_menu_action('shift_left', idx))
+        menu.add_command(label="Shift Right",
+                        command=lambda: self._pattern_menu_action('shift_right', idx))
+        menu.add_separator()
+        menu.add_command(label="Reverse",
+                        command=lambda: self._pattern_menu_action('reverse', idx))
+        menu.add_command(label="Randomize",
+                        command=lambda: self._pattern_menu_action('randomize', idx))
+        menu.add_command(label="Alter Pattern",
+                        command=lambda: self._pattern_menu_action('alter', idx))
+        menu.add_command(label="Randomize Accents/Fills",
+                        command=lambda: self._pattern_menu_action('rand_accents', idx))
+        menu.add_separator()
+        menu.add_command(label="Export Pattern to MIDI File...",
+                        command=lambda: self._pattern_menu_action('export_midi', idx))
+        menu.add_command(label="Export Pattern to Audio File...",
+                        command=lambda: self._pattern_menu_action('export_audio', idx))
+        
+        # Show menu at button location
+        menu.post(self.root.winfo_pointerx(), self.root.winfo_pointery())
+    
+    def _on_pattern_right_click(self, pattern_idx, event):
+        """Handle right-click on pattern button - show pattern menu for that pattern"""
+        # First select the pattern
+        self._on_pattern_select(pattern_idx)
+        
+        # Then show the menu
+        self._on_pattern_menu()
+    
+    def _pattern_menu_action(self, action, pattern_idx):
+        """Handle pattern menu actions"""
+        try:
+            if action == 'cut_pattern':
+                self.pattern_manager.cut_pattern(pattern_idx)
+            elif action == 'copy_pattern':
+                self.pattern_manager.copy_pattern(pattern_idx)
+            elif action == 'paste_pattern':
+                self.pattern_manager.paste_pattern(pattern_idx)
+            elif action == 'exchange_pattern':
+                self.pattern_manager.exchange_pattern(pattern_idx)
+            elif action == 'shift_left':
+                self.pattern_manager.shift_pattern_left(pattern_idx)
+            elif action == 'shift_right':
+                self.pattern_manager.shift_pattern_right(pattern_idx)
+            elif action == 'reverse':
+                self.pattern_manager.reverse_pattern(pattern_idx)
+            elif action == 'randomize':
+                self.pattern_manager.randomize_pattern(pattern_idx)
+            elif action == 'alter':
+                self.pattern_manager.alter_pattern(pattern_idx)
+            elif action == 'rand_accents':
+                self.pattern_manager.randomize_accents_fills(pattern_idx)
+            elif action == 'export_midi':
+                self._export_pattern_to_midi(pattern_idx)
+                return  # Don't refresh editors or show message
+            elif action == 'export_audio':
+                self._export_pattern_to_audio(pattern_idx)
+                return  # Don't refresh editors or show message
+            
+            # Refresh editors
+            self._update_pattern_editors()
+            messagebox.showinfo("Pattern", f"Pattern operation '{action}' completed!")
+        except Exception as e:
+            messagebox.showerror("Error", f"Pattern operation failed: {e}")
+    
+    def _export_pattern_to_midi(self, pattern_idx):
+        """Export pattern to MIDI file"""
+        if not MIDI_AVAILABLE:
+            messagebox.showerror("Error", "MIDI export requires the 'mido' library. Install it with: pip install mido")
+            return
+        
+        pattern = self.pattern_manager.get_pattern(pattern_idx)
+        pattern_name = self.pattern_manager.PATTERN_NAMES[pattern_idx]
+        
+        # Ask for filename
+        filename = filedialog.asksaveasfilename(
+            title=f"Export Pattern {pattern_name} to MIDI",
+            defaultextension=".mid",
+            filetypes=[("MIDI files", "*.mid"), ("All files", "*.*")],
+            initialfile=f"pythonic_pattern_{pattern_name}.mid"
+        )
+        
+        if not filename:
+            return
+        
+        try:
+            # Create MIDI file
+            mid = mido.MidiFile()
+            track = mido.MidiTrack()
+            mid.tracks.append(track)
+            
+            # Set tempo based on pattern manager BPM
+            tempo = mido.bpm2tempo(self.pattern_manager.bpm)
+            track.append(mido.MetaMessage('set_tempo', tempo=tempo))
+            
+            # Calculate ticks per step (assume 480 ticks per quarter note)
+            ticks_per_beat = mid.ticks_per_beat
+            ticks_per_step = ticks_per_beat  # Each step is a quarter note
+            
+            # Process each channel
+            for channel_id, channel in enumerate(pattern.channels):
+                # Use different MIDI channels for each drum (or use channel 10 for drums)
+                midi_channel = 9  # Channel 10 (0-indexed = 9) is standard for drums
+                
+                # Standard GM drum note mapping (typical values)
+                drum_notes = [36, 38, 42, 46, 45, 41, 39, 37]  # Kick, Snare, CHH, OHH, TomH, TomL, Clap, Rim
+                note = drum_notes[channel_id] if channel_id < len(drum_notes) else 36
+                
+                # Add note events for each triggered step
+                for step_idx in range(pattern.length):
+                    step = channel.get_step(step_idx)
+                    
+                    if step.trigger:
+                        # Calculate time offset
+                        time_offset = step_idx * ticks_per_step
+                        
+                        # Velocity based on accent
+                        velocity = 127 if step.accent else 64
+                        
+                        # Note on
+                        track.append(mido.Message('note_on', 
+                                                 channel=midi_channel, 
+                                                 note=note, 
+                                                 velocity=velocity, 
+                                                 time=time_offset if step_idx == 0 else 0))
+                        
+                        # Note off after short duration (10 ticks)
+                        track.append(mido.Message('note_off', 
+                                                 channel=midi_channel, 
+                                                 note=note, 
+                                                 velocity=0, 
+                                                 time=10))
+            
+            # Sort track by time
+            track = sorted(track, key=lambda msg: getattr(msg, 'time', 0))
+            
+            # Convert absolute times to delta times
+            cumulative_time = 0
+            for msg in track:
+                if hasattr(msg, 'time'):
+                    abs_time = msg.time
+                    msg.time = abs_time - cumulative_time
+                    cumulative_time = abs_time
+            
+            # Save MIDI file
+            mid.save(filename)
+            messagebox.showinfo("Export Success", f"Pattern exported to:\\n{filename}")
+            
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Failed to export MIDI file:\\n{e}")
+    
+    def _export_pattern_to_audio(self, pattern_idx):
+        """Export pattern to WAV file"""
+        if not AUDIO_AVAILABLE:
+            messagebox.showerror("Error", "Audio export requires the 'sounddevice' library.")
+            return
+        
+        pattern = self.pattern_manager.get_pattern(pattern_idx)
+        pattern_name = self.pattern_manager.PATTERN_NAMES[pattern_idx]
+        
+        # Ask for tail handling option
+        tail_dialog = tk.Toplevel(self.root)
+        tail_dialog.title("Export Audio Options")
+        tail_dialog.geometry("300x150")
+        tail_dialog.transient(self.root)
+        tail_dialog.grab_set()
+        
+        tail_option = tk.StringVar(value="none")
+        
+        tk.Label(tail_dialog, text="Tail Handling:", font=('Segoe UI', 10)).pack(pady=10)
+        tk.Radiobutton(tail_dialog, text="None (truncate)", variable=tail_option, value="none").pack(anchor='w', padx=20)
+        tk.Radiobutton(tail_dialog, text="Append (add silence)", variable=tail_option, value="append").pack(anchor='w', padx=20)
+        tk.Radiobutton(tail_dialog, text="Loop (repeat pattern)", variable=tail_option, value="loop").pack(anchor='w', padx=20)
+        
+        def on_ok():
+            tail_dialog.destroy()
+        
+        tk.Button(tail_dialog, text="OK", command=on_ok).pack(pady=10)
+        
+        self.root.wait_window(tail_dialog)
+        
+        # Ask for filename
+        filename = filedialog.asksaveasfilename(
+            title=f"Export Pattern {pattern_name} to Audio",
+            defaultextension=".wav",
+            filetypes=[("WAV files", "*.wav"), ("All files", "*.*")],
+            initialfile=f"pythonic_pattern_{pattern_name}.wav"
+        )
+        
+        if not filename:
+            return
+        
+        try:
+            # Import wave for WAV file writing
+            import wave
+            
+            # Calculate total samples needed
+            step_duration_samples = int((self.sample_rate * self.pattern_manager.step_duration_ms) / 1000.0)
+            pattern_duration_samples = step_duration_samples * pattern.length
+            
+            # Add tail handling
+            if tail_option.get() == "append":
+                # Add 2 seconds of tail for reverb/decay
+                tail_samples = self.sample_rate * 2
+            elif tail_option.get() == "loop":
+                # Add one more loop iteration
+                tail_samples = pattern_duration_samples
+            else:
+                tail_samples = 0
+            
+            total_samples = pattern_duration_samples + tail_samples
+            
+            # Render audio
+            audio_buffer = np.zeros((total_samples, 2), dtype=np.float32)
+            
+            # Temporarily enable playback and render
+            old_playing_state = self.pattern_manager.is_playing
+            old_playing_idx = self.pattern_manager.playing_pattern_index
+            
+            self.pattern_manager.playing_pattern_index = pattern_idx
+            self.pattern_manager.is_playing = True
+            self.pattern_manager.play_position = 0
+            
+            sample_position = 0
+            for step_idx in range(pattern.length + (1 if tail_option.get() == "loop" else 0)):
+                # Trigger step
+                self._trigger_pattern_step(step_idx % pattern.length)
+                
+                # Render audio for this step
+                step_audio = self.synth.process_audio(step_duration_samples)
+                
+                end_pos = min(sample_position + step_duration_samples, total_samples)
+                chunk_size = end_pos - sample_position
+                audio_buffer[sample_position:end_pos] = step_audio[:chunk_size]
+                sample_position = end_pos
+            
+            # Restore playback state
+            self.pattern_manager.is_playing = old_playing_state
+            self.pattern_manager.playing_pattern_index = old_playing_idx
+            
+            # Convert to int16 for WAV file
+            audio_int16 = (audio_buffer * 32767).astype(np.int16)
+            
+            # Write WAV file
+            with wave.open(filename, 'wb') as wav_file:
+                wav_file.setnchannels(2)
+                wav_file.setsampwidth(2)
+                wav_file.setframerate(self.sample_rate)
+                wav_file.writeframes(audio_int16.tobytes())
+            
+            messagebox.showinfo("Export Success", f"Pattern exported to:\\n{filename}")
+            
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Failed to export audio file:\\n{e}")
+    
+    def _on_chain_previous(self):
+        """Chain current pattern with previous"""
+        idx = self.pattern_manager.selected_pattern_index
+        if idx > 0:
+            pattern = self.pattern_manager.get_pattern(idx - 1)
+            pattern.chained_to_next = True
+            self.pattern_manager.get_pattern(idx).chained_from_prev = True
+            messagebox.showinfo("Pattern", "Patterns chained!")
+    
+    def _on_chain_next(self):
+        """Chain current pattern with next"""
+        idx = self.pattern_manager.selected_pattern_index
+        if idx < 11:
+            pattern = self.pattern_manager.get_pattern(idx)
+            pattern.chained_to_next = True
+            self.pattern_manager.get_pattern(idx + 1).chained_from_prev = True
+            messagebox.showinfo("Pattern", "Patterns chained!")
+    
+    def _on_matrix_toggle(self):
+        """Toggle between lane and matrix editor views"""
+        if self.matrix_view_active:
+            # Switch to lane view
+            self.matrix_editor.pack_forget()
+            self.editors_frame.pack(fill='both', padx=0, pady=0)
+            self.matrix_toggle_btn.config(bg=self.COLORS['bg_light'])
+            self.matrix_view_active = False
+        else:
+            # Switch to matrix view
+            self.editors_frame.pack_forget()
+            self.matrix_editor.pack(fill='both', padx=5, pady=5)
+            self.matrix_toggle_btn.config(bg=self.COLORS['highlight'])
+            self._update_matrix_editor()
+            self.matrix_view_active = True
+    
+    def _on_fill_rate_change(self, event=None):
+        """Handle fill rate change"""
+        try:
+            new_rate = int(self.fill_rate_var.get())
+            self.pattern_manager.set_fill_rate(new_rate)
+        except ValueError:
+            pass
+    
+    def _on_pattern_copy(self):
+        """Copy current pattern/channel to clipboard"""
+        pattern = self.pattern_manager.get_selected_pattern()
+        channel = pattern.get_channel(self.selected_channel)
+        
+        # Store in clipboard (using root variable)
+        self.root.clipboard_data = {
+            'type': 'pattern_channel',
+            'channel_id': self.selected_channel,
+            'triggers': channel.get_triggers(),
+            'accents': channel.get_accents(),
+            'fills': channel.get_fills(),
+        }
+        messagebox.showinfo("Copy", "Pattern channel copied to clipboard")
+    
+    def _on_pattern_paste(self):
+        """Paste pattern/channel from clipboard"""
+        if not hasattr(self.root, 'clipboard_data') or not self.root.clipboard_data:
+            messagebox.showwarning("Paste", "Nothing in clipboard")
+            return
+        
+        pattern = self.pattern_manager.get_selected_pattern()
+        channel = pattern.get_channel(self.selected_channel)
+        data = self.root.clipboard_data
+        
+        if data['type'] == 'pattern_channel':
+            channel.set_triggers(data['triggers'])
+            channel.set_accents(data['accents'])
+            channel.set_fills(data['fills'])
+            self._update_pattern_editors()
+            messagebox.showinfo("Paste", "Pattern channel pasted")
+    
+    def _on_matrix_edit(self, channel_id, step, value):
+        """Handle matrix editor edits"""
+        pattern = self.pattern_manager.get_selected_pattern()
+        channel = pattern.get_channel(channel_id)
+        channel.set_trigger(step, value)
+    
+    def _update_matrix_editor(self):
+        """Update matrix editor with current pattern data"""
+        pattern = self.pattern_manager.get_selected_pattern()
+        matrix_data = []
+        
+        for ch in range(8):
+            channel = pattern.get_channel(ch)
+            matrix_data.append(channel.get_triggers())
+        
+        self.matrix_editor.set_matrix_data(matrix_data)
+    
+    def _update_pattern_editors(self):
+
+        """Update all pattern editors from current pattern"""
+        pattern = self.pattern_manager.get_selected_pattern()
+        
+        for ch_id, editor in enumerate(self.pattern_editors):
+            channel = pattern.get_channel(ch_id)
+            triggers = [step.trigger for step in channel.steps]
+            accents = [step.accent for step in channel.steps]
+            fills = [step.fill for step in channel.steps]
+            editor.set_pattern_data(triggers, accents, fills)
+    
+    def _update_pattern_ui(self):
+        """Update all pattern UI elements (buttons and editors) after loading patterns"""
+        self._update_pattern_button_states()
+        self._update_pattern_editors()
+    
     def _on_key_press(self, event):
         """Handle keyboard input"""
         key = (event.char or '').lower()
@@ -855,6 +1485,17 @@ class PythonicGUI:
                         if i < 8 and drum_params:
                             channel = self.synth.channels[i]
                             channel.set_parameters(drum_params)
+                    
+                    # Load patterns if available
+                    if preset_data.get('patterns'):
+                        self.pattern_manager.load_from_preset_data(preset_data['patterns'])
+                        # Update pattern UI to reflect loaded patterns
+                        self._update_pattern_ui()
+                    
+                    # Load tempo if available
+                    if 'tempo' in preset_data:
+                        self.pattern_manager.set_bpm(int(preset_data['tempo']))
+                    
                     self._update_ui_from_channel()
                     self.preferences_manager.add_recent_file(filename)
                     self.preferences_manager.set('last_preset', filename)
@@ -936,6 +1577,30 @@ class PythonicGUI:
         if status:
             print(f"Audio status: {status}")
         
+        # Update pattern playback position
+        if self.pattern_manager.is_playing:
+            # Calculate frames per step
+            frames_per_step = (self.sample_rate * self.pattern_manager.step_duration_ms) / 1000.0
+            
+            # Check if we've crossed into a new step
+            old_step = int(self.frames_since_last_step / frames_per_step)
+            self.frames_since_last_step += frames
+            new_step = int(self.frames_since_last_step / frames_per_step)
+            
+            if new_step != old_step:
+                # Advanced to new step
+                self.pattern_manager.play_position = new_step % self.pattern_manager.get_playing_pattern().length
+                
+                # Reset frame counter when we wrap around
+                if self.pattern_manager.play_position == 0:
+                    self.frames_since_last_step = 0
+                
+                # Trigger channels at this step
+                self._trigger_pattern_step(self.pattern_manager.play_position)
+                
+                # Schedule UI update on main thread
+                self.root.after(0, self._update_pattern_position_display)
+        
         # Generate audio from synthesizer
         audio = self.synth.process_audio(frames)
         
@@ -963,6 +1628,86 @@ class PythonicGUI:
             self.audio_stream.stop()
             self.audio_stream.close()
             self.audio_stream = None
+    
+    def _trigger_pattern_step(self, step_index):
+        """Trigger all active channels at a pattern step"""
+        pattern = self.pattern_manager.get_playing_pattern()
+        
+        for channel_id in range(self.pattern_manager.num_channels):
+            channel = pattern.get_channel(channel_id)
+            if channel:
+                step = channel.get_step(step_index)
+                
+                if step.trigger:
+                    # Calculate velocity based on accent
+                    # Accent = 127, Normal = 64 (per spec)
+                    velocity = 127 if step.accent else 64
+                    
+                    # Trigger the channel with velocity
+                    self.synth.trigger_drum(channel_id, velocity)
+                    
+                    # Handle fills if enabled
+                    if step.fill:
+                        fill_rate = self.pattern_manager.fill_rate
+                        # TODO: Implement fill triggers (multiple triggers per step)
+                        # For now, just trigger once
+                        pass
+    
+    def _update_pattern_position_display(self):
+        """Update the visual position indicator in pattern editors"""
+        if hasattr(self, 'pattern_editors'):
+            position = self.pattern_manager.play_position
+            for editor in self.pattern_editors:
+                editor.set_current_position(position)
+    
+    def _update_pattern_button_states(self):
+        """Update visual states of pattern buttons"""
+        selected_idx = self.pattern_manager.selected_pattern_index
+        playing_idx = self.pattern_manager.playing_pattern_index if self.pattern_manager.is_playing else -1
+        
+        for i, btn in enumerate(self.pattern_buttons):
+            pattern = self.pattern_manager.get_pattern(i)
+            
+            # Determine background color
+            if i == playing_idx and self.button_flash_state:
+                # Playing pattern - flash green
+                bg_color = self.COLORS['led_on']
+            elif i == selected_idx:
+                # Selected pattern - blue highlight
+                bg_color = self.COLORS['highlight']
+            else:
+                # Normal state
+                bg_color = self.COLORS['bg_light']
+            
+            # Determine text color
+            if pattern.is_empty():
+                # Empty pattern - gray text
+                fg_color = self.COLORS['text_dim']
+            elif pattern.chained_to_next or pattern.chained_from_prev:
+                # Chained pattern - blue text
+                fg_color = self.COLORS['highlight']
+            else:
+                # Normal text
+                fg_color = self.COLORS['text']
+            
+            btn.config(bg=bg_color, fg=fg_color)
+        
+        # Schedule next update for flash animation
+        self.root.after(250, self._toggle_button_flash)
+    
+    def _toggle_button_flash(self):
+        """Toggle flash state and update buttons"""
+        if self.pattern_manager.is_playing:
+            self.button_flash_state = not self.button_flash_state
+            self._update_pattern_button_states()
+        else:
+            # Reset flash state when not playing
+            if self.button_flash_state:
+                self.button_flash_state = False
+                self._update_pattern_button_states()
+            else:
+                # Continue checking
+                self.root.after(250, self._toggle_button_flash)
     
     def run(self):
         """Run the application"""
