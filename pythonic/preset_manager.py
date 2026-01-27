@@ -71,21 +71,12 @@ class PythonicPresetParser:
 
     def _parse_root(self) -> Dict[str, Any]:
         self._skip_whitespace()
-        # Accept both 'MicroTonicPresetV3:' and 'MicrotonicPresetV3:' (case-insensitive)
-        preset_header = None
-        for header in ['MicroTonicPresetV3:', 'MicrotonicPresetV3:']:
-            if self.content[self.pos:].startswith(header):
-                preset_header = header
-                break
-        if preset_header is None:
-            # Try case-insensitive match
-            for header in ['MicroTonicPresetV3:', 'MicrotonicPresetV3:']:
-                if self.content[self.pos:].lower().startswith(header.lower()):
-                    preset_header = header
-                    break
-        if preset_header is None:
-            raise ValueError("Invalid preset format: expected MicroTonicPresetV3 or MicrotonicPresetV3")
-        self.pos += len(preset_header)
+        # Find "PresetV3:" in the content (case-insensitive)
+        remaining = self.content[self.pos:].lower()
+        preset_v3_pos = remaining.find('presetv3:')
+        if preset_v3_pos == -1:
+            raise ValueError("Invalid preset format: expected PresetV3")
+        self.pos += preset_v3_pos + len('presetv3:')
         self._skip_whitespace()
         return self._parse_block()
 
@@ -248,7 +239,7 @@ class PythonicPresetParser:
             # But we need to check if this is actually a unit or the start of a new key
             potential_unit = self.content[unit_start:self.pos]
             
-            # Common units in Microtonic presets
+            # Common units in presets
             known_units = ['bpm', 'Hz', 'ms', 'dB', 'sm', '%', 'x']
             
             # If it's not a known unit and has content, it might be a pattern like "1/16"

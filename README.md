@@ -1,6 +1,6 @@
 # Pythonic
 
-A synthetic drum synthesizer built in Python that generates percussion sounds algorithmically without using samples. This open-source project is inspired by Sonic Charge Microtonic, providing a complete solution for electronic music production with real-time audio synthesis and an intuitive GUI.
+A synthetic drum synthesizer built in Python that generates percussion sounds algorithmically without using samples.
 
 Perfect for producers, sound designers, and developers interested in audio synthesis and digital signal processing.
 
@@ -140,17 +140,11 @@ Approximately 11.6ms at 512 sample buffer size
 - Increase audio buffer size
 - Close other audio applications
 
-## Credits
-
-This is an educational implementation inspired by the [Sonic Charge Microtonic](https://soniccharge.com/microtonic) synthesizer.
-
-**Original Microtonic** by Magnus Lidström / Sonic Charge
-
 **Python Implementation** - Educational project
 
 ## License
 
-MIT License - This is an educational project for learning purposes. The original Pythonic is a commercial product by Sonic Charge.
+MIT License.
 
 ## Contributing
 
