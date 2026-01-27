@@ -71,9 +71,21 @@ class PythonicPresetParser:
 
     def _parse_root(self) -> Dict[str, Any]:
         self._skip_whitespace()
-        if not self.content[self.pos:].startswith('MicroTonicPresetV3:'):
-            raise ValueError("Invalid preset format: expected MicroTonicPresetV3")
-        self.pos += len('MicroTonicPresetV3:')
+        # Accept both 'MicroTonicPresetV3:' and 'MicrotonicPresetV3:' (case-insensitive)
+        preset_header = None
+        for header in ['MicroTonicPresetV3:', 'MicrotonicPresetV3:']:
+            if self.content[self.pos:].startswith(header):
+                preset_header = header
+                break
+        if preset_header is None:
+            # Try case-insensitive match
+            for header in ['MicroTonicPresetV3:', 'MicrotonicPresetV3:']:
+                if self.content[self.pos:].lower().startswith(header.lower()):
+                    preset_header = header
+                    break
+        if preset_header is None:
+            raise ValueError("Invalid preset format: expected MicroTonicPresetV3 or MicrotonicPresetV3")
+        self.pos += len(preset_header)
         self._skip_whitespace()
         return self._parse_block()
 
@@ -186,18 +198,77 @@ class PythonicPresetParser:
     def _parse_number_or_identifier(self) -> Any:
         self._skip_whitespace()
         start = self.pos
-        if self.pos < len(self.content) and self.content[self.pos] == '-':
+        
+        # Handle negative sign
+        if self.pos < len(self.content) and self.content[self.pos] in '-+':
             self.pos += 1
-        while self.pos < len(self.content) and (self.content[self.pos].isalnum() or self.content[self.pos] in '._/-#'):
+        
+        # Parse the numeric part
+        while self.pos < len(self.content) and (self.content[self.pos].isdigit() or self.content[self.pos] == '.'):
             self.pos += 1
+        
         value_str = self.content[start:self.pos].strip()
+        
+        # Skip inline whitespace (spaces/tabs) but NOT newlines before checking for units
+        # Units like "bpm", "Hz" appear on the same line as the number
+        while self.pos < len(self.content) and self.content[self.pos] in ' \t':
+            self.pos += 1
+        
+        # Check for special case: "number / number" format (e.g., Mix: 50.00 / 50.00)
+        if self.pos < len(self.content) and self.content[self.pos] == '/':
+            # This is a fraction value, parse the second number
+            self.pos += 1  # skip '/'
+            self._skip_whitespace()
+            
+            # Parse second number
+            second_start = self.pos
+            if self.pos < len(self.content) and self.content[self.pos] in '-+':
+                self.pos += 1
+            while self.pos < len(self.content) and (self.content[self.pos].isdigit() or self.content[self.pos] == '.'):
+                self.pos += 1
+            
+            second_value_str = self.content[second_start:self.pos].strip()
+            
+            # For Mix parameter (osc/noise), just return the first value (osc percentage)
+            # as that's what the synth format expects
+            try:
+                return float(value_str) if '.' in value_str else int(value_str)
+            except ValueError:
+                return value_str
+        
+        # Check if there's a unit suffix
+        if self.pos < len(self.content):
+            # Common unit patterns
+            unit_start = self.pos
+            # Parse potential unit (letters, %, x, but NOT /)
+            while self.pos < len(self.content) and (self.content[self.pos].isalpha() or self.content[self.pos] in '%x'):
+                self.pos += 1
+            
+            # If we found a unit, we ignore it (it's just metadata)
+            # But we need to check if this is actually a unit or the start of a new key
+            potential_unit = self.content[unit_start:self.pos]
+            
+            # Common units in Microtonic presets
+            known_units = ['bpm', 'Hz', 'ms', 'dB', 'sm', '%', 'x']
+            
+            # If it's not a known unit and has content, it might be a pattern like "1/16"
+            if potential_unit and potential_unit not in known_units and not self.content[unit_start-1:unit_start] in [' ', '\t', '\n', '\r']:
+                # This might be part of an identifier, reset
+                self.pos = unit_start
+        
+        # Try to convert to number
         try:
             if '.' in value_str:
                 return float(value_str)
             else:
                 return int(value_str)
         except ValueError:
-            return value_str
+            # If it's not a number, treat as identifier
+            # Reset and parse as identifier
+            self.pos = start
+            while self.pos < len(self.content) and (self.content[self.pos].isalnum() or self.content[self.pos] in '._/-#'):
+                self.pos += 1
+            return self.content[start:self.pos].strip()
 
     def convert_to_synth_format(self, preset_data: Dict) -> Dict:
         result = {

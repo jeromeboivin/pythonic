@@ -696,17 +696,17 @@ class PythonicGUI:
     
     def _on_key_press(self, event):
         """Handle keyboard input"""
-        key = event.char.lower()
-        
-        # Number keys 1-8 trigger drums
-        if key in '12345678':
+        key = (event.char or '').lower()
+
+        # Number keys 1-8 trigger drums — ensure `key` is a single digit
+        if len(key) == 1 and key in '12345678':
             channel = int(key) - 1
             self._trigger_channel(channel)
-        
+
         # S to save preset
         elif key == 's':
             self._save_preset()
-        
+
         # L to load preset
         elif key == 'l':
             self._load_preset()
