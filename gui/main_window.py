@@ -18,6 +18,7 @@ from pythonic.synthesizer import PythonicSynthesizer
 from pythonic.oscillator import WaveformType, PitchModMode
 from pythonic.noise import NoiseFilterMode, NoiseEnvelopeMode
 from pythonic.preset_manager import PresetManager
+from pythonic.preferences_manager import PreferencesManager
 from gui.widgets import (
     RotaryKnob, VerticalSlider, ChannelButton,
     WaveformSelector, ModeSelector, ToggleButton
@@ -61,6 +62,9 @@ class PythonicGUI:
         self.sample_rate = 44100
         self.synth = PythonicSynthesizer(self.sample_rate)
         
+        # Preferences manager
+        self.preferences_manager = PreferencesManager()
+        
         # Preset manager
         self.preset_manager = PresetManager(self.synth)
         
@@ -82,6 +86,9 @@ class PythonicGUI:
         
         # Update UI with current channel
         self._update_ui_from_channel()
+        
+        # Load the last preset if available
+        self._load_last_preset()
     
     def _build_ui(self):
         """Build the complete user interface"""
@@ -115,17 +122,30 @@ class PythonicGUI:
                 font=('Segoe UI', 16, 'bold'), fg=self.COLORS['text'],
                 bg=self.COLORS['bg_medium']).pack()
         
-        # Preset name display
-        preset_frame = tk.Frame(header, bg=self.COLORS['bg_dark'])
+        # Preset selection combo-box
+        preset_frame = tk.Frame(header, bg=self.COLORS['bg_medium'])
         preset_frame.pack(side='left', padx=20, pady=10)
         
-        self.preset_label = tk.Label(preset_frame, 
-                                    text="  Factory Kit  ",
-                                    font=('Courier', 10),
-                                    fg=self.COLORS['text'],
-                                    bg=self.COLORS['bg_dark'],
-                                    relief='sunken', padx=5, pady=2)
-        self.preset_label.pack()
+        tk.Label(preset_frame, text="Preset:", 
+                font=('Segoe UI', 8), fg=self.COLORS['text_dim'],
+                bg=self.COLORS['bg_medium']).pack(side='left', padx=(0, 5))
+        
+        self.preset_combo = ttk.Combobox(preset_frame, width=25, state='readonly')
+        self.preset_combo.pack(side='left')
+        self.preset_combo.bind('<<ComboboxSelected>>', self._on_preset_combo_select)
+        
+        tk.Button(preset_frame, text="📁", width=2,
+                 bg=self.COLORS['accent'],
+                 fg=self.COLORS['text'],
+                 command=self._select_preset_folder).pack(side='left', padx=2)
+        
+        tk.Button(preset_frame, text="🔄", width=2,
+                 bg=self.COLORS['accent'],
+                 fg=self.COLORS['text'],
+                 command=self._refresh_preset_list).pack(side='left', padx=2)
+        
+        # Initialize preset list
+        self._refresh_preset_list()
         
         # Master volume in header
         master_frame = tk.Frame(header, bg=self.COLORS['bg_medium'])
@@ -765,7 +785,9 @@ class PythonicGUI:
     
     def _save_preset(self):
         """Save current preset to file"""
+        preset_folder = self.preferences_manager.get_preset_folder()
         filename = filedialog.asksaveasfilename(
+            initialdir=preset_folder,
             defaultextension='.json',
             filetypes=[('JSON files', '*.json'), ('All files', '*.*')],
             title='Save Preset'
@@ -775,11 +797,15 @@ class PythonicGUI:
             data = self.synth.get_preset_data()
             with open(filename, 'w') as f:
                 json.dump(data, f, indent=2)
+            self.preferences_manager.add_recent_file(filename)
+            self._refresh_preset_list()
             messagebox.showinfo("Saved", f"Preset saved to {filename}")
     
     def _load_preset(self):
         """Load preset from file"""
+        preset_folder = self.preferences_manager.get_preset_folder()
         filename = filedialog.askopenfilename(
+            initialdir=preset_folder,
             filetypes=[
                 ('Pythonic Preset', '*.mtpreset'),
                 ('JSON files', '*.json'),
@@ -789,28 +815,7 @@ class PythonicGUI:
         )
         
         if filename:
-            try:
-                if filename.lower().endswith('.mtpreset'):
-                    # Load native Pythonic preset format
-                    preset_data = self.preset_manager.load_mtpreset(filename)
-                    if preset_data and preset_data.get('drums'):
-                        for i, drum_params in enumerate(preset_data['drums']):
-                            if i < 8 and drum_params:
-                                channel = self.synth.channels[i]
-                                channel.set_parameters(drum_params)
-                        self._update_ui_from_channel()
-                        messagebox.showinfo("Loaded", f"Preset loaded: {preset_data.get('name', 'Unknown')}")
-                    else:
-                        messagebox.showerror("Error", "Failed to parse preset file")
-                else:
-                    # Load JSON format
-                    with open(filename, 'r') as f:
-                        data = json.load(f)
-                    self.synth.load_preset_data(data)
-                    self._update_ui_from_channel()
-                    messagebox.showinfo("Loaded", f"Preset loaded from {filename}")
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to load preset: {e}")
+            self._load_preset_file(filename)
     
     def _export_all_wavs(self):
         """Export all drums to WAV files"""
@@ -838,6 +843,91 @@ class PythonicGUI:
                 messagebox.showinfo("Exported", f"Drum exported to {filename}")
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to export: {e}")
+    
+    def _load_preset_file(self, filename, show_message=True):
+        """Load a preset file (internal helper)"""
+        try:
+            if filename.lower().endswith('.mtpreset'):
+                # Load native Pythonic preset format
+                preset_data = self.preset_manager.load_mtpreset(filename)
+                if preset_data and preset_data.get('drums'):
+                    for i, drum_params in enumerate(preset_data['drums']):
+                        if i < 8 and drum_params:
+                            channel = self.synth.channels[i]
+                            channel.set_parameters(drum_params)
+                    self._update_ui_from_channel()
+                    self.preferences_manager.add_recent_file(filename)
+                    self.preferences_manager.set('last_preset', filename)
+                    self._refresh_preset_list()
+                    if show_message:
+                        messagebox.showinfo("Loaded", f"Preset loaded: {preset_data.get('name', 'Unknown')}")
+                else:
+                    messagebox.showerror("Error", "Failed to parse preset file")
+            else:
+                # Load JSON format
+                with open(filename, 'r') as f:
+                    data = json.load(f)
+                self.synth.load_preset_data(data)
+                self._update_ui_from_channel()
+                self.preferences_manager.add_recent_file(filename)
+                self.preferences_manager.set('last_preset', filename)
+                self._refresh_preset_list()
+                if show_message:
+                    messagebox.showinfo("Loaded", f"Preset loaded from {filename}")
+        except Exception as e:
+            if show_message:
+                messagebox.showerror("Error", f"Failed to load preset: {e}")
+    
+    def _select_preset_folder(self):
+        """Select a new preset folder"""
+        current_folder = self.preferences_manager.get_preset_folder()
+        folder = filedialog.askdirectory(
+            initialdir=current_folder,
+            title='Select Preset Folder'
+        )
+        
+        if folder:
+            self.preferences_manager.set_preset_folder(folder)
+            self._refresh_preset_list()
+            messagebox.showinfo("Folder Selected", f"Preset folder set to:\n{folder}")
+    
+    def _refresh_preset_list(self):
+        """Refresh the preset combo box with files from the preset folder"""
+        preset_folder = self.preferences_manager.get_preset_folder()
+        
+        # Get all preset files from the folder
+        preset_files = []
+        if os.path.exists(preset_folder):
+            for file in os.listdir(preset_folder):
+                if file.lower().endswith(('.mtpreset', '.json')):
+                    preset_files.append(file)
+        
+        # Sort alphabetically
+        preset_files.sort()
+        
+        # Update combo box
+        self.preset_combo['values'] = preset_files
+        if preset_files:
+            self.preset_combo.set('')
+    
+    def _on_preset_combo_select(self, event=None):
+        """Handle preset selection from combo box"""
+        selected = self.preset_combo.get()
+        if selected:
+            preset_folder = self.preferences_manager.get_preset_folder()
+            filepath = os.path.join(preset_folder, selected)
+            if os.path.exists(filepath):
+                self._load_preset_file(filepath, show_message=False)
+    
+    def _load_last_preset(self):
+        """Load the last loaded preset if it exists"""
+        last_preset = self.preferences_manager.get('last_preset')
+        if last_preset and os.path.exists(last_preset):
+            try:
+                self._load_preset_file(last_preset, show_message=False)
+            except Exception as e:
+                # Silently fail if last preset can't be loaded
+                print(f"Warning: Could not load last preset: {e}")
     
     # ============== Audio ==============
     
