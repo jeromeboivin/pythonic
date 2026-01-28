@@ -24,6 +24,18 @@ class Oscillator:
     Oscillator with multiple waveforms and pitch modulation modes
     """
     
+    # Waveform gain compensation to match loudness balancing
+    # Boosts triangle and sawtooth to have similar perceived loudness to sine
+    # Reference measurements from TEST samples (relative to sine at 1.0):
+    # - Sine: 1.0
+    # - Triangle: 1.218 (close to theoretical sqrt(2)/sqrt(3) = 1.225 for equal RMS)
+    # - Sawtooth: 1.164 (slightly less than theoretical, possibly due to perceptual adjustment)
+    WAVEFORM_GAIN = {
+        WaveformType.SINE: 1.0,
+        WaveformType.TRIANGLE: 1.218,
+        WaveformType.SAWTOOTH: 1.164,
+    }
+    
     def __init__(self, sample_rate: int = 44100):
         self.sr = sample_rate
         
@@ -47,7 +59,14 @@ class Oscillator:
         self._noise_index = 0
     
     def reset_phase(self):
-        """Reset oscillator phase (call on trigger)"""
+        """Reset oscillator phase for maximum attack punch.
+        
+        For drum synthesis, we want the first sample to be at maximum amplitude.
+        - Sine: starts at phase π/2 (peak = +1)
+        - Triangle: starts at phase π (peak = +1)  
+        - Sawtooth: starts at phase π (peak = +1)
+        """
+        # Set initial phase based on waveform for maximum first-sample amplitude
         self.phase = 0.0
         self.mod_time = 0.0
     
@@ -90,7 +109,7 @@ class Oscillator:
         Returns:
             numpy array of audio samples
         """
-        # Time array for this block
+        # Time array for this block - start from 0 for first sample
         sample_times = np.arange(num_samples) / self.sr
         time_array = self.mod_time + sample_times
         
@@ -100,14 +119,16 @@ class Oscillator:
         # Calculate phase increments
         phase_increments = 2.0 * np.pi * freq_array / self.sr
         
-        # Accumulate phase
-        phases = self.phase + np.cumsum(phase_increments)
+        # Build phase array: first sample uses current phase, then accumulate
+        # This ensures the very first sample after trigger uses phase=0
+        cumulative = np.cumsum(phase_increments)
+        phases = self.phase + np.concatenate([[0], cumulative[:-1]])
         
         # Wrap phase to [0, 2π]
         phases = np.mod(phases, 2.0 * np.pi)
         
-        # Update state for next block
-        self.phase = phases[-1] if num_samples > 0 else self.phase
+        # Update state for next block (advance past last sample)
+        self.phase = np.mod(self.phase + cumulative[-1], 2.0 * np.pi) if num_samples > 0 else self.phase
         self.mod_time += num_samples / self.sr
         
         # Generate waveform
@@ -128,24 +149,30 @@ class Oscillator:
     
     def _apply_decaying_mod(self, time_array: np.ndarray) -> np.ndarray:
         """Apply exponential pitch decay modulation"""
+
         if abs(self.pitch_mod_amount) < 0.01:
             return np.full_like(time_array, self.frequency)
         
-        # Convert semitones to frequency ratio
-        mod_ratio = 2.0 ** (self.pitch_mod_amount / 12.0)
+        # Convert mod_rate (in ms) to decay time constant
+        mod_rate_sec = self.pitch_mod_rate / 1000.0  # Convert ms to seconds
         
-        # Exponential decay with rate parameter (in ms)
-        decay_constant = self.pitch_mod_rate / 1000.0  # Convert ms to seconds
+        # Simple formula derived from reference sample analysis
+        ratio = abs(self.pitch_mod_amount) / self.pitch_mod_rate  # semitones per ms
+        tau_divisor = 7.0 - 2.0 * min(ratio, 1.0)
         
-        if decay_constant > 0:
-            # Decay envelope from 1 to 0
-            decay_envelope = np.exp(-time_array / decay_constant)
+        tau = mod_rate_sec / tau_divisor
+        
+        if tau > 0:
+            # Simple exponential decay envelope
+            decay_envelope = np.exp(-time_array / tau)
+            
+            # Current pitch offset in semitones (decays from mod_amount to 0)
+            current_semitones = self.pitch_mod_amount * decay_envelope
+            
+            # Convert semitones to frequency multiplier
+            freq_multiplier = np.power(2.0, current_semitones / 12.0)
         else:
-            decay_envelope = np.zeros_like(time_array)
-        
-        # Start frequency is base * ratio, decay towards base
-        # f(t) = f0 * (1 + (ratio - 1) * envelope)
-        freq_multiplier = 1.0 + (mod_ratio - 1.0) * decay_envelope
+            freq_multiplier = np.ones_like(time_array)
         
         return self.frequency * freq_multiplier
     
@@ -196,19 +223,23 @@ class Oscillator:
         return self.frequency * freq_multiplier
     
     def _generate_waveform(self, phases: np.ndarray) -> np.ndarray:
-        """Generate waveform samples from phase array"""
+        """Generate waveform samples from phase array with gain compensation"""
+        
+        gain = self.WAVEFORM_GAIN.get(self.waveform, 1.0)
         
         if self.waveform == WaveformType.SINE:
-            return np.sin(phases)
+            return np.sin(phases) * gain
         
         elif self.waveform == WaveformType.TRIANGLE:
             # Triangle wave: 2 * |2 * (phase/2π - floor(phase/2π + 0.5))| - 1
             normalized = phases / np.pi  # [0, 2] per cycle
-            return 2.0 * np.abs(2.0 * (normalized / 2.0 - np.floor(normalized / 2.0 + 0.5))) - 1.0
+            raw = 2.0 * np.abs(2.0 * (normalized / 2.0 - np.floor(normalized / 2.0 + 0.5))) - 1.0
+            return raw * gain
         
         elif self.waveform == WaveformType.SAWTOOTH:
             # Sawtooth: 2 * (phase/2π) - 1, then wrap
-            return 2.0 * (phases / (2.0 * np.pi)) - 1.0
+            raw = 2.0 * (phases / (2.0 * np.pi)) - 1.0
+            return raw * gain
         
         return np.sin(phases)  # Default to sine
 

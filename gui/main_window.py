@@ -317,6 +317,21 @@ class PythonicGUI:
                                          command=self._on_pattern_stop)
         self.pattern_play_btn.pack(side='left', padx=1)
         
+        # Step rate control (right side of row 1)
+        step_rate_frame = tk.Frame(controls_row1, bg=self.COLORS['bg_medium'])
+        step_rate_frame.pack(side='right', padx=5)
+        
+        tk.Label(step_rate_frame, text="Step Rate:", 
+                font=('Segoe UI', 7), fg=self.COLORS['text_dim'],
+                bg=self.COLORS['bg_medium']).pack(side='left', padx=(0, 5))
+        
+        self.step_rate_var = tk.StringVar(value=self.pattern_manager.step_rate)
+        self.step_rate_combo = ttk.Combobox(step_rate_frame, textvariable=self.step_rate_var,
+                                           values=['1/8', '1/8T', '1/16', '1/16T', '1/32'],
+                                           width=5, state='readonly')
+        self.step_rate_combo.pack(side='left')
+        self.step_rate_combo.bind('<<ComboboxSelected>>', self._on_step_rate_change)
+        
         # Fill rate control (right side of row 1)
         fill_frame = tk.Frame(controls_row1, bg=self.COLORS['bg_medium'])
         fill_frame.pack(side='right', padx=5)
@@ -631,7 +646,7 @@ class PythonicGUI:
         row3.pack(pady=5)
         
         self.noise_q_knob = RotaryKnob(row3, size=45,
-                                       min_val=0.1, max_val=100, default=0.707,
+                                       min_val=0.0, max_val=10.0, default=0.707,
                                        label="filter q",
                                        command=self._on_noise_q_change)
         self.noise_q_knob.pack(side='left', padx=3)
@@ -1299,6 +1314,11 @@ class PythonicGUI:
         except ValueError:
             pass
     
+    def _on_step_rate_change(self, event=None):
+        """Handle step rate change"""
+        new_rate = self.step_rate_var.get()
+        self.pattern_manager.set_step_rate(new_rate)
+    
     def _on_pattern_copy(self):
         """Copy current pattern/channel to clipboard"""
         pattern = self.pattern_manager.get_selected_pattern()
@@ -1516,6 +1536,11 @@ class PythonicGUI:
                     # Load tempo if available
                     if 'tempo' in preset_data:
                         self.pattern_manager.set_bpm(int(preset_data['tempo']))
+                    
+                    # Load step rate if available
+                    if 'step_rate' in preset_data:
+                        self.pattern_manager.set_step_rate(preset_data['step_rate'])
+                        self.step_rate_var.set(preset_data['step_rate'])
                     
                     self._update_ui_from_channel()
                     self.preferences_manager.add_recent_file(filename)

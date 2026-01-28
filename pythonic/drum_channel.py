@@ -16,6 +16,9 @@ class DrumChannel:
     Combines oscillator, noise generator, mixing, distortion, and EQ
     """
     
+    INTERNAL_HEADROOM_DB = -10.35
+    INTERNAL_HEADROOM_LINEAR = 10.0 ** (INTERNAL_HEADROOM_DB / 20.0)  # ~0.304
+    
     def __init__(self, channel_id: int, sample_rate: int = 44100):
         self.channel_id = channel_id
         self.sr = sample_rate
@@ -86,8 +89,10 @@ class DrumChannel:
         # EQ defaults
         self.eq_filter_l.set_frequency(632.46)
         self.eq_filter_l.set_gain(0.0)
+        self.eq_filter_l.set_q(2.8)
         self.eq_filter_r.set_frequency(632.46)
         self.eq_filter_r.set_gain(0.0)
+        self.eq_filter_r.set_q(2.8)
     
     def trigger(self, velocity: int = 127, note: int = 60):
         """
@@ -161,8 +166,17 @@ class DrumChannel:
         osc_stereo[:, 1] = osc_signal
         
         # Mix based on osc_noise_mix parameter
-        mixed = (osc_stereo * self.osc_noise_mix + 
-                 noise_signal * (1.0 - self.osc_noise_mix))
+        # At mix=80% (osc_noise_mix=0.8): noise_scale = 0.2/0.8 = 0.25
+        # At mix=100%: pure oscillator, at mix=0%: pure noise
+        mix = self.osc_noise_mix
+        if mix > 0.999:
+            mixed = osc_stereo.copy()
+        elif mix < 0.001:
+            mixed = noise_signal.copy()
+        else:
+            # Additive formula: osc + noise * ((1-mix)/mix)
+            noise_scale = (1.0 - mix) / mix
+            mixed = osc_stereo + noise_signal * noise_scale
         
         # Apply distortion
         if self.distortion > 0.001:
@@ -181,12 +195,13 @@ class DrumChannel:
             # Process right channel
             mixed[:, 1] = self.eq_filter_r.process(mixed[:, 1])
         
-        # Apply level (dB to linear)
+        # Apply level (dB to linear) with internal headroom
         if self.level_db <= -60:
             level_linear = 0.0
         else:
             level_linear = 10.0 ** (self.level_db / 20.0)
-        mixed *= level_linear
+        # Apply internal headroom
+        mixed *= level_linear * self.INTERNAL_HEADROOM_LINEAR
         
         # Apply pan
         output = self._apply_pan(mixed)
@@ -222,7 +237,7 @@ class DrumChannel:
     
     def _apply_pan(self, stereo_signal: np.ndarray) -> np.ndarray:
         """
-        Apply stereo panning using equal-power law
+        Apply stereo panning using linear pan law
         
         Args:
             stereo_signal: Input stereo signal [samples, 2]
@@ -230,13 +245,20 @@ class DrumChannel:
         Returns:
             Panned stereo signal
         """
-        # Convert pan (-100 to +100) to normalized (0 to 1)
-        pan_normalized = (self.pan + 100.0) / 200.0
+        # Convert pan (-100 to +100) to normalized (-1 to 1)
+        pan_normalized = self.pan / 100.0
         
-        # Equal power panning
-        pan_rad = pan_normalized * np.pi / 2.0
-        left_gain = np.cos(pan_rad)
-        right_gain = np.sin(pan_rad)
+        # Linear pan law: at center (0), both channels at 1.0
+        # At full left (-1), left=1.0, right=0.0
+        # At full right (+1), left=0.0, right=1.0
+        if pan_normalized <= 0:
+            # Panning left
+            left_gain = 1.0
+            right_gain = 1.0 + pan_normalized  # 0 at full left, 1 at center
+        else:
+            # Panning right
+            left_gain = 1.0 - pan_normalized  # 1 at center, 0 at full right
+            right_gain = 1.0
         
         output = np.zeros_like(stereo_signal)
         output[:, 0] = stereo_signal[:, 0] * left_gain

@@ -127,11 +127,15 @@ class Envelope:
             decay_samples = num_samples - idx
             
             # Vectorized exponential decay: level * coeff^n
-            exponents = np.arange(1, decay_samples + 1, dtype=np.float32)
+            # Start from n=0 so first sample is at full level (coeff^0 = 1)
+            # This ensures punchy attacks when attack_ms = 0
+            exponents = np.arange(0, decay_samples, dtype=np.float32)
             decay_curve = self.current_level * np.power(self._decay_coefficient, exponents)
             
             output[idx:] = decay_curve
-            self.current_level = decay_curve[-1] if decay_samples > 0 else self.current_level
+            # Update current_level to be the level AFTER this block (for next call)
+            # This is coeff^decay_samples relative to start
+            self.current_level = self.current_level * np.power(self._decay_coefficient, decay_samples)
             self.sample_index += decay_samples
             
             # Check if envelope finished

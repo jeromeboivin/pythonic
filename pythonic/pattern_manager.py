@@ -228,19 +228,39 @@ class PatternManager:
         # Tempo settings
         self.bpm = 120
         self.step_duration_ms = 250  # milliseconds per step at 120 BPM
+        
+        # Step rate: note subdivision for each pattern step
+        # Values: '1/8', '1/8T', '1/16', '1/16T', '1/32'
+        # Divisor is how many steps fit in one beat (quarter note)
+        self.STEP_RATES = {
+            '1/8': 2,      # 2 steps per beat (eighth notes)
+            '1/8T': 3,     # 3 steps per beat (eighth note triplets)
+            '1/16': 4,     # 4 steps per beat (sixteenth notes) - default
+            '1/16T': 6,    # 6 steps per beat (sixteenth note triplets)
+            '1/32': 8,     # 8 steps per beat (thirty-second notes)
+        }
+        self.step_rate = '1/16'  # Default to 1/16 notes
 
         self._update_step_duration()
 
     def _update_step_duration(self):
-        """Calculate step duration based on BPM"""
-        # 120 BPM = 4 quarter notes per second = 1 quarter note per 0.25 seconds
-        # Pattern step = quarter note (by default)
-        self.step_duration_ms = (60000 / self.bpm)  # milliseconds
+        """Calculate step duration based on BPM and step rate"""
+        # 60000 ms / bpm = duration of one beat (quarter note) in ms
+        # Divide by step rate divisor to get duration of each step
+        beat_duration_ms = 60000 / self.bpm
+        step_divisor = self.STEP_RATES.get(self.step_rate, 4)
+        self.step_duration_ms = beat_duration_ms / step_divisor
 
     def set_bpm(self, bpm: int):
         """Set the tempo in BPM"""
         self.bpm = max(1, min(300, bpm))  # Clamp 1-300
         self._update_step_duration()
+
+    def set_step_rate(self, rate: str):
+        """Set the step rate (note subdivision)"""
+        if rate in self.STEP_RATES:
+            self.step_rate = rate
+            self._update_step_duration()
 
     def set_fill_rate(self, rate: int):
         """Set fill rate (2-8 times per step)"""
@@ -507,6 +527,7 @@ class PatternManager:
             'playing_pattern_index': self.playing_pattern_index,
             'bpm': self.bpm,
             'fill_rate': self.fill_rate,
+            'step_rate': self.step_rate,
         }
 
     def from_dict(self, data: Dict):
@@ -516,6 +537,7 @@ class PatternManager:
         self.playing_pattern_index = data.get('playing_pattern_index', 0)
         self.bpm = data.get('bpm', 120)
         self.fill_rate = data.get('fill_rate', 4)
+        self.step_rate = data.get('step_rate', '1/16')
         self._update_step_duration()
 
     def save_patterns(self, filepath: str):

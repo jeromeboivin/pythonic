@@ -272,6 +272,7 @@ class PythonicPresetParser:
             'name': preset_data.get('Name', 'Untitled'),
             'master_volume_db': preset_data.get('MastVol', 0.0),
             'tempo': preset_data.get('Tempo', 120),
+            'step_rate': preset_data.get('StepRate', '1/16'),
             'drums': [],
             'mutes': preset_data.get('Mutes', [False] * 8),
             'patterns': None,

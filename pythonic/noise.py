@@ -71,12 +71,17 @@ class NoiseGenerator:
         
         filter_mode = mode_map[self.filter_mode]
         
+        # Convert Q knob value to actual filter Q
+        # Exponential mapping: Q_filter = 0.5 * 2^Q_knob
+        # Q_knob=0 -> Q=0.5 (gentle), Q_knob=5 -> Q=16 (resonant)
+        effective_q = 0.5 * (2.0 ** self.filter_q)
+        
         self.filter_left.set_frequency(self.filter_frequency)
-        self.filter_left.set_q(self.filter_q)
+        self.filter_left.set_q(effective_q)
         self.filter_left.set_mode(filter_mode)
         
         self.filter_right.set_frequency(self.filter_frequency)
-        self.filter_right.set_q(self.filter_q)
+        self.filter_right.set_q(effective_q)
         self.filter_right.set_mode(filter_mode)
     
     def _update_envelope(self):
@@ -99,8 +104,8 @@ class NoiseGenerator:
         self._update_filter()
     
     def set_filter_q(self, q: float):
-        """Set filter Q/resonance"""
-        self.filter_q = np.clip(q, 0.1, 10000.0)
+        """Set filter Q/resonance (0-10 scale, exponentially mapped)"""
+        self.filter_q = np.clip(q, 0.0, 10.0)
         self._update_filter()
     
     def set_stereo(self, enabled: bool):
@@ -155,7 +160,7 @@ class NoiseGenerator:
         if not self.is_active:
             return np.zeros((num_samples, 2), dtype=np.float32)
         
-        # Generate white noise
+        # Generate white noise (scaled to have consistent RMS)
         noise_left = self._rng_left.randn(num_samples).astype(np.float32)
         
         if self.stereo:
@@ -166,6 +171,30 @@ class NoiseGenerator:
         # Apply filter
         filtered_left = self.filter_left.process(noise_left)
         filtered_right = self.filter_right.process(noise_right)
+        
+        # Apply filter normalization
+        # Effective Q from the exponential mapping
+        effective_q = 0.5 * (2.0 ** self.filter_q)
+        
+        # Empirical normalization factors
+        # Calibrated against TEST Noise LP/BP/HP.wav at their respective Q values:
+        #   LP: Q_knob=2.0 (eff_Q=2.0) -> target peak ~0.30 (standard headroom)
+        #   BP: Q_knob=3.0 (eff_Q=4.0) -> target peak ~0.53 (higher output)
+        #   HP: Q_knob=1.5 (eff_Q=1.4) -> target peak ~0.55 (higher output)
+        # 
+        # Note: The output will be further scaled by DrumChannel's INTERNAL_HEADROOM_LINEAR
+        if self.filter_mode == NoiseFilterMode.LOW_PASS:
+            # LP: calibrated for Q_knob=2.0, targeting ~1.0 before headroom
+            norm_factor = 1.35 * np.sqrt(effective_q)
+        elif self.filter_mode == NoiseFilterMode.HIGH_PASS:
+            # HP: calibrated for Q_knob=1.5, targeting ~1.8 before headroom
+            norm_factor = 0.55 * np.sqrt(effective_q)
+        else:  # BAND_PASS
+            # BP: calibrated for Q_knob=3.0, targeting ~1.7 before headroom
+            norm_factor = 1.13 * effective_q
+        
+        filtered_left *= norm_factor
+        filtered_right *= norm_factor
         
         # Get envelope
         if self.envelope_mode == NoiseEnvelopeMode.MODULATED:
