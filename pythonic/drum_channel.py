@@ -54,6 +54,11 @@ class DrumChannel:
         self.current_velocity = 1.0
         self.name = f"Channel {channel_id + 1}"
         
+        # Pre-allocated buffers for performance
+        self._output_buffer = np.zeros((8192, 2), dtype=np.float32)
+        self._osc_stereo_buffer = np.zeros((8192, 2), dtype=np.float32)
+        self._mixed_buffer = np.zeros((8192, 2), dtype=np.float32)
+        
         # Initialize default drum sound
         self._init_defaults()
     
@@ -132,7 +137,10 @@ class DrumChannel:
             Stereo output array [num_samples, 2]
         """
         if not self.is_active or self.muted:
-            return np.zeros((num_samples, 2), dtype=np.float32)
+            # Return slice of pre-allocated zero buffer
+            result = self._output_buffer[:num_samples]
+            result.fill(0)
+            return result
         
         # Generate oscillator signal
         osc_raw = self.oscillator.process(num_samples)
@@ -143,8 +151,12 @@ class DrumChannel:
         noise_signal = self.noise_gen.process(num_samples)
         
         # Mix oscillator (mono) with noise (stereo)
-        # Convert oscillator to stereo first
-        osc_stereo = np.zeros((num_samples, 2), dtype=np.float32)
+        # Use pre-allocated buffer
+        if num_samples <= len(self._osc_stereo_buffer):
+            osc_stereo = self._osc_stereo_buffer[:num_samples]
+        else:
+            osc_stereo = np.zeros((num_samples, 2), dtype=np.float32)
+        
         osc_stereo[:, 0] = osc_signal
         osc_stereo[:, 1] = osc_signal
         

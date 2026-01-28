@@ -5,6 +5,7 @@ Implements low-pass, band-pass, and high-pass filtering
 
 import numpy as np
 from enum import Enum
+from scipy.signal import lfilter, lfilter_zi
 
 
 class FilterMode(Enum):
@@ -34,6 +35,12 @@ class StateVariableFilter:
         # Stereo state
         self.ic1eq_r = 0.0
         self.ic2eq_r = 0.0
+        
+        # lfilter state (will be initialized on first use)
+        self._zi_left = None
+        self._zi_right = None
+        self._last_b = None
+        self._last_a = None
         
         # Coefficients
         self.g = 0.0
@@ -71,6 +78,8 @@ class StateVariableFilter:
         """Set filter mode (LP, BP, HP)"""
         self.mode = mode
     
+        self._zi_left = None
+        self._zi_right = None
     def reset(self):
         """Reset filter state"""
         self.ic1eq = 0.0
@@ -103,9 +112,42 @@ class StateVariableFilter:
         else:  # HIGH_PASS
             return x - self.k * v1 - v2
     
+    def _get_biquad_coeffs(self):
+        """Get biquad filter coefficients for scipy.signal.lfilter"""
+        # Convert SVF parameters to biquad coefficients
+        w0 = 2.0 * np.pi * self.frequency / self.sr
+        w0 = min(w0, np.pi * 0.99)  # Clamp to avoid instability
+        
+        cos_w0 = np.cos(w0)
+        sin_w0 = np.sin(w0)
+        alpha = sin_w0 / (2.0 * self.q)
+        
+        if self.mode == FilterMode.LOW_PASS:
+            b0 = (1.0 - cos_w0) / 2.0
+            b1 = 1.0 - cos_w0
+            b2 = (1.0 - cos_w0) / 2.0
+        elif self.mode == FilterMode.HIGH_PASS:
+            b0 = (1.0 + cos_w0) / 2.0
+            b1 = -(1.0 + cos_w0)
+            b2 = (1.0 + cos_w0) / 2.0
+        else:  # BAND_PASS
+            b0 = alpha
+            b1 = 0.0
+            b2 = -alpha
+        
+        a0 = 1.0 + alpha
+        a1 = -2.0 * cos_w0
+        a2 = 1.0 - alpha
+        
+        # Normalize
+        b = np.array([b0/a0, b1/a0, b2/a0], dtype=np.float64)
+        a = np.array([1.0, a1/a0, a2/a0], dtype=np.float64)
+        
+        return b, a
+    
     def process(self, x_array: np.ndarray) -> np.ndarray:
         """
-        Process array of samples
+        Process array of samples (vectorized using scipy.signal.lfilter)
         
         Args:
             x_array: Input samples (1D array for mono, 2D for stereo)
@@ -113,43 +155,39 @@ class StateVariableFilter:
         Returns:
             Filtered output array
         """
+        # Get current coefficients
+        b, a = self._get_biquad_coeffs()
+        
+        # Check if coefficients changed, reset state if so
+        if self._last_b is None or not np.allclose(b, self._last_b) or not np.allclose(a, self._last_a):
+            self._zi_left = None
+            self._zi_right = None
+            self._last_b = b.copy()
+            self._last_a = a.copy()
+        
         if x_array.ndim == 1:
             # Mono processing
-            output = np.zeros_like(x_array)
-            for i in range(len(x_array)):
-                output[i] = self.process_sample(x_array[i])
-            return output
+            if self._zi_left is None:
+                self._zi_left = np.zeros(2, dtype=np.float64)
+            
+            output, self._zi_left = lfilter(b, a, x_array.astype(np.float64), zi=self._zi_left)
+            return output.astype(np.float32)
         else:
             # Stereo processing
-            output = np.zeros_like(x_array)
-            for i in range(len(x_array)):
-                # Left channel
-                v3 = x_array[i, 0] - self.ic2eq
-                v1 = self.a1 * self.ic1eq + self.a2 * v3
-                v2 = self.ic2eq + self.a2 * self.ic1eq + self.a3 * v3
-                self.ic1eq = 2.0 * v1 - self.ic1eq
-                self.ic2eq = 2.0 * v2 - self.ic2eq
-                
-                if self.mode == FilterMode.LOW_PASS:
-                    output[i, 0] = v2
-                elif self.mode == FilterMode.BAND_PASS:
-                    output[i, 0] = v1
-                else:
-                    output[i, 0] = x_array[i, 0] - self.k * v1 - v2
-                
-                # Right channel
-                v3_r = x_array[i, 1] - self.ic2eq_r
-                v1_r = self.a1 * self.ic1eq_r + self.a2 * v3_r
-                v2_r = self.ic2eq_r + self.a2 * self.ic1eq_r + self.a3 * v3_r
-                self.ic1eq_r = 2.0 * v1_r - self.ic1eq_r
-                self.ic2eq_r = 2.0 * v2_r - self.ic2eq_r
-                
-                if self.mode == FilterMode.LOW_PASS:
-                    output[i, 1] = v2_r
-                elif self.mode == FilterMode.BAND_PASS:
-                    output[i, 1] = v1_r
-                else:
-                    output[i, 1] = x_array[i, 1] - self.k * v1_r - v2_r
+            if self._zi_left is None:
+                self._zi_left = np.zeros(2, dtype=np.float64)
+            if self._zi_right is None:
+                self._zi_right = np.zeros(2, dtype=np.float64)
+            
+            output = np.zeros_like(x_array, dtype=np.float32)
+            
+            # Left channel
+            out_l, self._zi_left = lfilter(b, a, x_array[:, 0].astype(np.float64), zi=self._zi_left)
+            output[:, 0] = out_l.astype(np.float32)
+            
+            # Right channel
+            out_r, self._zi_right = lfilter(b, a, x_array[:, 1].astype(np.float64), zi=self._zi_right)
+            output[:, 1] = out_r.astype(np.float32)
             
             return output
 
@@ -168,11 +206,10 @@ class EQFilter:
         self.gain_db = 0.0  # Gain in dB (-40 to +40)
         self.q = 1.0  # Bandwidth control
         
-        # State
-        self.x1 = 0.0
-        self.x2 = 0.0
-        self.y1 = 0.0
-        self.y2 = 0.0
+        # State for lfilter
+        self._zi = None
+        self._last_b = None
+        self._last_a = None
         
         # Coefficients
         self.b0 = 1.0
@@ -234,28 +271,30 @@ class EQFilter:
     
     def reset(self):
         """Reset filter state"""
-        self.x1 = 0.0
-        self.x2 = 0.0
-        self.y1 = 0.0
-        self.y2 = 0.0
+        self._zi = None
+        self._last_b = None
+        self._last_a = None
     
     def process(self, x_array: np.ndarray) -> np.ndarray:
-        """Process array of samples through biquad"""
+        """Process array of samples through biquad (vectorized)"""
         if abs(self.gain_db) < 0.01:
             return x_array.copy()
         
-        output = np.zeros_like(x_array)
+        # Use scipy.signal.lfilter for C-optimized filtering
+        b = np.array([self.b0, self.b1, self.b2], dtype=np.float64)
+        a = np.array([1.0, self.a1, self.a2], dtype=np.float64)
         
-        for i in range(len(x_array)):
-            x = x_array[i]
-            y = (self.b0 * x + self.b1 * self.x1 + self.b2 * self.x2 
-                 - self.a1 * self.y1 - self.a2 * self.y2)
-            
-            self.x2 = self.x1
-            self.x1 = x
-            self.y2 = self.y1
-            self.y1 = y
-            
-            output[i] = y
+        # Reset state if coefficients changed
+        if self._last_b is None or self._last_a is None or \
+           not np.array_equal(b, self._last_b) or not np.array_equal(a, self._last_a):
+            self._zi = None
+            self._last_b = b.copy()
+            self._last_a = a.copy()
         
-        return output
+        # Initialize state if needed
+        if self._zi is None:
+            self._zi = np.zeros(2, dtype=np.float64)
+        
+        output, self._zi = lfilter(b, a, x_array.astype(np.float64), zi=self._zi)
+        
+        return output.astype(np.float32)

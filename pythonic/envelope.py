@@ -83,7 +83,7 @@ class Envelope:
     
     def process(self, num_samples: int) -> np.ndarray:
         """
-        Generate envelope samples
+        Generate envelope samples (vectorized)
         
         Args:
             num_samples: Number of samples to generate
@@ -91,35 +91,54 @@ class Envelope:
         Returns:
             numpy array of envelope values (0.0 to 1.0)
         """
-        output = np.zeros(num_samples, dtype=np.float32)
-        
         if not self.is_active:
-            return output
+            return np.zeros(num_samples, dtype=np.float32)
         
-        for i in range(num_samples):
-            if self.stage == EnvelopeStage.ATTACK:
-                # Linear attack
-                self.current_level += self._attack_increment
-                if self.current_level >= 1.0:
-                    self.current_level = 1.0
-                    self.stage = EnvelopeStage.DECAY
-                    self.sample_index = 0
-                output[i] = self.current_level
+        output = np.zeros(num_samples, dtype=np.float32)
+        idx = 0
+        
+        # Process attack phase
+        if self.stage == EnvelopeStage.ATTACK and idx < num_samples:
+            if self._attack_samples > 0:
+                # Calculate samples remaining in attack
+                remaining_attack = int((1.0 - self.current_level) / self._attack_increment) + 1
+                attack_samples = min(remaining_attack, num_samples - idx)
                 
-            elif self.stage == EnvelopeStage.DECAY:
-                # Exponential decay
-                self.current_level *= self._decay_coefficient
-                output[i] = self.current_level
-                self.sample_index += 1
-                
-                # Check if envelope has essentially finished
-                if self.current_level < 0.0001:
-                    self.stage = EnvelopeStage.DONE
-                    self.is_active = False
+                if attack_samples > 0:
+                    # Vectorized attack ramp
+                    levels = self.current_level + np.arange(1, attack_samples + 1) * self._attack_increment
+                    levels = np.minimum(levels, 1.0)
+                    output[idx:idx + attack_samples] = levels
+                    self.current_level = levels[-1]
+                    idx += attack_samples
                     
-            elif self.stage == EnvelopeStage.DONE or self.stage == EnvelopeStage.IDLE:
-                output[i] = 0.0
-                
+                    if self.current_level >= 1.0:
+                        self.current_level = 1.0
+                        self.stage = EnvelopeStage.DECAY
+                        self.sample_index = 0
+            else:
+                # Zero attack - jump to decay
+                self.current_level = 1.0
+                self.stage = EnvelopeStage.DECAY
+                self.sample_index = 0
+        
+        # Process decay phase
+        if self.stage == EnvelopeStage.DECAY and idx < num_samples:
+            decay_samples = num_samples - idx
+            
+            # Vectorized exponential decay: level * coeff^n
+            exponents = np.arange(1, decay_samples + 1, dtype=np.float32)
+            decay_curve = self.current_level * np.power(self._decay_coefficient, exponents)
+            
+            output[idx:] = decay_curve
+            self.current_level = decay_curve[-1] if decay_samples > 0 else self.current_level
+            self.sample_index += decay_samples
+            
+            # Check if envelope finished
+            if self.current_level < 0.0001:
+                self.stage = EnvelopeStage.DONE
+                self.is_active = False
+        
         return output
     
     def process_sample(self) -> float:

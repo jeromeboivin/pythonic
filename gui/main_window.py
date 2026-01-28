@@ -9,6 +9,8 @@ import threading
 import numpy as np
 import json
 import os
+import time
+from collections import deque
 
 # Import our synthesizer
 import sys
@@ -81,17 +83,33 @@ class PythonicGUI:
         
         # Audio state
         self.audio_stream = None
-        self.audio_buffer = np.zeros((1024, 2), dtype=np.float32)
+        self.audio_buffer = np.zeros((2048, 2), dtype=np.float32)
         self.buffer_lock = threading.Lock()
         
         # UI state
         self.selected_channel = 0
         self.updating_ui = False  # Prevent feedback loops
         
-        # Playback state
+        # Playback state (thread-safe)
         self.last_triggered_step = -1  # Track last triggered step to avoid double triggers
         self.frames_since_last_step = 0
         self.button_flash_state = False  # For flashing playing pattern button
+        self.current_play_position = 0  # Atomic position for UI updates
+        self.position_lock = threading.Lock()  # Protect position updates
+        self.ui_update_timer = None  # Timer for UI updates
+        
+        # Performance monitoring
+        self.callback_times = deque(maxlen=100)  # Last 100 callback times
+        self.trigger_times = deque(maxlen=100)  # Time spent triggering
+        self.process_times = deque(maxlen=100)  # Time spent processing audio
+        self.underrun_count = 0
+        self.callback_count = 0
+        self.last_perf_report = time.time()
+        
+        # Adaptive processing - drop samples to prevent underruns
+        self.enable_sample_dropping = True  # Enable adaptive processing
+        self.dropped_callback_count = 0
+        self._last_good_audio = np.zeros((1050, 2), dtype=np.float32)
         
         # Build the interface
         self._build_ui()
@@ -108,6 +126,9 @@ class PythonicGUI:
         
         # Start button state updates
         self.root.after(250, self._toggle_button_flash)
+        
+        # Start UI position update timer (separate from audio thread)
+        self._start_ui_update_timer()
         
         # Load the last preset if available
         self._load_last_preset()
@@ -1572,12 +1593,33 @@ class PythonicGUI:
     
     # ============== Audio ==============
     
-    def _audio_callback(self, outdata, frames, time, status):
-        """Audio callback for sounddevice"""
-        if status:
-            print(f"Audio status: {status}")
+    def _audio_callback(self, outdata, frames, time_info, status):
+        """Audio callback for sounddevice - adaptive processing with sample dropping"""
+        callback_start = time.perf_counter()
+        trigger_time = 0
+        process_time = 0
         
-        # Update pattern playback position
+        self.callback_count += 1
+        
+        if status:
+            # Count underruns
+            self.underrun_count += 1
+            if self.underrun_count <= 5:  # Only print first 5
+                print(f"[Callback #{self.callback_count}] UNDERRUN! Status: {status}", flush=True)
+        
+        # Adaptive: If we're consistently running behind, drop audio processing
+        drop_this_callback = False
+        if self.enable_sample_dropping and len(self.callback_times) > 10:
+            avg_recent = np.mean(list(self.callback_times)[-10:])
+            buffer_time_ms = (frames / self.sample_rate) * 1000
+            # If average callback time exceeds 90% of buffer time, start dropping
+            if avg_recent > buffer_time_ms * 0.9:
+                drop_this_callback = True
+                self.dropped_callback_count += 1
+                if self.dropped_callback_count <= 3:
+                    print(f"[Callback #{self.callback_count}] DROPPING audio processing to prevent cascade", flush=True)
+        
+        # Update pattern playback position (always do this, even when dropping)
         if self.pattern_manager.is_playing:
             # Calculate frames per step
             frames_per_step = (self.sample_rate * self.pattern_manager.step_duration_ms) / 1000.0
@@ -1587,25 +1629,104 @@ class PythonicGUI:
             self.frames_since_last_step += frames
             new_step = int(self.frames_since_last_step / frames_per_step)
             
-            if new_step != old_step:
+            # Only trigger on non-dropped callbacks to save CPU
+            if new_step != old_step and not drop_this_callback:
+                trigger_start = time.perf_counter()
+                
                 # Advanced to new step
-                self.pattern_manager.play_position = new_step % self.pattern_manager.get_playing_pattern().length
+                pattern_length = self.pattern_manager.get_playing_pattern().length
+                new_position = new_step % pattern_length
+                
+                # Update pattern manager position
+                self.pattern_manager.play_position = new_position
                 
                 # Reset frame counter when we wrap around
-                if self.pattern_manager.play_position == 0:
+                if new_position == 0:
                     self.frames_since_last_step = 0
                 
                 # Trigger channels at this step
-                self._trigger_pattern_step(self.pattern_manager.play_position)
+                self._trigger_pattern_step(new_position)
                 
-                # Schedule UI update on main thread
-                self.root.after(0, self._update_pattern_position_display)
+                # Update position for UI thread (thread-safe)
+                with self.position_lock:
+                    self.current_play_position = new_position
+                
+                trigger_time = (time.perf_counter() - trigger_start) * 1000  # ms
         
-        # Generate audio from synthesizer
+        # Generate audio from synthesizer (skip if dropping)
+        if drop_this_callback:
+            # Return last good audio or silence
+            outdata[:] = self._last_good_audio[:frames] if frames <= len(self._last_good_audio) else 0
+            # Record minimal timing
+            total_time = (time.perf_counter() - callback_start) * 1000
+            self.callback_times.append(total_time)
+            return
+        
+        process_start = time.perf_counter()
         audio = self.synth.process_audio(frames)
+        process_time = (time.perf_counter() - process_start) * 1000  # ms
+        
+        # Debug: log if processing is unexpectedly slow when idle
+        if self.callback_count % 100 == 0:
+            active_count = sum(1 for ch in self.synth.channels if ch.is_active)
+            if active_count == 0 and process_time > 5.0:
+                print(f"DEBUG: No active channels but process_audio took {process_time:.1f}ms!", flush=True)
         
         # Copy to output buffer
         outdata[:] = audio
+        
+        # Store as last good audio for potential reuse
+        if frames <= len(self._last_good_audio):
+            self._last_good_audio[:frames] = audio
+        
+        # Record timing
+        total_time = (time.perf_counter() - callback_start) * 1000  # ms
+        self.callback_times.append(total_time)
+        if trigger_time > 0:
+            self.trigger_times.append(trigger_time)
+        self.process_times.append(process_time)
+        
+        # Report performance periodically or after first underrun
+        now = time.perf_counter()
+        if (now - self.last_perf_report > 5.0) or (self.underrun_count == 1 and self.callback_count > 50):
+            # Force immediate output
+            import sys
+            sys.stdout.flush()
+            self._report_performance()
+    
+    def _report_performance(self):
+        """Report audio callback performance metrics"""
+        self.last_perf_report = time.perf_counter()
+        
+        if len(self.callback_times) == 0:
+            return
+        
+        avg_callback = np.mean(self.callback_times)
+        max_callback = np.max(self.callback_times)
+        avg_process = np.mean(self.process_times) if self.process_times else 0
+        avg_trigger = np.mean(self.trigger_times) if self.trigger_times else 0
+        
+        buffer_time_ms = (1050 / self.sample_rate) * 1000  # Updated to 1050
+        utilization = (avg_callback / buffer_time_ms) * 100
+        
+        # Count active channels
+        active_count = sum(1 for ch in self.synth.channels if ch.is_active)
+        
+        print(f"\n=== Audio Performance (last {len(self.callback_times)} callbacks) ===", flush=True)
+        print(f"Callbacks: {self.callback_count}, Underruns: {self.underrun_count}, Dropped: {self.dropped_callback_count}", flush=True)
+        print(f"Buffer time available: {buffer_time_ms:.2f}ms", flush=True)
+        print(f"Active channels: {active_count}/8", flush=True)
+        print(f"Sample dropping: {'ENABLED' if self.enable_sample_dropping else 'DISABLED'}", flush=True)
+        print(f"Avg callback time: {avg_callback:.3f}ms ({utilization:.1f}% utilization)", flush=True)
+        print(f"Max callback time: {max_callback:.3f}ms", flush=True)
+        print(f"Avg process_audio: {avg_process:.3f}ms", flush=True)
+        print(f"Avg trigger_step: {avg_trigger:.3f}ms", flush=True)
+        
+        if max_callback > buffer_time_ms:
+            print(f"WARNING: Max callback time ({max_callback:.3f}ms) exceeds buffer time ({buffer_time_ms:.2f}ms)!", flush=True)
+        if avg_callback > buffer_time_ms * 0.8:
+            print(f"WARNING: High CPU utilization ({utilization:.1f}%)", flush=True)
+        print("="*60, flush=True)
     
     def _start_audio(self):
         """Start the audio stream"""
@@ -1614,13 +1735,13 @@ class PythonicGUI:
                 channels=2,
                 callback=self._audio_callback,
                 samplerate=self.sample_rate,
-                blocksize=512,
+                blocksize=1050,  # Reduced buffer size
                 dtype=np.float32
             )
             self.audio_stream.start()
-            print("Audio stream started")
+            print(f"Audio stream started (buffer: 1050 samples, ~{1050/self.sample_rate*1000:.1f}ms latency)", flush=True)
         except Exception as e:
-            print(f"Failed to start audio: {e}")
+            print(f"Failed to start audio: {e}", flush=True)
     
     def _stop_audio(self):
         """Stop the audio stream"""
@@ -1628,6 +1749,11 @@ class PythonicGUI:
             self.audio_stream.stop()
             self.audio_stream.close()
             self.audio_stream = None
+        
+        # Stop UI update timer
+        if self.ui_update_timer:
+            self.root.after_cancel(self.ui_update_timer)
+            self.ui_update_timer = None
     
     def _trigger_pattern_step(self, step_index):
         """Trigger all active channels at a pattern step"""
@@ -1653,10 +1779,33 @@ class PythonicGUI:
                         # For now, just trigger once
                         pass
     
+    def _start_ui_update_timer(self):
+        """Start timer for UI updates (runs on main thread)"""
+        self._ui_update_tick()
+    
+    def _ui_update_tick(self):
+        """Periodic UI update tick - runs on main thread only"""
+        if self.pattern_manager.is_playing:
+            # Get current position safely
+            with self.position_lock:
+                position = self.current_play_position
+            
+            # Update UI with current position
+            if hasattr(self, 'pattern_editors'):
+                for editor in self.pattern_editors:
+                    editor.set_current_position(position)
+        
+        # Schedule next update (every 50ms to reduce load)
+        self.ui_update_timer = self.root.after(50, self._ui_update_tick)
+    
     def _update_pattern_position_display(self):
         """Update the visual position indicator in pattern editors"""
+        # This method is now handled by _ui_update_tick
+        # Kept for compatibility but delegates to thread-safe version
+        with self.position_lock:
+            position = self.current_play_position
+        
         if hasattr(self, 'pattern_editors'):
-            position = self.pattern_manager.play_position
             for editor in self.pattern_editors:
                 editor.set_current_position(position)
     
@@ -1715,6 +1864,9 @@ class PythonicGUI:
             self.root.mainloop()
         finally:
             self._stop_audio()
+            # Cleanup synthesizer thread pool
+            if hasattr(self.synth, 'cleanup'):
+                self.synth.cleanup()
 
 
 def main():

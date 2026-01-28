@@ -5,6 +5,7 @@ Manages 8 drum channels with audio output
 
 import numpy as np
 from typing import Optional, List
+from concurrent.futures import ThreadPoolExecutor
 from .drum_channel import DrumChannel
 from .oscillator import WaveformType, PitchModMode
 from .noise import NoiseFilterMode, NoiseEnvelopeMode
@@ -27,6 +28,13 @@ class PythonicSynthesizer:
         
         # Master output
         self.master_volume_db = 0.0  # -inf to +10 dB
+        
+        # Pre-allocate buffers to avoid allocations in process_audio
+        self._output_buffer = np.zeros((4096, 2), dtype=np.float32)
+        
+        # Thread pool for parallel channel processing (8 workers for 8 channels)
+        self._thread_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="audio_")
+        self._channel_buffers = [np.zeros((8192, 2), dtype=np.float32) for _ in range(self.NUM_CHANNELS)]
         
         # Current state
         self.selected_channel = 0
@@ -170,7 +178,7 @@ class PythonicSynthesizer:
     
     def process_audio(self, num_samples: int) -> np.ndarray:
         """
-        Generate audio from all channels
+        Generate audio from all channels (optimized sequential)
         
         Args:
             num_samples: Number of samples to generate
@@ -178,27 +186,40 @@ class PythonicSynthesizer:
         Returns:
             Stereo audio array [num_samples, 2]
         """
-        # Mix all channels
-        output = np.zeros((num_samples, 2), dtype=np.float32)
-        
-        for channel in self.channels:
-            channel_output = channel.process(num_samples)
-            output += channel_output
-        
-        # Apply master volume
-        if self.master_volume_db <= -60:
-            output *= 0.0
+        # Use pre-allocated buffer or create if needed
+        if num_samples <= len(self._output_buffer):
+            output = self._output_buffer[:num_samples]
+            output.fill(0)  # Clear buffer
         else:
+            output = np.zeros((num_samples, 2), dtype=np.float32)
+        
+        # Mix only active unmuted channels (sequential is faster for small ops)
+        active_count = 0
+        for channel in self.channels:
+            if channel.is_active and not channel.muted:
+                active_count += 1
+                channel_output = channel.process(num_samples)
+                np.add(output, channel_output, out=output)
+        
+        # If no active channels, return early
+        if active_count == 0:
+            return output
+        
+        # Apply master volume (optimized)
+        if self.master_volume_db != 0.0 and self.master_volume_db > -60:
             master_gain = 10.0 ** (self.master_volume_db / 20.0)
-            output *= master_gain
+            np.multiply(output, master_gain, out=output)
+        elif self.master_volume_db <= -60:
+            output.fill(0)
+            return output
         
         # Apply headroom reduction for mixing multiple channels
-        output *= 0.25
+        np.multiply(output, 0.25, out=output)
         
         # Soft limit peaks above 0.95 to prevent clipping
         peak = np.max(np.abs(output))
         if peak > 0.95:
-            output = output * (0.95 / peak)
+            np.multiply(output, 0.95 / peak, out=output)
         
         return output
     
@@ -214,6 +235,11 @@ class PythonicSynthesizer:
     def set_master_volume(self, volume_db: float):
         """Set master volume in dB"""
         self.master_volume_db = np.clip(volume_db, -60.0, 10.0)
+    
+    def cleanup(self):
+        """Cleanup thread pool resources (call on shutdown)"""
+        if hasattr(self, '_thread_pool'):
+            self._thread_pool.shutdown(wait=False)
     
     def mute_channel(self, channel_idx: int, muted: bool):
         """Mute or unmute a channel"""

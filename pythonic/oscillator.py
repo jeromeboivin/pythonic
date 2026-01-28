@@ -166,23 +166,27 @@ class Oscillator:
         return self.frequency * freq_multiplier
     
     def _apply_random_mod(self, num_samples: int) -> np.ndarray:
-        """Apply random/noise modulation"""
+        """Apply random/noise modulation (vectorized)"""
         if self.pitch_mod_amount < 0.01:
             return np.full(num_samples, self.frequency)
         
         # Generate filtered random noise
         noise = self._random_state.randn(num_samples)
         
-        # Simple one-pole lowpass filter for smoothing
+        # Simple one-pole lowpass filter for smoothing (vectorized with cumsum trick)
         cutoff_normalized = min(0.99, self.pitch_mod_rate / (self.sr / 2))
         alpha = cutoff_normalized
         
-        filtered_noise = np.zeros(num_samples)
-        prev = self._noise_buffer[-1] if len(self._noise_buffer) > 0 else 0.0
+        # Vectorized IIR filter using scipy.signal.lfilter
+        from scipy.signal import lfilter
+        b = np.array([alpha])
+        a = np.array([1.0, -(1.0 - alpha)])
         
-        for i in range(num_samples):
-            filtered_noise[i] = prev + alpha * (noise[i] - prev)
-            prev = filtered_noise[i]
+        prev = self._noise_buffer[-1] if len(self._noise_buffer) > 0 else 0.0
+        zi = np.array([prev * (1.0 - alpha)])
+        
+        filtered_noise, zf = lfilter(b, a, noise, zi=zi)
+        self._noise_buffer = filtered_noise  # Store for next call
         
         # Scale by modulation amount (treating it as bandwidth in Hz)
         # Convert to semitone range
