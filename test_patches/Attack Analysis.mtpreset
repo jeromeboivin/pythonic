@@ -1,0 +1,261 @@
+PresetV3: {
+	Tempo: 120.00000000 bpm
+	Pattern: a
+	StepRate: 1/16
+	Swing: 0.00000000%
+	FillRate: 1.00000000x
+	MastVol: 0.00000000 dB
+	Mutes: { Off, Off, Off, Off, Off, Off, Off, Off }
+	DrumPatches: {
+		1: {
+			Name: "ATK 5ms"
+			Modified: true
+			OscWave: Sine
+			OscFreq: 220.00000000 Hz
+			OscAtk: 5.00000000 ms
+			OscDcy: 500.00000000 ms
+			ModMode: Decay
+			ModRate: 100.00000000 ms
+			ModAmt: +0.00000000 sm
+			NFilMod: LP
+			NFilFrq: 20000.00000000 Hz
+			NFilQ: 0.00000000
+			NStereo: Off
+			NEnvMod: Exp
+			NEnvAtk: 0.00000000 ms
+			NEnvDcy: 100.00000000 ms
+			Mix: 100.00000000 / 0.00000000
+			DistAmt: 0.00000000
+			EQFreq: 1000.00000000 Hz
+			EQGain: 0.00000000 dB
+			Level: 0.00000000 dB
+			Pan: 0.00000000
+			Output: A
+			Choke: Off
+			OscVel: 0.00000000%
+			NVel: 0.00000000%
+			ModVel: 0.00000000%
+		}
+		2: {
+			Name: "ATK 10ms"
+			Modified: true
+			OscWave: Sine
+			OscFreq: 220.00000000 Hz
+			OscAtk: 10.00000000 ms
+			OscDcy: 500.00000000 ms
+			ModMode: Decay
+			ModRate: 100.00000000 ms
+			ModAmt: +0.00000000 sm
+			NFilMod: LP
+			NFilFrq: 20000.00000000 Hz
+			NFilQ: 0.00000000
+			NStereo: Off
+			NEnvMod: Exp
+			NEnvAtk: 0.00000000 ms
+			NEnvDcy: 100.00000000 ms
+			Mix: 100.00000000 / 0.00000000
+			DistAmt: 0.00000000
+			EQFreq: 1000.00000000 Hz
+			EQGain: 0.00000000 dB
+			Level: 0.00000000 dB
+			Pan: 0.00000000
+			Output: A
+			Choke: Off
+			OscVel: 0.00000000%
+			NVel: 0.00000000%
+			ModVel: 0.00000000%
+		}
+		3: {
+			Name: "ATK 50ms"
+			Modified: true
+			OscWave: Sine
+			OscFreq: 220.00000000 Hz
+			OscAtk: 50.00000000 ms
+			OscDcy: 500.00000000 ms
+			ModMode: Decay
+			ModRate: 100.00000000 ms
+			ModAmt: +0.00000000 sm
+			NFilMod: LP
+			NFilFrq: 20000.00000000 Hz
+			NFilQ: 0.00000000
+			NStereo: Off
+			NEnvMod: Exp
+			NEnvAtk: 0.00000000 ms
+			NEnvDcy: 100.00000000 ms
+			Mix: 100.00000000 / 0.00000000
+			DistAmt: 0.00000000
+			EQFreq: 1000.00000000 Hz
+			EQGain: 0.00000000 dB
+			Level: 0.00000000 dB
+			Pan: 0.00000000
+			Output: A
+			Choke: Off
+			OscVel: 0.00000000%
+			NVel: 0.00000000%
+			ModVel: 0.00000000%
+		}
+		4: {
+			Name: "ATK 100ms"
+			Modified: true
+			OscWave: Sine
+			OscFreq: 220.00000000 Hz
+			OscAtk: 100.00000000 ms
+			OscDcy: 500.00000000 ms
+			ModMode: Decay
+			ModRate: 100.00000000 ms
+			ModAmt: +0.00000000 sm
+			NFilMod: LP
+			NFilFrq: 20000.00000000 Hz
+			NFilQ: 0.00000000
+			NStereo: Off
+			NEnvMod: Exp
+			NEnvAtk: 0.00000000 ms
+			NEnvDcy: 100.00000000 ms
+			Mix: 100.00000000 / 0.00000000
+			DistAmt: 0.00000000
+			EQFreq: 1000.00000000 Hz
+			EQGain: 0.00000000 dB
+			Level: 0.00000000 dB
+			Pan: 0.00000000
+			Output: A
+			Choke: Off
+			OscVel: 0.00000000%
+			NVel: 0.00000000%
+			ModVel: 0.00000000%
+		}
+		5: {
+			Name: "DCY 100ms"
+			Modified: true
+			OscWave: Sine
+			OscFreq: 220.00000000 Hz
+			OscAtk: 0.00000000 ms
+			OscDcy: 100.00000000 ms
+			ModMode: Decay
+			ModRate: 100.00000000 ms
+			ModAmt: +0.00000000 sm
+			NFilMod: LP
+			NFilFrq: 20000.00000000 Hz
+			NFilQ: 0.00000000
+			NStereo: Off
+			NEnvMod: Exp
+			NEnvAtk: 0.00000000 ms
+			NEnvDcy: 100.00000000 ms
+			Mix: 100.00000000 / 0.00000000
+			DistAmt: 0.00000000
+			EQFreq: 1000.00000000 Hz
+			EQGain: 0.00000000 dB
+			Level: 0.00000000 dB
+			Pan: 0.00000000
+			Output: A
+			Choke: Off
+			OscVel: 0.00000000%
+			NVel: 0.00000000%
+			ModVel: 0.00000000%
+		}
+		6: {
+			Name: "DCY 200ms"
+			Modified: true
+			OscWave: Sine
+			OscFreq: 220.00000000 Hz
+			OscAtk: 0.00000000 ms
+			OscDcy: 200.00000000 ms
+			ModMode: Decay
+			ModRate: 100.00000000 ms
+			ModAmt: +0.00000000 sm
+			NFilMod: LP
+			NFilFrq: 20000.00000000 Hz
+			NFilQ: 0.00000000
+			NStereo: Off
+			NEnvMod: Exp
+			NEnvAtk: 0.00000000 ms
+			NEnvDcy: 100.00000000 ms
+			Mix: 100.00000000 / 0.00000000
+			DistAmt: 0.00000000
+			EQFreq: 1000.00000000 Hz
+			EQGain: 0.00000000 dB
+			Level: 0.00000000 dB
+			Pan: 0.00000000
+			Output: A
+			Choke: Off
+			OscVel: 0.00000000%
+			NVel: 0.00000000%
+			ModVel: 0.00000000%
+		}
+		7: {
+			Name: "DCY 500ms"
+			Modified: true
+			OscWave: Sine
+			OscFreq: 220.00000000 Hz
+			OscAtk: 0.00000000 ms
+			OscDcy: 500.00000000 ms
+			ModMode: Decay
+			ModRate: 100.00000000 ms
+			ModAmt: +0.00000000 sm
+			NFilMod: LP
+			NFilFrq: 20000.00000000 Hz
+			NFilQ: 0.00000000
+			NStereo: Off
+			NEnvMod: Exp
+			NEnvAtk: 0.00000000 ms
+			NEnvDcy: 100.00000000 ms
+			Mix: 100.00000000 / 0.00000000
+			DistAmt: 0.00000000
+			EQFreq: 1000.00000000 Hz
+			EQGain: 0.00000000 dB
+			Level: 0.00000000 dB
+			Pan: 0.00000000
+			Output: A
+			Choke: Off
+			OscVel: 0.00000000%
+			NVel: 0.00000000%
+			ModVel: 0.00000000%
+		}
+		8: {
+			Name: "DCY 1000ms"
+			Modified: true
+			OscWave: Sine
+			OscFreq: 220.00000000 Hz
+			OscAtk: 0.00000000 ms
+			OscDcy: 1000.00000000 ms
+			ModMode: Decay
+			ModRate: 100.00000000 ms
+			ModAmt: +0.00000000 sm
+			NFilMod: LP
+			NFilFrq: 20000.00000000 Hz
+			NFilQ: 0.00000000
+			NStereo: Off
+			NEnvMod: Exp
+			NEnvAtk: 0.00000000 ms
+			NEnvDcy: 100.00000000 ms
+			Mix: 100.00000000 / 0.00000000
+			DistAmt: 0.00000000
+			EQFreq: 1000.00000000 Hz
+			EQGain: 0.00000000 dB
+			Level: 0.00000000 dB
+			Pan: 0.00000000
+			Output: A
+			Choke: Off
+			OscVel: 0.00000000%
+			NVel: 0.00000000%
+			ModVel: 0.00000000%
+		}
+	}
+	Patterns: {
+		a: {
+			1: { 8888 8888 8888 8888 }
+			2: { 8888 8888 8888 8888 }
+			3: { 8888 8888 8888 8888 }
+			4: { 8888 8888 8888 8888 }
+			5: { 8888 8888 8888 8888 }
+			6: { 8888 8888 8888 8888 }
+			7: { 8888 8888 8888 8888 }
+			8: { 8888 8888 8888 8888 }
+		}
+	}
+	Morph: {
+		Time: 0.50000000
+		AB: {
+			BPM: 120.00000000
+		}
+	}
+}

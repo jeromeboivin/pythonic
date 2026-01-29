@@ -597,6 +597,87 @@ class TestAttackReferences:
         # Both should show attack (start < 50% of peak)
         assert ref_ratio < 0.5, f"Reference doesn't show attack: {ref_ratio}"
         assert gen_ratio < 0.5, f"Generated doesn't show attack: {gen_ratio}"
+    
+    def test_attack_curve_shape_is_convex(self):
+        """Verify attack curve is convex (slow start, fast finish)"""
+        from pythonic.envelope import Envelope
+        
+        env = Envelope(SAMPLE_RATE)
+        env.set_attack(20.0)  # 20ms attack
+        env.set_decay(500.0)
+        env.trigger()
+        
+        # Generate attack phase
+        attack_samples = int(20 * 44.1)  # 20ms
+        output = env.process(attack_samples)
+        
+        # Check convex shape: 50% point should be late (> 60% of attack time)
+        half_idx = np.argmax(output >= 0.5)
+        half_point_ratio = half_idx / attack_samples
+        
+        # Attack reaches 50% around 90% of attack time
+        # With power=6, we reach 50% at ~89% of attack time
+        assert half_point_ratio > 0.80, (
+            f"Attack curve not convex enough: 50% reached at {half_point_ratio*100:.1f}% "
+            f"of attack time (should be > 80%)"
+        )
+        
+        # Check that early portion is quiet (10% into attack < 10% level)
+        early_idx = int(0.1 * attack_samples)
+        assert output[early_idx] < 0.1, (
+            f"Early attack too loud: {output[early_idx]:.3f} at 10% of attack time"
+        )
+    
+    def test_attack_envelope_reaches_peak(self):
+        """Verify attack envelope reaches full level at end of attack phase"""
+        from pythonic.envelope import Envelope
+        
+        env = Envelope(SAMPLE_RATE)
+        env.set_attack(20.0)
+        env.set_decay(500.0)
+        env.trigger()
+        
+        # Generate just past attack phase
+        output = env.process(int(25 * 44.1))
+        
+        # At end of attack (20ms), should be near 1.0
+        attack_end_idx = int(20 * 44.1)
+        assert output[attack_end_idx] > 0.9, (
+            f"Attack doesn't reach peak: {output[attack_end_idx]:.3f} at 20ms"
+        )
+    
+    def test_attack_correlation_with_reference(self):
+        """Verify attack portion correlates well with reference"""
+        ref_wav = "TEST Atk 20ms"
+        if not os.path.exists(os.path.join(TEST_PATCHES_DIR, f"{ref_wav}.wav")):
+            pytest.skip(f"Reference WAV not found: {ref_wav}")
+        
+        ref = load_reference_wav(ref_wav)
+        
+        params = {
+            'osc_waveform': 0,
+            'osc_frequency': 220,
+            'osc_attack': 20.0,
+            'osc_decay': 500,
+            'osc_noise_mix': 1.0,
+            'level_db': 0.0,
+        }
+        gen = generate_pythonic_audio(params, len(ref))
+        
+        # Correlate the attack portion (first 25ms)
+        attack_len = int(25 * 44.1)
+        ref_atk = ref[:attack_len, 0] if len(ref.shape) > 1 else ref[:attack_len]
+        gen_atk = gen[:attack_len, 0] if len(gen.shape) > 1 else gen[:attack_len]
+        
+        ref_atk = ref_atk - np.mean(ref_atk)
+        gen_atk = gen_atk - np.mean(gen_atk)
+        
+        corr = np.abs(np.sum(ref_atk * gen_atk) / (
+            np.sqrt(np.sum(ref_atk**2) * np.sum(gen_atk**2)) + 1e-10
+        ))
+        
+        # Attack correlation should be reasonable (convex curve improves this)
+        assert corr > 0.70, f"Attack correlation too low: {corr:.4f}"
 
 
 class TestDistortionCurve:

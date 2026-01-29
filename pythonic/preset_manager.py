@@ -386,8 +386,16 @@ class PythonicPresetParser:
         
         return patterns
     
-    def _parse_pattern_channel(self, channel_data: Dict, expected_length: int) -> Dict:
+    def _parse_pattern_channel(self, channel_data, expected_length: int) -> Dict:
         """Parse a single channel's pattern data"""
+        # Handle list format (e.g., [8888, 8888, 8888, 8888]) - silent pattern
+        if isinstance(channel_data, list):
+            return {
+                'triggers': [False] * expected_length,
+                'accents': [False] * expected_length,
+                'fills': [False] * expected_length
+            }
+        
         triggers_str = channel_data.get('Triggers', '')
         accents_str = channel_data.get('Accents', '')
         fills_str = channel_data.get('Fills', '')

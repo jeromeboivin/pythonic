@@ -47,6 +47,13 @@ class Envelope:
         self._attack_samples = max(1, int(self.attack_ms * self.sr / 1000.0))
         self._attack_increment = 1.0 / self._attack_samples
         
+        # Attack curve exponent (convex curve): slow start, fast finish
+        # Power of 6 best matches the reference envelope shape
+        # At 75% of attack time: level ≈ 0.18
+        # At 90% of attack time: level ≈ 0.53
+        # 50% level reached at: ~89% of attack time
+        self._attack_power = 6.0
+        
         # Decay samples
         self._decay_samples = max(1, int(self.decay_ms * self.sr / 1000.0))
         
@@ -101,18 +108,23 @@ class Envelope:
         if self.stage == EnvelopeStage.ATTACK and idx < num_samples:
             if self._attack_samples > 0:
                 # Calculate samples remaining in attack
-                remaining_attack = int((1.0 - self.current_level) / self._attack_increment) + 1
+                # sample_index tracks position within attack phase
+                remaining_attack = self._attack_samples - self.sample_index
                 attack_samples = min(remaining_attack, num_samples - idx)
                 
                 if attack_samples > 0:
-                    # Vectorized attack ramp
-                    levels = self.current_level + np.arange(1, attack_samples + 1) * self._attack_increment
+                    # Convex attack curve: level = (t / attack_time)^power
+                    # This gives slow start, fast finish
+                    sample_positions = np.arange(self.sample_index, self.sample_index + attack_samples)
+                    normalized_time = sample_positions / self._attack_samples
+                    levels = np.power(normalized_time, self._attack_power)
                     levels = np.minimum(levels, 1.0)
                     output[idx:idx + attack_samples] = levels
                     self.current_level = levels[-1]
+                    self.sample_index += attack_samples
                     idx += attack_samples
                     
-                    if self.current_level >= 1.0:
+                    if self.sample_index >= self._attack_samples:
                         self.current_level = 1.0
                         self.stage = EnvelopeStage.DECAY
                         self.sample_index = 0
@@ -151,8 +163,12 @@ class Envelope:
             return 0.0
             
         if self.stage == EnvelopeStage.ATTACK:
-            self.current_level += self._attack_increment
-            if self.current_level >= 1.0:
+            # Convex attack curve: level = (t / attack_time)^power
+            self.sample_index += 1
+            normalized_time = self.sample_index / self._attack_samples
+            self.current_level = normalized_time ** self._attack_power
+            
+            if self.sample_index >= self._attack_samples:
                 self.current_level = 1.0
                 self.stage = EnvelopeStage.DECAY
                 self.sample_index = 0
