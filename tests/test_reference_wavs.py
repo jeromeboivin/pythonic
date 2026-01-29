@@ -267,9 +267,10 @@ class TestOscillatorWaveformReferences:
 class TestPitchModulationReferences:
     """Test pitch modulation against reference WAVs
     
-    Note: Pitch modulation matching is challenging because may use
-    a more complex modulation algorithm with additional curve shaping. Current
-    correlation threshold reflects achievable accuracy with exponential decay.
+    Pitch modulation uses exponential decay:
+    - tau = mod_rate / 7.09
+    - 1% overshoot at start
+    Achieves >0.90 correlation with reference.
     """
     
     def test_pitch_mod_reference(self):
@@ -281,9 +282,8 @@ class TestPitchModulationReferences:
         corr = calculate_correlation(ref, gen)
         peak_ratio = calculate_peak_ratio(ref, gen)
         
-        # Pitch modulation has complex behavior - correlation of 0.65+ is acceptable
-        # The frequency sweep characteristics match but phase alignment varies
-        assert corr > 0.60, f"Pitch mod correlation too low: {corr}"
+        # With fitted exponential decay, correlation should be >0.90
+        assert corr > 0.90, f"Pitch mod correlation too low: {corr}"
         assert 0.85 < peak_ratio < 1.15, f"Pitch mod peak ratio out of range: {peak_ratio}"
 
 

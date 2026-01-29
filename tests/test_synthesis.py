@@ -112,8 +112,8 @@ class TestOscillatorWaveforms:
         samples = osc.process(100)
         
         assert abs(samples[0]) < 0.001, f"Sine should start at 0, got {samples[0]}"
-        # With inverted polarity, sine goes negative first
-        assert samples[5] < 0, "Inverted sine should go negative first"
+        # Sine goes positive first
+        assert samples[5] > 0, "Sine should go positive first"
     
     def test_triangle_starts_at_zero(self):
         """Triangle wave should start at 0 after reset"""

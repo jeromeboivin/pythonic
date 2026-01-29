@@ -61,20 +61,19 @@ class Oscillator:
     def reset_phase(self):
         """Reset oscillator phase to zero crossing going positive.
         
-        With inverted polarity:
-        - Sine: -sin(0) = 0, need phase shift for going positive -> use 0
-        - Triangle: adjusted for inverted output
-        - Sawtooth: now rising waveform, starts at -1 at phase 0
+        All waveforms start going positive:
+        - Sine: sin(0) = 0, next sample positive
+        - Triangle: at phase π/2, triangle crosses zero going positive
+        - Sawtooth: rising waveform, at phase π gives 0
         
         For clean trigger, all start at or near zero amplitude.
         """
         if self.waveform == WaveformType.SINE:
-            # -sin(0) = 0, but goes negative first, which is fine for audio
+            # sin(0) = 0, goes positive first
             self.phase = 0.0
         elif self.waveform == WaveformType.TRIANGLE:
-            # Inverted triangle: -raw at phase π/2 gives 0 going negative
-            # Use phase 3π/2 for 0 going positive  
-            self.phase = 3.0 * np.pi / 2.0
+            # Triangle: at phase π/2 crosses zero going positive
+            self.phase = np.pi / 2.0
         elif self.waveform == WaveformType.SAWTOOTH:
             # Rising saw: (2*phase/2π - 1), at phase π gives 0
             self.phase = np.pi
@@ -163,9 +162,6 @@ class Oscillator:
         """Apply exponential pitch decay modulation
         
         mod_rate parameter controls how fast the pitch decays.
-        Analysis shows that with mod_rate=200ms and mod_amt=48sm:
-        - 50% decay occurs at ~20ms (tau ≈ 29ms)
-        - This gives tau ≈ mod_rate / 7
         
         The pitch reaches near-zero modulation well before mod_rate time.
         """
@@ -174,15 +170,15 @@ class Oscillator:
             return np.full_like(time_array, self.frequency)
         
         # Convert mod_rate (in ms) to decay time constant
-        # Uses a fast decay: tau = mod_rate / 7
         mod_rate_sec = self.pitch_mod_rate / 1000.0  # Convert ms to seconds
-        tau = mod_rate_sec / 7.0  # Fast decay constant
+        tau = mod_rate_sec / 7.09  # Fitted decay constant
         
         if tau > 0:
-            # Exponential decay envelope
-            decay_envelope = np.exp(-time_array / tau)
+            # Exponential decay envelope with slight overshoot
+            overshoot = 1.01
+            decay_envelope = overshoot * np.exp(-time_array / tau)
             
-            # Current pitch offset in semitones (decays from mod_amount to 0)
+            # Current pitch offset in semitones
             current_semitones = self.pitch_mod_amount * decay_envelope
             
             # Convert semitones to frequency multiplier
@@ -241,25 +237,24 @@ class Oscillator:
     def _generate_waveform(self, phases: np.ndarray) -> np.ndarray:
         """Generate waveform samples from phase array with gain compensation
         
-        Note: All waveforms are inverted in polarity.
+        Note: All waveforms start going positive (starts positive after trigger).
         """
         
         gain = self.WAVEFORM_GAIN.get(self.waveform, 1.0)
         
         if self.waveform == WaveformType.SINE:
-            # Inverted sine polarity
-            return -np.sin(phases) * gain
+            # Positive sine
+            return np.sin(phases) * gain
         
         elif self.waveform == WaveformType.TRIANGLE:
             # Triangle wave: 2 * |2 * (phase/2π - floor(phase/2π + 0.5))| - 1
             normalized = phases / np.pi  # [0, 2] per cycle
             raw = 2.0 * np.abs(2.0 * (normalized / 2.0 - np.floor(normalized / 2.0 + 0.5))) - 1.0
-            # Inverted polarity
-            return -raw * gain
+            # Positive polarity
+            return raw * gain
         
         elif self.waveform == WaveformType.SAWTOOTH:
-            # Rising sawtooth (inverted from before)
-            # Now goes from -1 to +1
+            # Rising sawtooth - goes from -1 to +1
             raw = 2.0 * (phases / (2.0 * np.pi)) - 1.0
             return raw * gain
         
