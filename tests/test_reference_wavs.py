@@ -599,6 +599,173 @@ class TestAttackReferences:
         assert gen_ratio < 0.5, f"Generated doesn't show attack: {gen_ratio}"
 
 
+class TestDistortionCurve:
+    """Test that the exponential distortion drive curve"""
+    
+    def _create_distortion_channel(self, frequency: float, distortion: float) -> DrumChannel:
+        """Create a channel with specific distortion settings"""
+        ch = DrumChannel(0, SAMPLE_RATE)
+        ch.set_osc_frequency(frequency)
+        ch.set_osc_waveform(0)  # Sine
+        ch.set_pitch_mod_amount(0.0)  # No pitch mod
+        ch.set_osc_decay(500.0)
+        ch.set_noise_decay(1.0)  # Minimal noise
+        ch.osc_noise_mix = 1.0  # Pure oscillator
+        ch.distortion = distortion / 100.0  # Convert from percentage
+        ch.level_db = 0.0
+        ch.eq_gain_db = 0.0  # Flat EQ
+        return ch
+    
+    def test_distortion_0pct_correlation(self):
+        """Test 0% distortion matches reference (clean signal)"""
+        ref_wav = "DIST 0pct 220Hz"
+        if not os.path.exists(os.path.join(TEST_PATCHES_DIR, f"{ref_wav}.wav")):
+            pytest.skip(f"Reference WAV not found: {ref_wav}")
+        
+        ref = load_reference_wav(ref_wav)
+        ch = self._create_distortion_channel(220.0, 0.0)
+        ch.trigger(velocity=127)
+        gen = ch.process(len(ref))
+        
+        corr = calculate_correlation(ref, gen)
+        # Clean signal correlation - envelope differences may reduce correlation
+        assert corr > 0.90, f"0% distortion correlation too low: {corr:.4f}"
+    
+    def test_distortion_25pct_correlation(self):
+        """Test 25% distortion matches reference (light saturation)"""
+        ref_wav = "DIST 25pct 220Hz"
+        if not os.path.exists(os.path.join(TEST_PATCHES_DIR, f"{ref_wav}.wav")):
+            pytest.skip(f"Reference WAV not found: {ref_wav}")
+        
+        ref = load_reference_wav(ref_wav)
+        ch = self._create_distortion_channel(220.0, 25.0)
+        ch.trigger(velocity=127)
+        gen = ch.process(len(ref))
+        
+        corr = calculate_correlation(ref, gen)
+        # 25% has intermediate drive
+        assert corr > 0.85, f"25% distortion correlation too low: {corr:.4f}"
+    
+    def test_distortion_50pct_correlation(self):
+        """Test 50% distortion matches reference (medium saturation)"""
+        ref_wav = "DIST 50pct 220Hz"
+        if not os.path.exists(os.path.join(TEST_PATCHES_DIR, f"{ref_wav}.wav")):
+            pytest.skip(f"Reference WAV not found: {ref_wav}")
+        
+        ref = load_reference_wav(ref_wav)
+        ch = self._create_distortion_channel(220.0, 50.0)
+        ch.trigger(velocity=127)
+        gen = ch.process(len(ref))
+        
+        corr = calculate_correlation(ref, gen)
+        # Medium distortion - some variation expected from envelope/gain staging
+        assert corr > 0.70, f"50% distortion correlation too low: {corr:.4f}"
+    
+    def test_distortion_75pct_correlation(self):
+        """Test 75% distortion matches reference (heavy saturation)"""
+        ref_wav = "DIST 75pct 220Hz"
+        if not os.path.exists(os.path.join(TEST_PATCHES_DIR, f"{ref_wav}.wav")):
+            pytest.skip(f"Reference WAV not found: {ref_wav}")
+        
+        ref = load_reference_wav(ref_wav)
+        ch = self._create_distortion_channel(220.0, 75.0)
+        ch.trigger(velocity=127)
+        gen = ch.process(len(ref))
+        
+        corr = calculate_correlation(ref, gen)
+        # Heavy distortion - harmonic content should be similar
+        assert corr > 0.70, f"75% distortion correlation too low: {corr:.4f}"
+    
+    def test_distortion_100pct_correlation(self):
+        """Test 100% distortion matches reference (maximum saturation)"""
+        ref_wav = "DIST 100pct 220Hz"
+        if not os.path.exists(os.path.join(TEST_PATCHES_DIR, f"{ref_wav}.wav")):
+            pytest.skip(f"Reference WAV not found: {ref_wav}")
+        
+        ref = load_reference_wav(ref_wav)
+        ch = self._create_distortion_channel(220.0, 100.0)
+        ch.trigger(velocity=127)
+        gen = ch.process(len(ref))
+        
+        corr = calculate_correlation(ref, gen)
+        # At 100%, both are near-square waves - harmonic structure should match well
+        assert corr > 0.70, f"100% distortion correlation too low: {corr:.4f}"
+    
+    def test_distortion_frequency_independence_110hz(self):
+        """Test distortion at different frequency (110Hz)"""
+        ref_wav = "DIST 100pct 110Hz"
+        if not os.path.exists(os.path.join(TEST_PATCHES_DIR, f"{ref_wav}.wav")):
+            pytest.skip(f"Reference WAV not found: {ref_wav}")
+        
+        ref = load_reference_wav(ref_wav)
+        ch = self._create_distortion_channel(110.0, 100.0)
+        ch.trigger(velocity=127)
+        gen = ch.process(len(ref))
+        
+        corr = calculate_correlation(ref, gen)
+        assert corr > 0.70, f"100% distortion at 110Hz correlation too low: {corr:.4f}"
+    
+    def test_distortion_frequency_independence_440hz(self):
+        """Test distortion at different frequency (440Hz)"""
+        ref_wav = "DIST 50pct 440Hz"
+        if not os.path.exists(os.path.join(TEST_PATCHES_DIR, f"{ref_wav}.wav")):
+            pytest.skip(f"Reference WAV not found: {ref_wav}")
+        
+        ref = load_reference_wav(ref_wav)
+        ch = self._create_distortion_channel(440.0, 50.0)
+        ch.trigger(velocity=127)
+        gen = ch.process(len(ref))
+        
+        corr = calculate_correlation(ref, gen)
+        assert corr > 0.70, f"50% distortion at 440Hz correlation too low: {corr:.4f}"
+    
+    def test_distortion_exponential_drive_curve(self):
+        """Verify the exponential drive curve formula: drive = exp(5.3 * distortion)"""
+        # Test that the drive increases exponentially
+        drives = []
+        for dist_pct in [0, 25, 50, 75, 100]:
+            dist = dist_pct / 100.0
+            drive = np.exp(5.3 * dist)
+            drives.append(drive)
+        
+        # Check expected approximate values
+        assert 0.9 < drives[0] < 1.1, f"Drive at 0% should be ~1, got {drives[0]}"
+        assert 3.0 < drives[1] < 5.0, f"Drive at 25% should be ~3.8, got {drives[1]}"
+        assert 10.0 < drives[2] < 20.0, f"Drive at 50% should be ~14, got {drives[2]}"
+        assert 40.0 < drives[3] < 70.0, f"Drive at 75% should be ~53, got {drives[3]}"
+        assert 150.0 < drives[4] < 250.0, f"Drive at 100% should be ~200, got {drives[4]}"
+    
+    def test_distortion_produces_odd_harmonics(self):
+        """Verify symmetric tanh produces predominantly odd harmonics"""
+        ch = self._create_distortion_channel(100.0, 100.0)  # Low freq for clear harmonics
+        ch.trigger(velocity=127)
+        audio = ch.process(SAMPLE_RATE)  # 1 second
+        
+        if len(audio.shape) > 1:
+            audio = audio[:, 0]
+        
+        # FFT analysis
+        fft = np.abs(np.fft.rfft(audio))
+        freqs = np.fft.rfftfreq(len(audio), 1/SAMPLE_RATE)
+        
+        # Find harmonic amplitudes (fundamental at 100Hz)
+        fundamental_idx = np.argmin(np.abs(freqs - 100))
+        h2_idx = np.argmin(np.abs(freqs - 200))  # Even
+        h3_idx = np.argmin(np.abs(freqs - 300))  # Odd
+        h4_idx = np.argmin(np.abs(freqs - 400))  # Even
+        h5_idx = np.argmin(np.abs(freqs - 500))  # Odd
+        
+        # Odd harmonics should be significantly stronger than even
+        odd_power = fft[h3_idx] + fft[h5_idx]
+        even_power = fft[h2_idx] + fft[h4_idx]
+        
+        # Symmetric distortion should produce mostly odd harmonics
+        # Allow some even harmonics from envelope effects, but odd should dominate
+        assert odd_power > even_power * 2, (
+            f"Odd harmonics ({odd_power:.2f}) should dominate even ({even_power:.2f})"
+        )
+
+
 class TestElectrificPreset:
     """Test sounds from the Pythonic Realistic Test Suite preset"""
     

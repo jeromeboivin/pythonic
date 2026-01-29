@@ -219,6 +219,11 @@ class DrumChannel:
         Distortion generates strong odd harmonics while maintaining
         overall signal level. Uses tanh for smooth saturation.
         
+        Distortion levels:
+        - 0-25%: Low drive (1-3), subtle saturation
+        - 50%+: High drive (50+), approaches hard clipping
+        - Uses exponential drive curve for natural response
+        
         Args:
             signal: Input stereo signal
             
@@ -228,9 +233,11 @@ class DrumChannel:
         if self.distortion < 0.001:
             return signal
         
-        # Drive amount: 1.0 at 0%, 10.0 at 100%
-        # Higher drive generates more harmonics
-        drive = 1.0 + self.distortion * 9.0
+        # Exponential drive curve:
+        # 0% -> drive=1, 25% -> drive~3, 50% -> drive~50, 100% -> drive~200
+        # Formula: drive = exp(5.3 * distortion) gives:
+        #   0% -> 1.0, 25% -> 3.8, 50% -> 14.2, 75% -> 53, 100% -> 200
+        drive = np.exp(5.3 * self.distortion)
         
         # Pre-gain the signal
         driven = signal * drive
