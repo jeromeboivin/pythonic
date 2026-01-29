@@ -4,3 +4,6 @@ sounddevice>=0.4.5
 mido>=1.2.10
 python-rtmidi>=1.4.9
 platformdirs>=3.0.0
+
+# Testing
+pytest>=7.0.0

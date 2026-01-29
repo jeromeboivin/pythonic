@@ -214,7 +214,10 @@ class DrumChannel:
     
     def _apply_distortion(self, signal: np.ndarray) -> np.ndarray:
         """
-        Apply soft-clipping distortion
+        Apply distortion using soft clipping
+        
+        Distortion generates strong odd harmonics while maintaining
+        overall signal level. Uses tanh for smooth saturation.
         
         Args:
             signal: Input stereo signal
@@ -222,18 +225,27 @@ class DrumChannel:
         Returns:
             Distorted signal
         """
-        # Drive amount (1 to 11)
-        drive = 1.0 + self.distortion * 10.0
+        if self.distortion < 0.001:
+            return signal
         
-        # Soft clipping using tanh
+        # Drive amount: 1.0 at 0%, 10.0 at 100%
+        # Higher drive generates more harmonics
+        drive = 1.0 + self.distortion * 9.0
+        
+        # Pre-gain the signal
         driven = signal * drive
+        
+        # Soft clipping using tanh - generates odd harmonics
         clipped = np.tanh(driven)
         
-        # Normalize to maintain roughly similar volume
-        clipped = clipped / np.tanh(drive)
+        # Normalize to maintain consistent output level
+        # tanh(drive) is the max output for a +1 input, use this to scale back
+        normalization = np.tanh(drive)
+        if normalization > 0.1:
+            clipped = clipped / normalization
         
-        # Mix dry/wet based on distortion amount
-        return signal * (1.0 - self.distortion) + clipped * self.distortion
+        # Full wet at any distortion amount
+        return clipped
     
     def _apply_pan(self, stereo_signal: np.ndarray) -> np.ndarray:
         """
