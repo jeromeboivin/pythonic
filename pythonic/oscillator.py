@@ -52,6 +52,7 @@ class Oscillator:
         self.phase = 0.0
         self.mod_time = 0.0  # Time since trigger (seconds)
         self.velocity_gain = 1.0
+        self.velocity_mod_scale = 1.0  # Velocity-based modulation amount multiplier
         
         # Random modulation state
         self._random_state = np.random.RandomState(42)
@@ -109,7 +110,11 @@ class Oscillator:
     def set_velocity_gain(self, gain: float):
         """Set velocity-based gain multiplier"""
         self.velocity_gain = gain
-    
+
+    def set_velocity_mod_scale(self, scale: float):
+        """Set velocity-based modulation amount multiplier"""
+        self.velocity_mod_scale = scale
+
     def process(self, num_samples: int) -> np.ndarray:
         """
         Generate audio samples
@@ -165,8 +170,10 @@ class Oscillator:
         
         The pitch reaches near-zero modulation well before mod_rate time.
         """
+        # Apply velocity-based modulation scaling
+        effective_mod_amount = self.pitch_mod_amount * self.velocity_mod_scale
 
-        if abs(self.pitch_mod_amount) < 0.01:
+        if abs(effective_mod_amount) < 0.01:
             return np.full_like(time_array, self.frequency)
         
         # Convert mod_rate (in ms) to decay time constant
@@ -179,7 +186,7 @@ class Oscillator:
             decay_envelope = overshoot * np.exp(-time_array / tau)
             
             # Current pitch offset in semitones
-            current_semitones = self.pitch_mod_amount * decay_envelope
+            current_semitones = effective_mod_amount * decay_envelope
             
             # Convert semitones to frequency multiplier
             freq_multiplier = np.power(2.0, current_semitones / 12.0)
@@ -190,11 +197,14 @@ class Oscillator:
     
     def _apply_sine_mod(self, time_array: np.ndarray) -> np.ndarray:
         """Apply sine/FM modulation"""
-        if abs(self.pitch_mod_amount) < 0.01:
+        # Apply velocity-based modulation scaling
+        effective_mod_amount = self.pitch_mod_amount * self.velocity_mod_scale
+        
+        if abs(effective_mod_amount) < 0.01:
             return np.full_like(time_array, self.frequency)
         
         # Convert semitones to frequency ratio
-        mod_ratio = 2.0 ** (self.pitch_mod_amount / 12.0) - 1.0
+        mod_ratio = 2.0 ** (effective_mod_amount / 12.0) - 1.0
         
         # Sine LFO
         lfo = np.sin(2.0 * np.pi * self.pitch_mod_rate * time_array)
@@ -206,7 +216,10 @@ class Oscillator:
     
     def _apply_random_mod(self, num_samples: int) -> np.ndarray:
         """Apply random/noise modulation (vectorized)"""
-        if self.pitch_mod_amount < 0.01:
+        # Apply velocity-based modulation scaling
+        effective_mod_amount = self.pitch_mod_amount * self.velocity_mod_scale
+        
+        if effective_mod_amount < 0.01:
             return np.full(num_samples, self.frequency)
         
         # Generate filtered random noise
@@ -229,7 +242,7 @@ class Oscillator:
         
         # Scale by modulation amount (treating it as bandwidth in Hz)
         # Convert to semitone range
-        mod_semitones = self.pitch_mod_amount / 1000.0 * 12.0  # Scale down
+        mod_semitones = effective_mod_amount / 1000.0 * 12.0  # Scale down
         freq_multiplier = 2.0 ** (filtered_noise * mod_semitones / 12.0)
         
         return self.frequency * freq_multiplier

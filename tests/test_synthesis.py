@@ -705,5 +705,120 @@ class TestDeterminism:
         np.testing.assert_array_almost_equal(combined, all_at_once, decimal=8)
 
 
+class TestVelocitySensitivity:
+    """Test velocity sensitivity implementation for osc, noise, and mod"""
+    
+    def test_osc_velocity_sensitivity_at_full_velocity(self):
+        """At full velocity (127), osc gain should be 1.0 regardless of sensitivity"""
+        ch = DrumChannel(0, SAMPLE_RATE)
+        ch.osc_vel_sensitivity = 1.0  # 100%
+        ch.trigger(velocity=127)
+        
+        assert abs(ch.oscillator.velocity_gain - 1.0) < 0.0001, \
+            f"At vel=127, osc gain should be 1.0, got {ch.oscillator.velocity_gain}"
+    
+    def test_osc_velocity_sensitivity_at_half_velocity(self):
+        """At half velocity with 100% sensitivity, osc gain should be reduced"""
+        ch = DrumChannel(0, SAMPLE_RATE)
+        ch.osc_vel_sensitivity = 1.0  # 100%
+        ch.trigger(velocity=64)
+        
+        # With power curve (64/127)^5 ≈ 0.0325
+        expected = (64/127) ** 5.0
+        assert abs(ch.oscillator.velocity_gain - expected) < 0.01, \
+            f"At vel=64 with 100% sens, osc gain should be ~{expected:.4f}, got {ch.oscillator.velocity_gain}"
+    
+    def test_noise_velocity_sensitivity_at_full_velocity(self):
+        """At full velocity (127), noise gain should be 1.0 regardless of sensitivity"""
+        ch = DrumChannel(0, SAMPLE_RATE)
+        ch.noise_vel_sensitivity = 1.0  # 100%
+        ch.trigger(velocity=127)
+        
+        assert abs(ch.noise_gen.velocity_gain - 1.0) < 0.0001, \
+            f"At vel=127, noise gain should be 1.0, got {ch.noise_gen.velocity_gain}"
+    
+    def test_noise_velocity_sensitivity_at_half_velocity(self):
+        """At half velocity with 100% sensitivity, noise gain should be reduced"""
+        ch = DrumChannel(0, SAMPLE_RATE)
+        ch.noise_vel_sensitivity = 1.0  # 100%
+        ch.trigger(velocity=64)
+        
+        expected = (64/127) ** 5.0
+        assert abs(ch.noise_gen.velocity_gain - expected) < 0.01, \
+            f"At vel=64 with 100% sens, noise gain should be ~{expected:.4f}, got {ch.noise_gen.velocity_gain}"
+    
+    def test_mod_velocity_sensitivity_at_full_velocity(self):
+        """At full velocity (127), mod scale should be 1.0 regardless of sensitivity"""
+        ch = DrumChannel(0, SAMPLE_RATE)
+        ch.mod_vel_sensitivity = 1.0  # 100%
+        ch.trigger(velocity=127)
+        
+        assert abs(ch.oscillator.velocity_mod_scale - 1.0) < 0.0001, \
+            f"At vel=127, mod scale should be 1.0, got {ch.oscillator.velocity_mod_scale}"
+    
+    def test_mod_velocity_sensitivity_at_half_velocity(self):
+        """At half velocity with 100% sensitivity, mod scale should be reduced"""
+        ch = DrumChannel(0, SAMPLE_RATE)
+        ch.mod_vel_sensitivity = 1.0  # 100%
+        ch.trigger(velocity=64)
+        
+        expected = (64/127) ** 5.0
+        assert abs(ch.oscillator.velocity_mod_scale - expected) < 0.01, \
+            f"At vel=64 with 100% sens, mod scale should be ~{expected:.4f}, got {ch.oscillator.velocity_mod_scale}"
+    
+    def test_mod_velocity_affects_pitch_modulation(self):
+        """Verify mod velocity sensitivity actually reduces pitch modulation in audio"""
+        from pythonic.oscillator import PitchModMode
+        
+        # Create channel with significant pitch modulation
+        ch = DrumChannel(0, SAMPLE_RATE)
+        ch.oscillator.set_pitch_mod_mode(PitchModMode.DECAYING)
+        ch.oscillator.set_pitch_mod_amount(36.0)  # 3 octaves
+        ch.oscillator.set_pitch_mod_rate(100.0)
+        ch.osc_envelope.set_decay(500.0)
+        ch.osc_noise_mix = 1.0  # Pure oscillator
+        ch.mod_vel_sensitivity = 1.0  # 100%
+        
+        # Generate at full velocity
+        ch.trigger(velocity=127)
+        audio_full = ch.process(4096)
+        
+        # Reset and generate at low velocity  
+        ch.trigger(velocity=32)
+        audio_low = ch.process(4096)
+        
+        # At low velocity with mod sensitivity, pitch sweep should be much smaller
+        # This means the frequency content should be different
+        # Full velocity should have more high-frequency content early (due to pitch sweep)
+        # The audio should not be identical
+        assert not np.allclose(audio_full, audio_low, atol=0.01), \
+            "Audio at different velocities with mod sensitivity should differ"
+    
+    def test_zero_sensitivity_no_velocity_effect(self):
+        """With 0% sensitivity, velocity should have no effect"""
+        ch = DrumChannel(0, SAMPLE_RATE)
+        ch.osc_vel_sensitivity = 0.0
+        ch.noise_vel_sensitivity = 0.0
+        ch.mod_vel_sensitivity = 0.0
+        
+        ch.trigger(velocity=32)  # Low velocity
+        
+        # All gains should be 1.0 since sensitivity is 0
+        assert abs(ch.oscillator.velocity_gain - 1.0) < 0.0001
+        assert abs(ch.noise_gen.velocity_gain - 1.0) < 0.0001
+        assert abs(ch.oscillator.velocity_mod_scale - 1.0) < 0.0001
+    
+    def test_velocity_sensitivity_200_percent(self):
+        """At 200% sensitivity, the effect should be more extreme"""
+        ch = DrumChannel(0, SAMPLE_RATE)
+        ch.osc_vel_sensitivity = 2.0  # 200%
+        ch.trigger(velocity=64)
+        
+        # With 200% sensitivity: (64/127)^(2*5) = (64/127)^10 ≈ 0.001
+        expected = (64/127) ** 10.0
+        assert abs(ch.oscillator.velocity_gain - expected) < 0.001, \
+            f"At vel=64 with 200% sens, osc gain should be ~{expected:.6f}, got {ch.oscillator.velocity_gain}"
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

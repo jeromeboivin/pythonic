@@ -126,10 +126,10 @@ class DrumChannel:
         self.noise_gen.set_velocity_gain(noise_vel_gain)
         
         # Modulation velocity (affects pitch mod amount)
+        mod_vel_scale = 1.0
         if self.mod_vel_sensitivity > 0:
-            mod_scale = vel_factor ** (self.mod_vel_sensitivity * _VEL_POWER_MULT)
-            # This would scale the pitch modulation amount
-            # For now, we don't modify it dynamically
+            mod_vel_scale = vel_factor ** (self.mod_vel_sensitivity * _VEL_POWER_MULT)
+        self.oscillator.set_velocity_mod_scale(mod_vel_scale)
         
         # Reset and trigger components
         self.oscillator.reset_phase()
