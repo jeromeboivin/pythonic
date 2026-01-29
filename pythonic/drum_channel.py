@@ -108,21 +108,26 @@ class DrumChannel:
         # Calculate velocity-modified gains
         vel_factor = self.current_velocity
         
+        # Velocity sensitivity power multiplier
+        # Uses an aggressive power curve: gain = vel^(sens * k)
+        # where k ≈ 5 based on reference analysis
+        _VEL_POWER_MULT = 5.0
+        
         # Oscillator velocity
         osc_vel_gain = 1.0
         if self.osc_vel_sensitivity > 0:
-            osc_vel_gain = vel_factor ** self.osc_vel_sensitivity
+            osc_vel_gain = vel_factor ** (self.osc_vel_sensitivity * _VEL_POWER_MULT)
         self.oscillator.set_velocity_gain(osc_vel_gain)
         
         # Noise velocity
         noise_vel_gain = 1.0
         if self.noise_vel_sensitivity > 0:
-            noise_vel_gain = vel_factor ** self.noise_vel_sensitivity
+            noise_vel_gain = vel_factor ** (self.noise_vel_sensitivity * _VEL_POWER_MULT)
         self.noise_gen.set_velocity_gain(noise_vel_gain)
         
         # Modulation velocity (affects pitch mod amount)
         if self.mod_vel_sensitivity > 0:
-            mod_scale = vel_factor ** self.mod_vel_sensitivity
+            mod_scale = vel_factor ** (self.mod_vel_sensitivity * _VEL_POWER_MULT)
             # This would scale the pitch modulation amount
             # For now, we don't modify it dynamically
         
