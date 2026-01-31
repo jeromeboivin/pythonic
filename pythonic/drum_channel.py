@@ -419,7 +419,7 @@ class DrumChannel:
         if 'eq_gain_db' in params:
             self.eq_gain_db = np.clip(params['eq_gain_db'], -40.0, 40.0)
         if 'level_db' in params:
-            self.level_db = np.clip(params['level_db'], -60.0, 10.0)
+            self.level_db = np.clip(params['level_db'], -60.0, 40.0)
         if 'pan' in params:
             self.pan = np.clip(params['pan'], -100.0, 100.0)
         if 'choke_enabled' in params:

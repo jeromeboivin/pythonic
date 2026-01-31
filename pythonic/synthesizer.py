@@ -213,13 +213,16 @@ class PythonicSynthesizer:
             output.fill(0)
             return output
         
-        # Apply headroom reduction for mixing multiple channels
-        np.multiply(output, 0.25, out=output)
+        # Note: Channel-level headroom is already applied in DrumChannel.INTERNAL_HEADROOM_LINEAR
+        # No additional headroom reduction needed here for accurate reproduction
         
-        # Soft limit peaks above 0.95 to prevent clipping
+        # Allow peaks up to 1.0
+        # Only apply soft clipping if we exceed 1.0 to prevent harsh digital clipping
         peak = np.max(np.abs(output))
-        if peak > 0.95:
-            np.multiply(output, 0.95 / peak, out=output)
+        if peak > 1.0:
+            # Soft clip using tanh for peaks above 1.0
+            # This preserves more RMS energy than linear scaling
+            np.tanh(output, out=output)
         
         return output
     

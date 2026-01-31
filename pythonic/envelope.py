@@ -18,6 +18,10 @@ class Envelope:
     """
     Attack-Decay envelope generator
     Supports exponential and linear curves
+    
+    When attack time is 0, the envelope starts at full level immediately.
+    Click prevention is handled by the oscillator starting at phase 0 (zero crossing).
+    When attack time > 0, uses an S-curve (smoothstep) for smooth attack.
     """
     
     def __init__(self, sample_rate: int = 44100):
@@ -43,40 +47,62 @@ class Envelope:
     
     def _update_coefficients(self):
         """Recalculate envelope timing coefficients"""
-        # Attack samples (minimum 1 to avoid division by zero)
-        self._attack_samples = max(1, int(self.attack_ms * self.sr / 1000.0))
-        self._attack_increment = 1.0 / self._attack_samples
-        
-        # Attack curve exponent (convex curve): slow start, fast finish
-        # Power of 6 best matches the reference envelope shape
-        # At 75% of attack time: level ≈ 0.18
-        # At 90% of attack time: level ≈ 0.53
-        # 50% level reached at: ~89% of attack time
-        self._attack_power = 6.0
+        # Attack samples (0 means instant full level)
+        self._attack_samples = max(0, int(self.attack_ms * self.sr / 1000.0))
+        if self._attack_samples > 0:
+            self._attack_increment = 1.0 / self._attack_samples
+        else:
+            self._attack_increment = 1.0
         
         # Decay samples
         self._decay_samples = max(1, int(self.decay_ms * self.sr / 1000.0))
         
-        # Exponential decay coefficient (reaches ~0.001 at end)
-        # Using time constant: level = exp(-t/tau) where tau = decay_samples/6.9
-        self._decay_coefficient = np.exp(-6.9 / self._decay_samples)
+        # Exponential decay coefficient
+        # Using time constant: level = exp(-t/tau) where tau = decay_samples/K
+        # 
+        # K varies based on decay time:
+        # - Short decays (<100ms): K=9 for punchy attack/decay
+        # - Medium decays (100-500ms): K=9 for natural percussion
+        # - Long decays (500-1500ms): K=9 to 12 (gradual transition)
+        # - Very long decays (>1500ms): K=12 to 16 for faster tail cutoff
+        #
+        # This interpolation helps decay behavior across
+        # different drum types (kicks with long decay vs hats with short decay)
+        if self.decay_ms <= 500:
+            K = 9.0
+        elif self.decay_ms <= 1500:
+            # Linear interpolation from 9 to 12 over 500-1500ms range
+            K = 9.0 + (self.decay_ms - 500) / 1000 * 3.0
+        else:
+            # Linear interpolation from 12 to 16 over 1500-5000ms range
+            K = 12.0 + min((self.decay_ms - 1500) / 3500 * 4.0, 4.0)
+        
+        self._decay_coefficient = np.exp(-K / self._decay_samples)
     
     def set_attack(self, attack_ms: float):
-        """Set attack time in milliseconds (0-10000)"""
+        """Set attack time in milliseconds (0-10000)
+        
+        When set to 0, envelope starts at full level immediately.
+        Click prevention relies on oscillator starting at zero-crossing phase.
+        """
         self.attack_ms = np.clip(attack_ms, 0.0, 10000.0)
         self._update_coefficients()
     
     def set_decay(self, decay_ms: float):
-        """Set decay time in milliseconds (10-10000)"""
-        self.decay_ms = np.clip(decay_ms, 10.0, 10000.0)
+        """Set decay time in milliseconds (1-10000)"""
+        self.decay_ms = np.clip(decay_ms, 1.0, 10000.0)
         self._update_coefficients()
     
     def trigger(self):
-        """Start the envelope from the beginning"""
+        """Start the envelope from the beginning
+        
+        If attack_ms > 0, starts in ATTACK stage.
+        If attack_ms = 0, jumps straight to DECAY at full level.
+        """
         self.is_active = True
         self.sample_index = 0
         
-        if self.attack_ms > 0:
+        if self._attack_samples > 0:
             self.stage = EnvelopeStage.ATTACK
             self.current_level = 0.0
         else:
@@ -87,6 +113,17 @@ class Envelope:
         """Force release (not used in Pythonic's AD envelope)"""
         self.stage = EnvelopeStage.DONE
         self.is_active = False
+    
+    @staticmethod
+    def _smoothstep(t: np.ndarray) -> np.ndarray:
+        """S-curve attack shape: 3t² - 2t³
+        
+        This produces a smooth attack that:
+        - Starts slow (no click)
+        - Accelerates through the middle
+        - Approaches peak smoothly
+        """
+        return 3 * t * t - 2 * t * t * t
     
     def process(self, num_samples: int) -> np.ndarray:
         """
@@ -113,11 +150,11 @@ class Envelope:
                 attack_samples = min(remaining_attack, num_samples - idx)
                 
                 if attack_samples > 0:
-                    # Convex attack curve: level = (t / attack_time)^power
-                    # This gives slow start, fast finish
+                    # S-curve attack: smooth start, accelerates, smooth finish
+                    # Uses smoothstep formula: 3t² - 2t³
                     sample_positions = np.arange(self.sample_index, self.sample_index + attack_samples)
                     normalized_time = sample_positions / self._attack_samples
-                    levels = np.power(normalized_time, self._attack_power)
+                    levels = self._smoothstep(normalized_time)
                     levels = np.minimum(levels, 1.0)
                     output[idx:idx + attack_samples] = levels
                     self.current_level = levels[-1]
@@ -129,7 +166,7 @@ class Envelope:
                         self.stage = EnvelopeStage.DECAY
                         self.sample_index = 0
             else:
-                # Zero attack - jump to decay
+                # Should not reach here due to minimum attack, but handle gracefully
                 self.current_level = 1.0
                 self.stage = EnvelopeStage.DECAY
                 self.sample_index = 0
@@ -163,10 +200,11 @@ class Envelope:
             return 0.0
             
         if self.stage == EnvelopeStage.ATTACK:
-            # Convex attack curve: level = (t / attack_time)^power
+            # S-curve attack: smooth start, accelerates, smooth finish
             self.sample_index += 1
             normalized_time = self.sample_index / self._attack_samples
-            self.current_level = normalized_time ** self._attack_power
+            # Smoothstep: 3t² - 2t³
+            self.current_level = 3 * normalized_time * normalized_time - 2 * normalized_time * normalized_time * normalized_time
             
             if self.sample_index >= self._attack_samples:
                 self.current_level = 1.0

@@ -126,7 +126,7 @@ class NoiseGenerator:
         if self.envelope_mode == NoiseEnvelopeMode.MODULATED:
             self.mod_frequency = np.clip(decay_ms, 0.0, 100.0)
         else:
-            self.decay_ms = np.clip(decay_ms, 10.0, 10000.0)
+            self.decay_ms = np.clip(decay_ms, 1.0, 10000.0)
         self._update_envelope()
     
     def set_velocity_gain(self, gain: float):
