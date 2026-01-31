@@ -66,7 +66,9 @@ class PythonicGUI:
         self.root = tk.Tk()
         self.root.title("Pythonic Drum Synthesizer")
         self.root.configure(bg=self.COLORS['bg_dark'])
-        self.root.resizable(False, False)
+        self.root.resizable(True, True)
+        self.root.minsize(900, 700)  # Minimum window size
+        self.root.geometry("1000x780")  # Default window size
         
         # Initialize synthesizer
         self.sample_rate = 44100
@@ -89,6 +91,7 @@ class PythonicGUI:
         # UI state
         self.selected_channel = 0
         self.updating_ui = False  # Prevent feedback loops
+        self.edit_all_mode = False  # When True, knob changes affect all unmuted channels
         
         # Playback state (thread-safe)
         self.last_triggered_step = -1  # Track last triggered step to avoid double triggers
@@ -138,320 +141,356 @@ class PythonicGUI:
         self._load_last_preset()
     
     def _build_ui(self):
-        """Build the complete user interface"""
-        # Main container
+        """Build the complete user interface
+        
+        Layout follows this structure (top to bottom):
+        1. Toolbar (program selector, morph, undo/redo, options)
+        2. Preset Section (preset name, channel buttons 1-8 in 2 rows, mute buttons)
+        3. Drum Patch Section (mixing, oscillator, noise, velocity controls)
+        4. Pattern Section (pattern buttons A-L, step editor, play controls)
+        5. Global Section (transport, swing, fill rate, master volume)
+        """
+        # Main container - fill entire window
         main_frame = tk.Frame(self.root, bg=self.COLORS['bg_dark'])
-        main_frame.pack(padx=10, pady=10)
+        main_frame.pack(fill='both', expand=True, padx=10, pady=10)
         
-        # Header/Title bar
-        self._build_header(main_frame)
+        # Toolbar (top bar with program selector, morph slider)
+        self._build_toolbar(main_frame)
         
-        # Preset section (channel buttons)
+        # Preset section (preset name, channel buttons in 2 rows)
         self._build_preset_section(main_frame)
-        
-        # Pattern section
-        self._build_pattern_section(main_frame)
         
         # Drum Patch section (main controls)
         self._build_drum_patch_section(main_frame)
         
-        # Global section (master controls)
+        # Pattern section
+        self._build_pattern_section(main_frame)
+        
+        # Global section (transport, master volume)
         self._build_global_section(main_frame)
     
-    def _build_header(self, parent):
-        """Build header with title and program selector"""
-        header = tk.Frame(parent, bg=self.COLORS['bg_medium'], height=50)
-        header.pack(fill='x', pady=(0, 10))
-        header.pack_propagate(False)
+    def _build_toolbar(self, parent):
+        """Build toolbar with program selector, sound morph, and options
         
-        # Logo/Title
-        title_frame = tk.Frame(header, bg=self.COLORS['bg_medium'])
-        title_frame.pack(side='left', padx=10, pady=5)
+        Toolbar layout:
+        - Left: Program selector (1-16)
+        - Center: Sound Morph slider
+        - Right: Undo/Redo, option buttons, master volume
+        """
+        toolbar = tk.Frame(parent, bg=self.COLORS['bg_medium'], height=45)
+        toolbar.pack(fill='x', pady=(0, 5))
+        toolbar.pack_propagate(False)
         
-        tk.Label(title_frame, text="PYTHONIC", 
-                font=('Segoe UI', 16, 'bold'), fg=self.COLORS['text'],
-                bg=self.COLORS['bg_medium']).pack()
+        # Left side: Program selector
+        program_frame = tk.Frame(toolbar, bg=self.COLORS['bg_medium'])
+        program_frame.pack(side='left', padx=5, pady=5)
         
-        # Preset selection combo-box
-        preset_frame = tk.Frame(header, bg=self.COLORS['bg_medium'])
-        preset_frame.pack(side='left', padx=20, pady=10)
+        tk.Label(program_frame, text="program:", 
+                font=('Segoe UI', 7), fg=self.COLORS['text_dim'],
+                bg=self.COLORS['bg_medium']).pack(side='left', padx=(0, 3))
         
-        tk.Label(preset_frame, text="Preset:", 
-                font=('Segoe UI', 8), fg=self.COLORS['text_dim'],
+        self.program_var = tk.StringVar(value="1")
+        self.program_combo = ttk.Combobox(program_frame, textvariable=self.program_var,
+                                         values=[str(i) for i in range(1, 17)],
+                                         width=3, state='readonly')
+        self.program_combo.pack(side='left')
+        self.program_combo.bind('<<ComboboxSelected>>', self._on_program_select)
+        
+        # Center: Sound Morph slider
+        morph_frame = tk.Frame(toolbar, bg=self.COLORS['bg_medium'])
+        morph_frame.pack(side='left', padx=20, pady=5, expand=True)
+        
+        tk.Label(morph_frame, text="sound morph:", 
+                font=('Segoe UI', 7), fg=self.COLORS['text_dim'],
                 bg=self.COLORS['bg_medium']).pack(side='left', padx=(0, 5))
         
-        self.preset_combo = ttk.Combobox(preset_frame, width=25, state='readonly')
-        self.preset_combo.pack(side='left')
-        self.preset_combo.bind('<<ComboboxSelected>>', self._on_preset_combo_select)
+        self.morph_slider = tk.Scale(morph_frame, from_=0, to=100, 
+                                    orient='horizontal', length=150,
+                                    bg=self.COLORS['bg_medium'], 
+                                    fg=self.COLORS['text'],
+                                    highlightthickness=0,
+                                    troughcolor=self.COLORS['bg_dark'],
+                                    command=self._on_morph_change)
+        self.morph_slider.pack(side='left')
         
-        tk.Button(preset_frame, text="📁", width=2,
-                 bg=self.COLORS['accent'],
-                 fg=self.COLORS['text'],
-                 command=self._select_preset_folder).pack(side='left', padx=2)
+        # Right side: Undo/Redo, options, master volume
+        right_frame = tk.Frame(toolbar, bg=self.COLORS['bg_medium'])
+        right_frame.pack(side='right', padx=5, pady=5)
         
-        tk.Button(preset_frame, text="🔄", width=2,
-                 bg=self.COLORS['accent'],
-                 fg=self.COLORS['text'],
-                 command=self._refresh_preset_list).pack(side='left', padx=2)
+        # Undo/Redo buttons
+        self.undo_btn = tk.Button(right_frame, text="↶", width=2, height=1,
+                                 font=('Segoe UI', 10),
+                                 bg=self.COLORS['bg_light'],
+                                 fg=self.COLORS['text'],
+                                 command=self._on_undo)
+        self.undo_btn.pack(side='left', padx=1)
         
-        # Initialize preset list
-        self._refresh_preset_list()
+        self.redo_btn = tk.Button(right_frame, text="↷", width=2, height=1,
+                                 font=('Segoe UI', 10),
+                                 bg=self.COLORS['bg_light'],
+                                 fg=self.COLORS['text'],
+                                 command=self._on_redo)
+        self.redo_btn.pack(side='left', padx=1)
         
-        # Master volume in header
-        master_frame = tk.Frame(header, bg=self.COLORS['bg_medium'])
-        master_frame.pack(side='right', padx=10, pady=5)
+        # Separator
+        tk.Frame(right_frame, width=10, bg=self.COLORS['bg_medium']).pack(side='left')
         
-        tk.Label(master_frame, text="master", 
+        # Master volume
+        tk.Label(right_frame, text="master", 
                 font=('Segoe UI', 7), fg=self.COLORS['text_dim'],
-                bg=self.COLORS['bg_medium']).pack()
+                bg=self.COLORS['bg_medium']).pack(side='left', padx=(5, 2))
         
-        self.master_knob = RotaryKnob(master_frame, size=40, 
+        self.master_knob = RotaryKnob(right_frame, size=35, 
                                       min_val=-60, max_val=10, default=0,
                                       command=self._on_master_volume_change)
-        self.master_knob.pack()
+        self.master_knob.pack(side='left')
+    
+    def _build_header(self, parent):
+        """Build header with title and program selector - DEPRECATED, use _build_toolbar"""
+        # This method kept for backwards compatibility but not used
+        pass
     
     def _build_preset_section(self, parent):
-        """Build the preset/channel selection section"""
+        """Build the preset/channel selection section
+        
+        Toolbar layout:
+        - Left: Logo "PYTHONIC" 
+        - Center: Preset name display with prev/next buttons
+        - Right: Channel buttons 1-8 in SINGLE row with small mute buttons, patch name below
+        """
         preset_section = tk.Frame(parent, bg=self.COLORS['bg_medium'])
-        preset_section.pack(fill='x', pady=(0, 10))
+        preset_section.pack(fill='x', pady=(0, 5))
         
-        # Drum patch selector label
-        selector_frame = tk.Frame(preset_section, bg=self.COLORS['bg_medium'])
-        selector_frame.pack(side='left', padx=10, pady=5)
+        # Left: Logo/Title
+        logo_frame = tk.Frame(preset_section, bg=self.COLORS['bg_medium'])
+        logo_frame.pack(side='left', padx=10, pady=5)
         
-        self.patch_name_label = tk.Label(selector_frame,
-                                         text="Kick",
-                                         font=('Segoe UI', 10),
+        tk.Label(logo_frame, text="PYTHONIC", 
+                font=('Segoe UI', 14, 'bold'), fg=self.COLORS['accent_light'],
+                bg=self.COLORS['bg_medium']).pack()
+        
+        # Center-left: Preset name display with navigation
+        preset_nav_frame = tk.Frame(preset_section, bg=self.COLORS['bg_medium'])
+        preset_nav_frame.pack(side='left', padx=10, pady=5)
+        
+        tk.Button(preset_nav_frame, text="◀", width=2, height=1,
+                 font=('Segoe UI', 8),
+                 bg=self.COLORS['bg_light'],
+                 fg=self.COLORS['text'],
+                 command=self._on_preset_prev).pack(side='left', padx=1)
+        
+        self.preset_combo = ttk.Combobox(preset_nav_frame, width=25, state='readonly')
+        self.preset_combo.pack(side='left', padx=2)
+        self.preset_combo.bind('<<ComboboxSelected>>', self._on_preset_combo_select)
+        
+        tk.Button(preset_nav_frame, text="▶", width=2, height=1,
+                 font=('Segoe UI', 8),
+                 bg=self.COLORS['bg_light'],
+                 fg=self.COLORS['text'],
+                 command=self._on_preset_next).pack(side='left', padx=1)
+        
+        tk.Button(preset_nav_frame, text="▼", width=2, height=1,
+                 font=('Segoe UI', 7),
+                 bg=self.COLORS['accent'],
+                 fg=self.COLORS['text'],
+                 command=self._on_preset_menu).pack(side='left', padx=2)
+        
+        self._refresh_preset_list()
+        
+        # Right side: Channel buttons 1-8 in SINGLE ROW
+        channels_container = tk.Frame(preset_section, bg=self.COLORS['bg_medium'])
+        channels_container.pack(side='right', padx=10, pady=5)
+        
+        # Patch name display ABOVE channels
+        self.patch_name_label = tk.Label(channels_container,
+                                         text="SC BD Schmack",
+                                         font=('Segoe UI', 9),
                                          fg=self.COLORS['text'],
                                          bg=self.COLORS['bg_dark'],
-                                         width=20, anchor='w',
+                                         width=20, anchor='center',
                                          relief='sunken', padx=5)
-        self.patch_name_label.pack()
+        self.patch_name_label.pack(pady=(0, 3))
         
-        # Channel buttons
-        channels_frame = tk.Frame(preset_section, bg=self.COLORS['bg_medium'])
-        channels_frame.pack(side='left', padx=20, pady=5)
+        # Single row of channels 1-8 with number, button, mute
+        channels_row = tk.Frame(channels_container, bg=self.COLORS['bg_medium'])
+        channels_row.pack()
         
         self.channel_buttons = []
-        for i in range(8):
-            btn = ChannelButton(channels_frame, i, size=35,
-                               command=self._on_channel_select)
-            btn.pack(side='left', padx=2)
-            self.channel_buttons.append(btn)
-        
-        # Select first channel
-        self.channel_buttons[0].set_selected(True)
-        
-        # Mute buttons row
-        mute_frame = tk.Frame(preset_section, bg=self.COLORS['bg_medium'])
-        mute_frame.pack(side='left', padx=10, pady=5)
-        
-        tk.Label(mute_frame, text="m", font=('Segoe UI', 8),
-                fg=self.COLORS['text_dim'],
-                bg=self.COLORS['bg_medium']).pack(side='left', padx=2)
-        
         self.mute_buttons = []
+        
         for i in range(8):
-            btn = ToggleButton(mute_frame, text="", width=20, height=20,
-                              command=lambda en, ch=i: self._on_mute_toggle(ch, en))
-            btn.pack(side='left', padx=1)
-            self.mute_buttons.append(btn)
+            ch_frame = tk.Frame(channels_row, bg=self.COLORS['bg_medium'])
+            ch_frame.pack(side='left', padx=1)
+            
+            # Channel number label on top
+            tk.Label(ch_frame, text=str(i + 1), font=('Segoe UI', 7),
+                    fg=self.COLORS['text_dim'],
+                    bg=self.COLORS['bg_medium']).pack()
+            
+            # Channel button and mute in a row
+            btn_row = tk.Frame(ch_frame, bg=self.COLORS['bg_medium'])
+            btn_row.pack()
+            
+            btn = ChannelButton(btn_row, i, size=28,
+                               command=self._on_channel_select)
+            btn.pack(side='left')
+            self.channel_buttons.append(btn)
+            
+            # Small mute button
+            mute_btn = ToggleButton(btn_row, text="m", width=16, height=16,
+                                   command=lambda en, ch=i: self._on_mute_toggle(ch, en))
+            mute_btn.pack(side='left', padx=1)
+            self.mute_buttons.append(mute_btn)
+        
+        self.channel_buttons[0].set_selected(True)
     
     def _build_pattern_section(self, parent):
-        """Build the pattern editor section"""
+        """Build the pattern editor section
+        Left side: Pattern buttons (A-L), matrix toggle, chain controls
+        Right side: Pattern editor (trig/acc/fill/len lanes)
+        """
         pattern_frame = tk.LabelFrame(parent, text="pattern", 
                                      font=('Segoe UI', 8),
                                      fg=self.COLORS['text_dim'],
                                      bg=self.COLORS['bg_medium'],
                                      labelanchor='nw')
-        pattern_frame.pack(fill='x', pady=(0, 10))
+        pattern_frame.pack(fill='x', pady=(0, 5))
         
-        # Limit the pattern frame height to prevent it from taking over the screen
-        pattern_frame.pack_propagate(False)
-        pattern_frame.config(height=180)  # Fixed height for pattern section with 2 control rows
+        # Main horizontal layout: controls on left, editor on right
+        main_row = tk.Frame(pattern_frame, bg=self.COLORS['bg_medium'])
+        main_row.pack(fill='both', expand=True, padx=5, pady=5)
         
-        # Top controls bar - Row 1
-        controls_row1 = tk.Frame(pattern_frame, bg=self.COLORS['bg_medium'])
-        controls_row1.pack(fill='x', padx=5, pady=(2, 0))
+        # LEFT SIDE: Pattern controls
+        left_panel = tk.Frame(main_row, bg=self.COLORS['bg_medium'])
+        left_panel.pack(side='left', fill='y', padx=(0, 10))
         
-        # Matrix Editor toggle button (left side)
-        toggle_frame = tk.Frame(controls_row1, bg=self.COLORS['bg_medium'])
-        toggle_frame.pack(side='left', padx=2)
-        
-        self.matrix_toggle_btn = tk.Button(toggle_frame, text="⊞", width=2, height=1,
+        # Matrix Editor toggle button
+        self.matrix_toggle_btn = tk.Button(left_panel, text="⊞", width=2, height=1,
                                           font=('Segoe UI', 8),
                                           bg=self.COLORS['bg_light'],
                                           fg=self.COLORS['text'],
                                           command=self._on_matrix_toggle)
-        self.matrix_toggle_btn.pack(side='left', padx=1)
+        self.matrix_toggle_btn.pack(anchor='w', pady=2)
         
-        # Pattern selection buttons (A-L)
-        btn_frame = tk.Frame(controls_row1, bg=self.COLORS['bg_medium'])
-        btn_frame.pack(side='left', padx=5)
+        # Pattern selection buttons (A-L) in 3 rows of 4
+        btn_container = tk.Frame(left_panel, bg=self.COLORS['bg_medium'])
+        btn_container.pack(pady=5)
         
         self.pattern_buttons = []
-        for i, name in enumerate(PatternManager.PATTERN_NAMES):
-            btn = tk.Button(btn_frame, text=name, width=2, height=1,
-                           font=('Segoe UI', 7),
-                           bg=self.COLORS['bg_light'],
-                           fg=self.COLORS['text'],
-                           command=lambda idx=i: self._on_pattern_select(idx))
-            btn.pack(side='left', padx=1)
-            # Bind right-click for context menu
-            btn.bind('<Button-3>', lambda e, idx=i: self._on_pattern_right_click(idx, e))
-            self.pattern_buttons.append(btn)
+        for row in range(3):
+            row_frame = tk.Frame(btn_container, bg=self.COLORS['bg_medium'])
+            row_frame.pack()
+            for col in range(4):
+                idx = row * 4 + col
+                name = PatternManager.PATTERN_NAMES[idx]
+                btn = tk.Button(row_frame, text=name, width=2, height=1,
+                               font=('Segoe UI', 7),
+                               bg=self.COLORS['bg_light'],
+                               fg=self.COLORS['text'],
+                               command=lambda i=idx: self._on_pattern_select(i))
+                btn.pack(side='left', padx=1, pady=1)
+                btn.bind('<Button-3>', lambda e, i=idx: self._on_pattern_right_click(i, e))
+                self.pattern_buttons.append(btn)
         
-        # Mark first as selected
         self.pattern_buttons[0].config(bg=self.COLORS['highlight'])
         
-        # Play/Stop buttons (right side of row 1)
-        playback_frame = tk.Frame(controls_row1, bg=self.COLORS['bg_medium'])
-        playback_frame.pack(side='right', padx=2)
+        # Chain controls
+        chain_frame = tk.Frame(left_panel, bg=self.COLORS['bg_medium'])
+        chain_frame.pack(pady=5)
         
-        tk.Button(playback_frame, text="▶ Play", width=6, height=1,
-                 font=('Segoe UI', 7),
-                 bg=self.COLORS['led_off'],
-                 fg=self.COLORS['text'],
-                 command=self._on_pattern_play).pack(side='left', padx=1)
+        tk.Label(chain_frame, text="- chain -", 
+                font=('Segoe UI', 6), fg=self.COLORS['text_dim'],
+                bg=self.COLORS['bg_medium']).pack()
         
-        self.pattern_play_btn = tk.Button(playback_frame, text="⏹ Stop", width=6, height=1,
-                                         font=('Segoe UI', 7),
-                                         bg=self.COLORS['bg_light'],
-                                         fg=self.COLORS['text_dim'],
-                                         command=self._on_pattern_stop)
-        self.pattern_play_btn.pack(side='left', padx=1)
+        chain_btn_frame = tk.Frame(chain_frame, bg=self.COLORS['bg_medium'])
+        chain_btn_frame.pack()
         
-        # Step rate control (right side of row 1)
-        step_rate_frame = tk.Frame(controls_row1, bg=self.COLORS['bg_medium'])
-        step_rate_frame.pack(side='right', padx=5)
-        
-        tk.Label(step_rate_frame, text="Step Rate:", 
-                font=('Segoe UI', 7), fg=self.COLORS['text_dim'],
-                bg=self.COLORS['bg_medium']).pack(side='left', padx=(0, 5))
-        
-        self.step_rate_var = tk.StringVar(value=self.pattern_manager.step_rate)
-        self.step_rate_combo = ttk.Combobox(step_rate_frame, textvariable=self.step_rate_var,
-                                           values=['1/8', '1/8T', '1/16', '1/16T', '1/32'],
-                                           width=5, state='readonly')
-        self.step_rate_combo.pack(side='left')
-        self.step_rate_combo.bind('<<ComboboxSelected>>', self._on_step_rate_change)
-        
-        # Fill rate control (right side of row 1)
-        fill_frame = tk.Frame(controls_row1, bg=self.COLORS['bg_medium'])
-        fill_frame.pack(side='right', padx=5)
-        
-        tk.Label(fill_frame, text="Fill Rate:", 
-                font=('Segoe UI', 7), fg=self.COLORS['text_dim'],
-                bg=self.COLORS['bg_medium']).pack(side='left', padx=(0, 5))
-        
-        self.fill_rate_var = tk.StringVar(value=str(self.pattern_manager.fill_rate))
-        self.fill_rate_combo = ttk.Combobox(fill_frame, textvariable=self.fill_rate_var,
-                                           values=['2', '3', '4', '5', '6', '7', '8'],
-                                           width=5, state='readonly')
-        self.fill_rate_combo.pack(side='left')
-        self.fill_rate_combo.bind('<<ComboboxSelected>>', self._on_fill_rate_change)
-        
-        # Controls bar - Row 2 (optional controls)
-        controls_row2 = tk.Frame(pattern_frame, bg=self.COLORS['bg_medium'])
-        controls_row2.pack(fill='x', padx=5, pady=(2, 2))
-        
-        # Chain buttons
-        chain_frame = tk.Frame(controls_row2, bg=self.COLORS['bg_medium'])
-        chain_frame.pack(side='left', padx=2)
-        
-        tk.Button(chain_frame, text="◀", width=3, height=1,
+        tk.Button(chain_btn_frame, text="◀◀", width=3,
                  font=('Segoe UI', 7),
                  bg=self.COLORS['bg_light'],
                  fg=self.COLORS['text_dim'],
                  command=self._on_chain_previous).pack(side='left', padx=1)
         
-        tk.Button(chain_frame, text="▶", width=3, height=1,
+        tk.Button(chain_btn_frame, text="▶▶", width=3,
                  font=('Segoe UI', 7),
                  bg=self.COLORS['bg_light'],
                  fg=self.COLORS['text_dim'],
                  command=self._on_chain_next).pack(side='left', padx=1)
         
-        # Copy/Paste/Menu buttons
-        clipboard_frame = tk.Frame(controls_row2, bg=self.COLORS['bg_medium'])
-        clipboard_frame.pack(side='right', padx=2)
+        # RIGHT SIDE: Pattern editor and controls
+        right_panel = tk.Frame(main_row, bg=self.COLORS['bg_medium'])
+        right_panel.pack(side='left', fill='both', expand=True)
         
-        tk.Button(clipboard_frame, text="Menu", width=5, height=1,
+        # Top row: Menu/Copy/Paste only (fill rate, step rate, swing are in bottom bar)
+        top_controls = tk.Frame(right_panel, bg=self.COLORS['bg_medium'])
+        top_controls.pack(fill='x', pady=(0, 5))
+        
+        # Menu/Copy/Paste (right side)
+        clipboard_frame = tk.Frame(top_controls, bg=self.COLORS['bg_medium'])
+        clipboard_frame.pack(side='right', padx=2)
+
+        tk.Button(clipboard_frame, text="Menu", width=4,
                  font=('Segoe UI', 7),
                  bg=self.COLORS['accent'],
                  fg=self.COLORS['text'],
                  command=self._on_pattern_menu).pack(side='left', padx=1)
-        
-        tk.Button(clipboard_frame, text="Copy", width=5, height=1,
+
+        tk.Button(clipboard_frame, text="Copy", width=4,
                  font=('Segoe UI', 7),
                  bg=self.COLORS['bg_light'],
                  fg=self.COLORS['text_dim'],
                  command=self._on_pattern_copy).pack(side='left', padx=1)
-        
-        tk.Button(clipboard_frame, text="Paste", width=5, height=1,
+
+        tk.Button(clipboard_frame, text="Paste", width=4,
                  font=('Segoe UI', 7),
                  bg=self.COLORS['bg_light'],
                  fg=self.COLORS['text_dim'],
                  command=self._on_pattern_paste).pack(side='left', padx=1)
+
+        # Pattern editor area
+        self.editors_container = tk.Frame(right_panel, bg=self.COLORS['bg_dark'])
+        self.editors_container.pack(fill='both', expand=True, pady=2)
         
-        # Main editors container (will switch between lane and matrix editors)
-        self.editors_container = tk.Frame(pattern_frame, bg=self.COLORS['bg_dark'])
-        self.editors_container.pack(fill='both', expand=True, padx=5, pady=2)
+        # Single channel pattern editor frame
+        self.single_editor_frame = tk.Frame(self.editors_container, bg=self.COLORS['bg_dark'])
+        self.single_editor_frame.pack(fill='both', expand=True)
         
-        # Create scrollable frame for pattern editors
-        canvas = tk.Canvas(self.editors_container, bg=self.COLORS['bg_dark'], 
-                          highlightthickness=0, height=100)
-        scrollbar = tk.Scrollbar(self.editors_container, orient="vertical", command=canvas.yview)
-        scrollable_frame = tk.Frame(canvas, bg=self.COLORS['bg_dark'])
+        # Channel label + pattern editor
+        self.current_editor_frame = tk.Frame(self.single_editor_frame, bg=self.COLORS['bg_dark'])
+        self.current_editor_frame.pack(fill='both', expand=True)
         
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
+        self.pattern_channel_label = tk.Label(self.current_editor_frame, text="ch1",
+                                             font=('Segoe UI', 8), fg=self.COLORS['text_dim'],
+                                             bg=self.COLORS['bg_dark'], anchor='w')
+        self.pattern_channel_label.pack(side='left', padx=2)
         
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-        
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        
-        # Pattern editors for each channel (lane view)
-        self.editors_frame = scrollable_frame
-        
+        # Create pattern editors for all 8 channels
         self.pattern_editors = []
         for ch in range(8):
-            label_frame = tk.Frame(self.editors_frame, bg=self.COLORS['bg_dark'])
-            label_frame.pack(fill='x', pady=0)  # Reduced from pady=2 to pady=0
-            
-            # Channel label
-            tk.Label(label_frame, text=f"ch{ch+1}", width=5,
-                    font=('Segoe UI', 7), fg=self.COLORS['text_dim'],
-                    bg=self.COLORS['bg_dark'], anchor='w').pack(side='left', padx=2)
-            
-            # Pattern editor
-            editor = PatternEditor(label_frame, channel_id=ch, pattern_length=16,
+            editor = PatternEditor(self.current_editor_frame, channel_id=ch, pattern_length=16,
                                   num_steps=16,
                                   command=self._on_pattern_edit,
+                                  all_channels_command=self._on_pattern_edit_all,
                                   length_change_callback=self._on_pattern_length_change)
-            editor.pack(side='left', fill='both', expand=True, padx=2)
             self.pattern_editors.append(editor)
+        
+        # Show first channel's editor
+        self.pattern_editors[0].pack(side='left', fill='both', expand=True)
+        self.current_pattern_editor_index = 0
         
         # Matrix editor (hidden by default)
         self.matrix_editor = MatrixEditor(self.editors_container, num_channels=8, 
                                          num_steps=16,
                                          command=self._on_matrix_edit)
-        self.matrix_editor.pack(fill='both', padx=5, pady=5)
-        self.matrix_editor.pack_forget()  # Hide by default
         
-        # State to track which view is active
         self.matrix_view_active = False
 
-    
     def _build_drum_patch_section(self, parent):
         """Build the main drum patch editing section"""
         patch_frame = tk.Frame(parent, bg=self.COLORS['bg_medium'])
-        patch_frame.pack(fill='both', expand=True, pady=(0, 10))
+        patch_frame.pack(fill='x', expand=True, pady=(0, 5))
         
-        # Three main subsections
+        # Four main subsections
         self._build_mixing_section(patch_frame)
         self._build_oscillator_section(patch_frame)
         self._build_noise_section(patch_frame)
@@ -464,46 +503,66 @@ class PythonicGUI:
                                fg=self.COLORS['text_dim'],
                                bg=self.COLORS['bg_medium'],
                                labelanchor='n')
-        section.pack(side='left', padx=5, pady=5, fill='y')
+        section.pack(side='left', padx=5, pady=5, fill='both', expand=True)
         
-        # Row 1: Mix slider and labels
-        row1 = tk.Frame(section, bg=self.COLORS['bg_medium'])
-        row1.pack(pady=5)
+        # Row 1: osc/noise HORIZONTAL mix slider
+        mix_row = tk.Frame(section, bg=self.COLORS['bg_medium'])
+        mix_row.pack(pady=5, fill='x')
         
-        tk.Label(row1, text="osc", font=('Segoe UI', 7),
+        tk.Label(mix_row, text="osc", font=('Segoe UI', 7),
+                fg=self.COLORS['text_dim'],
+                bg=self.COLORS['bg_medium']).pack(side='left', padx=2)
+        
+        # Horizontal mix slider
+        self.mix_slider = tk.Scale(mix_row, from_=0, to=100, 
+                                  orient='horizontal', length=80,
+                                  showvalue=False,
+                                  bg=self.COLORS['bg_medium'], 
+                                  fg=self.COLORS['text'],
+                                  highlightthickness=0,
+                                  troughcolor=self.COLORS['bg_dark'],
+                                  command=self._on_mix_change)
+        self.mix_slider.set(50)
+        self.mix_slider.pack(side='left', padx=2)
+        
+        tk.Label(mix_row, text="noise", font=('Segoe UI', 7),
+                fg=self.COLORS['text_dim'],
+                bg=self.COLORS['bg_medium']).pack(side='left', padx=2)
+        
+        # Row 2: EQ Freq knob with frequency labels
+        freq_row = tk.Frame(section, bg=self.COLORS['bg_medium'])
+        freq_row.pack(pady=3)
+        
+        tk.Label(freq_row, text="20Hz", font=('Segoe UI', 6),
                 fg=self.COLORS['text_dim'],
                 bg=self.COLORS['bg_medium']).pack(side='left')
         
-        self.mix_slider = VerticalSlider(row1, width=25, height=60,
-                                        min_val=0, max_val=100, default=50,
-                                        command=self._on_mix_change)
-        self.mix_slider.pack(side='left', padx=5)
-        
-        tk.Label(row1, text="noise", font=('Segoe UI', 7),
-                fg=self.COLORS['text_dim'],
-                bg=self.COLORS['bg_medium']).pack(side='left')
-        
-        # Row 2: EQ Freq
-        row2 = tk.Frame(section, bg=self.COLORS['bg_medium'])
-        row2.pack(pady=5)
-        
-        self.eq_freq_knob = RotaryKnob(row2, size=45,
+        self.eq_freq_knob = RotaryKnob(freq_row, size=45,
                                        min_val=20, max_val=20000, default=632,
                                        label="eq freq",
                                        command=self._on_eq_freq_change)
         self.eq_freq_knob.pack(side='left', padx=3)
         
+        tk.Label(freq_row, text="20kHz", font=('Segoe UI', 6),
+                fg=self.COLORS['text_dim'],
+                bg=self.COLORS['bg_medium']).pack(side='left')
+        
+        # Edit All button
+        self.edit_all_btn = ToggleButton(section, text="edit all", width=50, height=18,
+                                        command=self._on_edit_all_toggle)
+        self.edit_all_btn.pack(pady=3)
+        
         # Row 3: Distortion and EQ Gain
         row3 = tk.Frame(section, bg=self.COLORS['bg_medium'])
-        row3.pack(pady=5)
+        row3.pack(pady=3)
         
-        self.distort_knob = RotaryKnob(row3, size=45,
+        self.distort_knob = RotaryKnob(row3, size=42,
                                        min_val=0, max_val=100, default=0,
                                        label="distort",
                                        command=self._on_distort_change)
         self.distort_knob.pack(side='left', padx=3)
         
-        self.eq_gain_knob = RotaryKnob(row3, size=45,
+        self.eq_gain_knob = RotaryKnob(row3, size=42,
                                        min_val=-40, max_val=40, default=0,
                                        label="eq gain",
                                        command=self._on_eq_gain_change)
@@ -511,23 +570,23 @@ class PythonicGUI:
         
         # Row 4: Level and Pan
         row4 = tk.Frame(section, bg=self.COLORS['bg_medium'])
-        row4.pack(pady=5)
+        row4.pack(pady=3)
         
-        self.level_knob = RotaryKnob(row4, size=45,
+        self.level_knob = RotaryKnob(row4, size=42,
                                      min_val=-60, max_val=10, default=0,
                                      label="level",
                                      command=self._on_level_change)
         self.level_knob.pack(side='left', padx=3)
         
-        self.pan_knob = RotaryKnob(row4, size=45,
+        self.pan_knob = RotaryKnob(row4, size=42,
                                    min_val=-100, max_val=100, default=0,
                                    label="pan",
                                    command=self._on_pan_change)
         self.pan_knob.pack(side='left', padx=3)
         
-        # Row 5: Choke and Output
+        # Row 5: Choke and Output A/B
         row5 = tk.Frame(section, bg=self.COLORS['bg_medium'])
-        row5.pack(pady=5)
+        row5.pack(pady=3)
         
         self.choke_btn = ToggleButton(row5, text="choke", width=45, height=20,
                                      command=self._on_choke_toggle)
@@ -544,70 +603,78 @@ class PythonicGUI:
                                fg=self.COLORS['text_dim'],
                                bg=self.COLORS['bg_medium'],
                                labelanchor='n')
-        section.pack(side='left', padx=5, pady=5, fill='y')
+        section.pack(side='left', padx=5, pady=5, fill='both', expand=True)
         
-        # Waveform selector
-        row1 = tk.Frame(section, bg=self.COLORS['bg_medium'])
-        row1.pack(pady=5)
+        # Waveform selector with label
+        waveform_frame = tk.Frame(section, bg=self.COLORS['bg_medium'])
+        waveform_frame.pack(pady=3)
         
-        tk.Label(row1, text="waveform", font=('Segoe UI', 7),
+        tk.Label(waveform_frame, text="waveform", font=('Segoe UI', 7),
                 fg=self.COLORS['text_dim'],
                 bg=self.COLORS['bg_medium']).pack()
         
-        self.waveform_selector = WaveformSelector(row1,
+        self.waveform_selector = WaveformSelector(waveform_frame,
                                                   command=self._on_waveform_change)
         self.waveform_selector.pack()
         
-        # Frequency
-        row2 = tk.Frame(section, bg=self.COLORS['bg_medium'])
-        row2.pack(pady=5)
+        # Oscillator Frequency with labels
+        freq_frame = tk.Frame(section, bg=self.COLORS['bg_medium'])
+        freq_frame.pack(pady=3)
         
-        self.osc_freq_knob = RotaryKnob(row2, size=50,
+        tk.Label(freq_frame, text="20Hz", font=('Segoe UI', 6),
+                fg=self.COLORS['text_dim'],
+                bg=self.COLORS['bg_medium']).pack(side='left')
+        
+        self.osc_freq_knob = RotaryKnob(freq_frame, size=50,
                                         min_val=20, max_val=20000, default=440,
                                         label="osc freq",
                                         command=self._on_osc_freq_change)
-        self.osc_freq_knob.pack()
+        self.osc_freq_knob.pack(side='left', padx=3)
+        
+        tk.Label(freq_frame, text="20kHz", font=('Segoe UI', 6),
+                fg=self.COLORS['text_dim'],
+                bg=self.COLORS['bg_medium']).pack(side='left')
         
         # Pitch modulation mode
-        row3 = tk.Frame(section, bg=self.COLORS['bg_medium'])
-        row3.pack(pady=5)
+        pitch_mod_frame = tk.Frame(section, bg=self.COLORS['bg_medium'])
+        pitch_mod_frame.pack(pady=3)
         
-        tk.Label(row3, text="pitch mod", font=('Segoe UI', 7),
+        tk.Label(pitch_mod_frame, text="pitch mod", font=('Segoe UI', 7),
                 fg=self.COLORS['text_dim'],
                 bg=self.COLORS['bg_medium']).pack()
         
-        self.pitch_mod_mode = ModeSelector(row3, 
+        self.pitch_mod_mode = ModeSelector(pitch_mod_frame, 
                                           options=['Decay', 'Sine', 'Rand'],
                                           command=self._on_pitch_mod_mode_change)
         self.pitch_mod_mode.pack()
         
         # Pitch mod amount and rate
-        row4 = tk.Frame(section, bg=self.COLORS['bg_medium'])
-        row4.pack(pady=5)
+        pitch_knobs_frame = tk.Frame(section, bg=self.COLORS['bg_medium'])
+        pitch_knobs_frame.pack(pady=3)
         
-        self.pitch_amount_knob = RotaryKnob(row4, size=45,
+        self.pitch_amount_knob = RotaryKnob(pitch_knobs_frame, size=42,
                                             min_val=-120, max_val=120, default=0,
                                             label="amount",
                                             command=self._on_pitch_amount_change)
         self.pitch_amount_knob.pack(side='left', padx=3)
         
-        self.pitch_rate_knob = RotaryKnob(row4, size=45,
+        self.pitch_rate_knob = RotaryKnob(pitch_knobs_frame, size=42,
                                           min_val=1, max_val=2000, default=100,
                                           label="rate",
                                           command=self._on_pitch_rate_change)
         self.pitch_rate_knob.pack(side='left', padx=3)
         
-        # Attack and Decay
-        row5 = tk.Frame(section, bg=self.COLORS['bg_medium'])
-        row5.pack(pady=5)
+        # Attack and Decay knobs
+        env_frame = tk.Frame(section, bg=self.COLORS['bg_medium'])
+        env_frame.pack(pady=3)
         
-        self.osc_attack_knob = RotaryKnob(row5, size=45,
+        self.osc_attack_knob = RotaryKnob(env_frame, size=42,
                                           min_val=0, max_val=10000, default=0,
                                           label="attack",
                                           command=self._on_osc_attack_change)
         self.osc_attack_knob.pack(side='left', padx=3)
         
-        self.osc_decay_knob = RotaryKnob(row5, size=45,
+        self.osc_decay_knob = RotaryKnob(env_frame, size=42,
                                          min_val=10, max_val=10000, default=316,
                                          label="decay",
                                          command=self._on_osc_decay_change)
@@ -620,73 +687,82 @@ class PythonicGUI:
                                fg=self.COLORS['text_dim'],
                                bg=self.COLORS['bg_medium'],
                                labelanchor='n')
-        section.pack(side='left', padx=5, pady=5, fill='y')
+        section.pack(side='left', padx=5, pady=5, fill='both', expand=True)
         
-        # Filter mode
-        row1 = tk.Frame(section, bg=self.COLORS['bg_medium'])
-        row1.pack(pady=5)
+        # Filter mode selector (LP/BP/HP)
+        filter_mode_frame = tk.Frame(section, bg=self.COLORS['bg_medium'])
+        filter_mode_frame.pack(pady=3)
         
-        tk.Label(row1, text="filter mode", font=('Segoe UI', 7),
+        tk.Label(filter_mode_frame, text="filter mode", font=('Segoe UI', 7),
                 fg=self.COLORS['text_dim'],
                 bg=self.COLORS['bg_medium']).pack()
         
-        self.noise_filter_mode = ModeSelector(row1,
+        self.noise_filter_mode = ModeSelector(filter_mode_frame,
                                              options=['LP', 'BP', 'HP'],
                                              command=self._on_noise_filter_mode_change)
         self.noise_filter_mode.pack()
         
-        # Filter freq
-        row2 = tk.Frame(section, bg=self.COLORS['bg_medium'])
-        row2.pack(pady=5)
+        # Filter freq with frequency labels
+        freq_frame = tk.Frame(section, bg=self.COLORS['bg_medium'])
+        freq_frame.pack(pady=3)
         
-        self.noise_freq_knob = RotaryKnob(row2, size=50,
+        tk.Label(freq_frame, text="20Hz", font=('Segoe UI', 6),
+                fg=self.COLORS['text_dim'],
+                bg=self.COLORS['bg_medium']).pack(side='left')
+        
+        self.noise_freq_knob = RotaryKnob(freq_frame, size=50,
                                           min_val=20, max_val=20000, default=20000,
                                           label="filter freq",
                                           command=self._on_noise_freq_change)
-        self.noise_freq_knob.pack()
+        self.noise_freq_knob.pack(side='left', padx=3)
         
-        # Filter Q and Stereo
-        row3 = tk.Frame(section, bg=self.COLORS['bg_medium'])
-        row3.pack(pady=5)
+        tk.Label(freq_frame, text="20kHz", font=('Segoe UI', 6),
+                fg=self.COLORS['text_dim'],
+                bg=self.COLORS['bg_medium']).pack(side='left')
         
-        self.noise_q_knob = RotaryKnob(row3, size=45,
+        # Filter Q knob
+        q_frame = tk.Frame(section, bg=self.COLORS['bg_medium'])
+        q_frame.pack(pady=3)
+        
+        self.noise_q_knob = RotaryKnob(q_frame, size=42,
                                        min_val=0.0, max_val=10.0, default=0.707,
                                        label="filter q",
                                        command=self._on_noise_q_change)
         self.noise_q_knob.pack(side='left', padx=3)
         
-        self.stereo_btn = ToggleButton(row3, text="stereo", width=45, height=20,
+        # Stereo toggle button
+        self.stereo_btn = ToggleButton(q_frame, text="stereo", width=45, height=20,
                                       command=self._on_stereo_toggle)
         self.stereo_btn.pack(side='left', padx=3)
         
-        # Envelope mode
-        row4 = tk.Frame(section, bg=self.COLORS['bg_medium'])
-        row4.pack(pady=5)
+        # Envelope mode selector
+        env_mode_frame = tk.Frame(section, bg=self.COLORS['bg_medium'])
+        env_mode_frame.pack(pady=3)
         
-        tk.Label(row4, text="envelope", font=('Segoe UI', 7),
+        tk.Label(env_mode_frame, text="envelope", font=('Segoe UI', 7),
                 fg=self.COLORS['text_dim'],
                 bg=self.COLORS['bg_medium']).pack()
         
-        self.noise_env_mode = ModeSelector(row4,
+        self.noise_env_mode = ModeSelector(env_mode_frame,
                                           options=['Exp', 'Lin', 'Mod'],
                                           command=self._on_noise_env_mode_change)
         self.noise_env_mode.pack()
         
-        # Attack and Decay
-        row5 = tk.Frame(section, bg=self.COLORS['bg_medium'])
-        row5.pack(pady=5)
+        # Attack and Decay as VERTICAL SLIDERS
+        env_sliders_frame = tk.Frame(section, bg=self.COLORS['bg_medium'])
+        env_sliders_frame.pack(pady=3)
         
-        self.noise_attack_knob = RotaryKnob(row5, size=45,
-                                            min_val=0, max_val=10000, default=0,
-                                            label="attack",
-                                            command=self._on_noise_attack_change)
-        self.noise_attack_knob.pack(side='left', padx=3)
+        self.noise_attack_slider = VerticalSlider(env_sliders_frame, width=25, height=70,
+                                                 min_val=0, max_val=10000, default=0,
+                                                 label="attack",
+                                                 command=self._on_noise_attack_change)
+        self.noise_attack_slider.pack(side='left', padx=5)
         
-        self.noise_decay_knob = RotaryKnob(row5, size=45,
-                                           min_val=10, max_val=10000, default=316,
-                                           label="decay",
-                                           command=self._on_noise_decay_change)
-        self.noise_decay_knob.pack(side='left', padx=3)
+        self.noise_decay_slider = VerticalSlider(env_sliders_frame, width=25, height=70,
+                                                min_val=10, max_val=10000, default=316,
+                                                label="decay",
+                                                command=self._on_noise_decay_change)
+        self.noise_decay_slider.pack(side='left', padx=5)
     
     def _build_velocity_section(self, parent):
         """Build the velocity sensitivity section"""
@@ -695,7 +771,7 @@ class PythonicGUI:
                                fg=self.COLORS['text_dim'],
                                bg=self.COLORS['bg_medium'],
                                labelanchor='n')
-        section.pack(side='left', padx=5, pady=5, fill='y')
+        section.pack(side='left', padx=5, pady=5, fill='both', expand=True)
         
         # Oscillator velocity
         self.osc_vel_slider = VerticalSlider(section, width=25, height=80,
@@ -719,68 +795,266 @@ class PythonicGUI:
         self.mod_vel_slider.pack(pady=5)
     
     def _build_global_section(self, parent):
-        """Build the global controls section"""
-        global_frame = tk.Frame(parent, bg=self.COLORS['bg_medium'])
-        global_frame.pack(fill='x', pady=(0, 5))
+        """Build the global controls section (bottom bar)
         
-        # File operations buttons
-        file_frame = tk.Frame(global_frame, bg=self.COLORS['bg_medium'])
-        file_frame.pack(side='left', padx=10, pady=5)
+        Bottom bar layout:
+        - Left: Stop/Play buttons with icons
+        - Center-left: Step rate selector (1/8, 1/8T, 1/16, 1/16T, 1/32)
+        - Center: Swing slider (0% to 100%)
+        - Center-right: Fill rate (2x to 8x)
+        - Right: Master volume knob
+        """
+        global_frame = tk.Frame(parent, bg=self.COLORS['bg_medium'], height=50)
+        global_frame.pack(fill='x', pady=(5, 0))
+        global_frame.pack_propagate(False)
         
-        tk.Button(file_frame, text="Load Preset",
-                 width=10, height=1,
-                 bg=self.COLORS['accent'],
-                 fg=self.COLORS['text'],
-                 command=self._load_preset).pack(side='left', padx=2)
+        # Left: Transport controls (Stop/Play) - circular buttons
+        transport_frame = tk.Frame(global_frame, bg=self.COLORS['bg_medium'])
+        transport_frame.pack(side='left', padx=10, pady=8)
         
-        tk.Button(file_frame, text="Save Preset",
-                 width=10, height=1,
-                 bg=self.COLORS['bg_light'],
-                 fg=self.COLORS['text'],
-                 command=self._save_preset).pack(side='left', padx=2)
+        from gui.widgets import CircularButton
         
-        tk.Button(file_frame, text="Export WAVs",
-                 width=10, height=1,
-                 bg=self.COLORS['bg_light'],
-                 fg=self.COLORS['text'],
-                 command=self._export_all_wavs).pack(side='left', padx=2)
+        self.stop_btn = CircularButton(transport_frame, text="■", size=35,
+                                       command=self._on_pattern_stop,
+                                       bg_color='#4a4a5a', fg_color='#ccccee')
+        self.stop_btn.pack(side='left', padx=2)
         
-        tk.Button(file_frame, text="Export Drum",
-                 width=10, height=1,
-                 bg=self.COLORS['bg_light'],
-                 fg=self.COLORS['text'],
-                 command=self._export_current_drum).pack(side='left', padx=2)
+        self.play_btn = CircularButton(transport_frame, text="▶", size=35,
+                                       command=self._on_pattern_play,
+                                       bg_color='#446644', fg_color='#88ff88')
+        self.play_btn.pack(side='left', padx=2)
         
-        # Trigger buttons for testing
-        trigger_frame = tk.Frame(global_frame, bg=self.COLORS['bg_medium'])
-        trigger_frame.pack(side='left', padx=10, pady=5)
+        # BPM control
+        bpm_frame = tk.Frame(global_frame, bg=self.COLORS['bg_medium'])
+        bpm_frame.pack(side='left', padx=10, pady=8)
         
-        tk.Label(trigger_frame, text="Trigger:", font=('Segoe UI', 8),
-                fg=self.COLORS['text'],
-                bg=self.COLORS['bg_medium']).pack(side='left', padx=5)
+        tk.Label(bpm_frame, text="BPM", 
+                font=('Segoe UI', 7), fg=self.COLORS['text_dim'],
+                bg=self.COLORS['bg_medium']).pack(side='left', padx=(0, 3))
         
-        for i in range(8):
-            btn = tk.Button(trigger_frame, text=str(i + 1),
-                           width=3, height=1,
-                           bg=self.COLORS['bg_light'],
+        self.bpm_var = tk.StringVar(value=str(self.pattern_manager.bpm))
+        self.bpm_entry = tk.Entry(bpm_frame, textvariable=self.bpm_var, 
+                                  width=4, font=('Segoe UI', 9),
+                                  bg=self.COLORS['bg_dark'], fg=self.COLORS['text'],
+                                  insertbackground=self.COLORS['text'],
+                                  justify='center')
+        self.bpm_entry.pack(side='left')
+        self.bpm_entry.bind('<Return>', self._on_bpm_change)
+        self.bpm_entry.bind('<FocusOut>', self._on_bpm_change)
+        
+        # Step rate buttons (1/8 to 1/32 selector)
+        rate_frame = tk.Frame(global_frame, bg=self.COLORS['bg_medium'])
+        rate_frame.pack(side='left', padx=15, pady=8)
+        
+        self.step_rate_buttons = []
+        for rate in ['1/8', '1/8T', '1/16', '1/16T', '1/32']:
+            is_selected = (rate == self.pattern_manager.step_rate)
+            btn = tk.Button(rate_frame, text=rate, width=4, height=1,
+                           font=('Segoe UI', 7),
+                           bg=self.COLORS['highlight'] if is_selected else self.COLORS['bg_light'],
                            fg=self.COLORS['text'],
-                           command=lambda ch=i: self._trigger_channel(ch))
-            btn.pack(side='left', padx=2)
+                           command=lambda r=rate: self._on_step_rate_button(r))
+            btn.pack(side='left', padx=1)
+            self.step_rate_buttons.append((rate, btn))
         
-        # Keyboard instructions
+        # Swing slider (center)
+        swing_frame = tk.Frame(global_frame, bg=self.COLORS['bg_medium'])
+        swing_frame.pack(side='left', padx=15, pady=8)
+        
+        tk.Label(swing_frame, text="0%", 
+                font=('Segoe UI', 7), fg=self.COLORS['text_dim'],
+                bg=self.COLORS['bg_medium']).pack(side='left')
+        
+        self.global_swing_slider = tk.Scale(swing_frame, from_=0, to=100, 
+                                           orient='horizontal', length=100,
+                                           showvalue=False,
+                                           bg=self.COLORS['bg_medium'], 
+                                           fg=self.COLORS['text'],
+                                           highlightthickness=0,
+                                           troughcolor=self.COLORS['bg_dark'],
+                                           command=self._on_global_swing_change)
+        self.global_swing_slider.pack(side='left')
+        
+        tk.Label(swing_frame, text="swing", 
+                font=('Segoe UI', 7), fg=self.COLORS['text_dim'],
+                bg=self.COLORS['bg_medium']).pack(side='left', padx=(3, 0))
+        
+        tk.Label(swing_frame, text="100%", 
+                font=('Segoe UI', 7), fg=self.COLORS['text_dim'],
+                bg=self.COLORS['bg_medium']).pack(side='left', padx=(5, 0))
+        
+        # Fill rate (center-right)
+        fill_frame = tk.Frame(global_frame, bg=self.COLORS['bg_medium'])
+        fill_frame.pack(side='left', padx=15, pady=8)
+        
+        tk.Label(fill_frame, text="fill rate", 
+                font=('Segoe UI', 7), fg=self.COLORS['text_dim'],
+                bg=self.COLORS['bg_medium']).pack(side='left', padx=(0, 5))
+        
+        self.fill_rate_buttons = []
+        for rate in ['2x', '3x', '4x', '5x', '6x', '7x', '8x']:
+            rate_val = int(rate[0])
+            is_selected = (rate_val == self.pattern_manager.fill_rate)
+            btn = tk.Button(fill_frame, text=rate, width=2, height=1,
+                           font=('Segoe UI', 7),
+                           bg=self.COLORS['highlight'] if is_selected else self.COLORS['bg_light'],
+                           fg=self.COLORS['text'],
+                           command=lambda r=rate_val: self._on_fill_rate_button(r))
+            btn.pack(side='left', padx=1)
+            self.fill_rate_buttons.append((rate_val, btn))
+        
+        # Right: Keyboard hint and trigger info
         info_frame = tk.Frame(global_frame, bg=self.COLORS['bg_medium'])
-        info_frame.pack(side='right', padx=10, pady=5)
+        info_frame.pack(side='right', padx=10, pady=8)
         
         tk.Label(info_frame, 
-                text="Keys 1-8: Trigger",
-                font=('Segoe UI', 8),
+                text="Keys 1-8: Trigger channels",
+                font=('Segoe UI', 7),
                 fg=self.COLORS['text_dim'],
                 bg=self.COLORS['bg_medium']).pack()
         
         # Bind keyboard
         self.root.bind('<Key>', self._on_key_press)
     
+    def _on_step_rate_button(self, rate):
+        """Handle step rate button click"""
+        self.pattern_manager.set_step_rate(rate)
+        # Update button states
+        for r, btn in self.step_rate_buttons:
+            if r == rate:
+                btn.config(bg=self.COLORS['highlight'])
+            else:
+                btn.config(bg=self.COLORS['bg_light'])
+    
+    def _on_fill_rate_button(self, rate):
+        """Handle fill rate button click"""
+        self.pattern_manager.set_fill_rate(rate)
+        # Update button states
+        for r, btn in self.fill_rate_buttons:
+            if r == rate:
+                btn.config(bg=self.COLORS['highlight'])
+            else:
+                btn.config(bg=self.COLORS['bg_light'])
+    
+    def _on_global_swing_change(self, value):
+        """Handle global swing slider change"""
+        swing_val = int(value)
+        self.pattern_manager.swing = swing_val / 100.0  # Convert to 0-1 range
+    
+    def _on_bpm_change(self, event=None):
+        """Handle BPM entry change"""
+        try:
+            bpm = int(self.bpm_var.get())
+            bpm = max(1, min(300, bpm))  # Clamp to valid range
+            self.pattern_manager.set_bpm(bpm)
+            self.bpm_var.set(str(bpm))  # Update display with clamped value
+        except ValueError:
+            # Restore current BPM if invalid input
+            self.bpm_var.set(str(self.pattern_manager.bpm))
+    
     # ============== Event Handlers ==============
+    
+    def _on_program_select(self, event=None):
+        """Handle program selection (1-16 slots)"""
+        try:
+            program_num = int(self.program_var.get())
+            # Future: implement program bank switching
+            # For now, just log the selection
+            print(f"Selected program {program_num}")
+        except ValueError:
+            pass
+    
+    def _on_morph_change(self, value):
+        """Handle sound morph slider change
+        
+        Sound morph interpolates all drum patch parameters
+        between two end-points using this single slider.
+        """
+        morph_value = float(value) / 100.0  # Normalize to 0-1
+        # Future: implement morph interpolation between two preset endpoints
+        # For now, this is a placeholder
+        pass
+    
+    def _on_undo(self):
+        """Handle undo button click"""
+        # Future: implement undo stack
+        print("Undo clicked")
+    
+    def _on_redo(self):
+        """Handle redo button click"""
+        # Future: implement redo stack
+        print("Redo clicked")
+    
+    def _on_preset_prev(self):
+        """Navigate to previous preset in the list"""
+        current = self.preset_combo.current()
+        values = self.preset_combo['values']
+        if values and current > 0:
+            self.preset_combo.current(current - 1)
+            self._on_preset_combo_select()
+    
+    def _on_preset_next(self):
+        """Navigate to next preset in the list"""
+        current = self.preset_combo.current()
+        values = self.preset_combo['values']
+        if values and current < len(values) - 1:
+            self.preset_combo.current(current + 1)
+            self._on_preset_combo_select()
+    
+    def _on_preset_menu(self):
+        """Show preset menu"""
+        menu = tk.Menu(self.root, tearoff=0)
+        
+        menu.add_command(label="Open Preset...", command=self._load_preset)
+        menu.add_command(label="Save Preset As...", command=self._save_preset)
+        menu.add_separator()
+        menu.add_command(label="Cut Preset", command=self._cut_preset)
+        menu.add_command(label="Copy Preset", command=self._copy_preset)
+        menu.add_command(label="Paste Preset", command=self._paste_preset)
+        menu.add_separator()
+        menu.add_command(label="Initialize Preset", command=self._init_preset)
+        menu.add_command(label="Randomize All", command=self._randomize_all)
+        menu.add_separator()
+        menu.add_command(label="Select Preset Folder...", command=self._select_preset_folder)
+        menu.add_command(label="Refresh Preset List", command=self._refresh_preset_list)
+        
+        try:
+            menu.tk_popup(self.root.winfo_pointerx(), self.root.winfo_pointery())
+        finally:
+            menu.grab_release()
+    
+    def _cut_preset(self):
+        """Cut preset to clipboard"""
+        self._copy_preset()
+        self._init_preset()
+    
+    def _copy_preset(self):
+        """Copy current preset to clipboard"""
+        # Store preset data in memory for paste
+        self._preset_clipboard = self.preset_manager.export_preset_to_dict()
+    
+    def _paste_preset(self):
+        """Paste preset from clipboard"""
+        if hasattr(self, '_preset_clipboard') and self._preset_clipboard:
+            self.preset_manager.import_preset_from_dict(self._preset_clipboard)
+            self._update_ui_from_channel()
+    
+    def _init_preset(self):
+        """Initialize/reset preset to defaults"""
+        for channel in self.synth.channels:
+            channel.reset_to_defaults()
+        self.pattern_manager.reset_all_patterns()
+        self._update_ui_from_channel()
+        self._update_pattern_editors()
+    
+    def _randomize_all(self):
+        """Randomize all drum patches and patterns"""
+        import random
+        for channel in self.synth.channels:
+            channel.randomize()
+        self.pattern_manager.randomize_pattern(self.pattern_manager.selected_pattern_index)
+        self._update_ui_from_channel()
+        self._update_pattern_editors()
     
     def _on_channel_select(self, channel_idx):
         """Handle channel selection"""
@@ -790,6 +1064,17 @@ class PythonicGUI:
         
         self.selected_channel = channel_idx
         self.synth.select_channel(channel_idx)
+        
+        # Switch pattern editor to show the selected channel
+        if hasattr(self, 'pattern_editors') and hasattr(self, 'current_pattern_editor_index'):
+            # Hide current editor
+            self.pattern_editors[self.current_pattern_editor_index].pack_forget()
+            # Show new editor
+            self.pattern_editors[channel_idx].pack(side='left', fill='both', expand=True, padx=2)
+            self.current_pattern_editor_index = channel_idx
+            # Update channel label
+            if hasattr(self, 'pattern_channel_label'):
+                self.pattern_channel_label.config(text=f"ch{channel_idx + 1}")
         
         # Update UI to reflect selected channel's parameters
         self._update_ui_from_channel()
@@ -804,10 +1089,10 @@ class PythonicGUI:
         self.synth.set_master_volume(value)
     
     def _on_mix_change(self, value):
-        """Handle osc/noise mix change"""
+        """Handle osc/noise mix change (value comes from tk.Scale as string)"""
         if not self.updating_ui:
             channel = self.synth.get_selected_channel()
-            channel.osc_noise_mix = value / 100.0
+            channel.osc_noise_mix = float(value) / 100.0
     
     def _on_eq_freq_change(self, value):
         """Handle EQ frequency change"""
@@ -838,6 +1123,10 @@ class PythonicGUI:
         if not self.updating_ui:
             channel = self.synth.get_selected_channel()
             channel.pan = value
+    
+    def _on_edit_all_toggle(self, enabled):
+        """Handle edit all toggle - when enabled, changes affect all unmuted channels"""
+        self.edit_all_mode = enabled
     
     def _on_choke_toggle(self, enabled):
         """Handle choke toggle"""
@@ -959,11 +1248,19 @@ class PythonicGUI:
         """Handle pattern selection"""
         self.pattern_manager.select_pattern(pattern_index)
         
+        # Reset playback position to beginning when switching patterns
+        self.pattern_manager.play_position = 0
+        self.pattern_manager.current_step = 0
+        self.frames_since_last_step = 0
+        
         # Update button states
         self._update_pattern_button_states()
         
-        # Update editors
+        # Update editors and show position at beginning
         self._update_pattern_editors()
+        if hasattr(self, 'pattern_editors'):
+            for editor in self.pattern_editors:
+                editor.set_current_position(0)
     
     def _on_pattern_edit(self, channel_id, step, lane_type, value):
         """Handle pattern editor edits"""
@@ -976,6 +1273,28 @@ class PythonicGUI:
             channel.set_accent(step, value)
         elif lane_type == 'fill':
             channel.set_fill(step, value)
+    
+    def _on_pattern_edit_all(self, step, lane_type, value, muted_channels):
+        """Handle pattern edit applied to all unmuted channels (Shift+Click)"""
+        pattern = self.pattern_manager.get_selected_pattern()
+        
+        for ch_idx in range(8):
+            if ch_idx not in muted_channels:
+                channel = pattern.get_channel(ch_idx)
+                
+                if lane_type == 'trig':
+                    channel.set_trigger(step, value)
+                elif lane_type == 'acc':
+                    channel.set_accent(step, value)
+                elif lane_type == 'fill':
+                    channel.set_fill(step, value)
+                
+                # Update that channel's editor
+                self.pattern_editors[ch_idx].set_pattern_data(
+                    channel.get_triggers(),
+                    channel.get_accents(),
+                    channel.get_fills()
+                )
     
     def _on_pattern_length_change(self, new_length):
         """Handle pattern length change"""
@@ -992,20 +1311,26 @@ class PythonicGUI:
         self.pattern_manager.start_playback(selected_idx)
         self.frames_since_last_step = 0  # Reset frame counter
         self._last_playing_pattern_idx = selected_idx  # Track for chaining detection
-        self.pattern_play_btn.config(text="⏹ Stop", bg=self.COLORS['led_on'])
         self._update_pattern_button_states()
+        # Update circular transport buttons
+        if hasattr(self, 'play_btn') and hasattr(self.play_btn, 'set_active'):
+            self.play_btn.set_active(True)
+            self.stop_btn.set_active(False)
     
     def _on_pattern_stop(self):
-        """Stop pattern playback"""
+        """Stop pattern playback and reset to beginning"""
         self.pattern_manager.stop_playback()
         self.frames_since_last_step = 0
         self._last_playing_pattern_idx = -1  # Reset tracking
-        self.pattern_play_btn.config(text="⏹ Stop", bg=self.COLORS['bg_light'])
         self._update_pattern_button_states()
-        # Clear position display
+        # Reset position display to beginning (step 0)
         if hasattr(self, 'pattern_editors'):
             for editor in self.pattern_editors:
-                editor.set_current_position(-1)
+                editor.set_current_position(0)
+        # Update circular transport buttons
+        if hasattr(self, 'play_btn') and hasattr(self.play_btn, 'set_active'):
+            self.play_btn.set_active(False)
+            self.stop_btn.set_active(True)
     
     def _on_pattern_menu(self):
         """Show pattern menu"""
@@ -1044,7 +1369,10 @@ class PythonicGUI:
                         command=lambda: self._pattern_menu_action('export_audio', idx))
         
         # Show menu at button location
-        menu.post(self.root.winfo_pointerx(), self.root.winfo_pointery())
+        try:
+            menu.tk_popup(self.root.winfo_pointerx(), self.root.winfo_pointery())
+        finally:
+            menu.grab_release()
     
     def _on_pattern_right_click(self, pattern_idx, event):
         """Handle right-click on pattern button - show pattern menu for that pattern"""
@@ -1299,31 +1627,29 @@ class PythonicGUI:
     def _on_matrix_toggle(self):
         """Toggle between lane and matrix editor views"""
         if self.matrix_view_active:
-            # Switch to lane view
+            # Switch to lane view (single channel editor)
             self.matrix_editor.pack_forget()
-            self.editors_frame.pack(fill='both', padx=0, pady=0)
+            self.single_editor_frame.pack(fill='both', expand=True)
             self.matrix_toggle_btn.config(bg=self.COLORS['bg_light'])
             self.matrix_view_active = False
         else:
-            # Switch to matrix view
-            self.editors_frame.pack_forget()
+            # Switch to matrix view (all channels)
+            self.single_editor_frame.pack_forget()
             self.matrix_editor.pack(fill='both', padx=5, pady=5)
             self.matrix_toggle_btn.config(bg=self.COLORS['highlight'])
             self._update_matrix_editor()
             self.matrix_view_active = True
     
-    def _on_fill_rate_change(self, event=None):
-        """Handle fill rate change"""
-        try:
-            new_rate = int(self.fill_rate_var.get())
-            self.pattern_manager.set_fill_rate(new_rate)
-        except ValueError:
-            pass
-    
-    def _on_step_rate_change(self, event=None):
-        """Handle step rate change"""
-        new_rate = self.step_rate_var.get()
-        self.pattern_manager.set_step_rate(new_rate)
+    def _on_swing_change(self, value):
+        """Handle swing slider change
+        
+        Swing delays the 16th notes that fall between the 8ths,
+        creating a looser, more human feel (also known as shuffle).
+        0% = no swing (straight timing)
+        100% = maximum swing (triplet feel)
+        """
+        swing_percent = int(value)
+        self.pattern_manager.swing = swing_percent
     
     def _on_pattern_copy(self):
         """Copy current pattern/channel to clipboard"""
@@ -1422,11 +1748,12 @@ class PythonicGUI:
         
         channel = self.synth.get_selected_channel()
         
-        # Update patch name
-        self.patch_name_label.config(text=channel.name)
+        # Update patch name - use fallback if empty
+        patch_name = channel.name if channel.name else f"Channel {self.selected_channel + 1}"
+        self.patch_name_label.config(text=patch_name)
         
-        # Mixing section
-        self.mix_slider.set_value(channel.osc_noise_mix * 100)
+        # Mixing section - use set() for tk.Scale
+        self.mix_slider.set(channel.osc_noise_mix * 100)
         self.eq_freq_knob.set_value(channel.eq_frequency)
         self.eq_gain_knob.set_value(channel.eq_gain_db)
         self.distort_knob.set_value(channel.distortion * 100)
@@ -1444,14 +1771,14 @@ class PythonicGUI:
         self.osc_attack_knob.set_value(channel.osc_envelope.attack_ms)
         self.osc_decay_knob.set_value(channel.osc_envelope.decay_ms)
         
-        # Noise section
+        # Noise section - use sliders for attack/decay
         self.noise_filter_mode.set_value(channel.noise_gen.filter_mode.value)
         self.noise_freq_knob.set_value(channel.noise_gen.filter_frequency)
         self.noise_q_knob.set_value(channel.noise_gen.filter_q)
         self.stereo_btn.set_value(channel.noise_gen.stereo)
         self.noise_env_mode.set_value(channel.noise_gen.envelope_mode.value)
-        self.noise_attack_knob.set_value(channel.noise_gen.attack_ms)
-        self.noise_decay_knob.set_value(channel.noise_gen.decay_ms)
+        self.noise_attack_slider.set_value(channel.noise_gen.attack_ms)
+        self.noise_decay_slider.set_value(channel.noise_gen.decay_ms)
         
         # Velocity section
         self.osc_vel_slider.set_value(channel.osc_vel_sensitivity * 100)
@@ -1542,11 +1869,18 @@ class PythonicGUI:
                     # Load tempo if available
                     if 'tempo' in preset_data:
                         self.pattern_manager.set_bpm(int(preset_data['tempo']))
+                        if hasattr(self, 'bpm_var'):
+                            self.bpm_var.set(str(self.pattern_manager.bpm))
                     
                     # Load step rate if available
                     if 'step_rate' in preset_data:
                         self.pattern_manager.set_step_rate(preset_data['step_rate'])
-                        self.step_rate_var.set(preset_data['step_rate'])
+                        # Update step rate button states
+                        for r, btn in self.step_rate_buttons:
+                            if r == preset_data['step_rate']:
+                                btn.config(bg=self.COLORS['highlight'])
+                            else:
+                                btn.config(bg=self.COLORS['bg_light'])
                     
                     self._update_ui_from_channel()
                     self.preferences_manager.add_recent_file(filename)
@@ -1600,7 +1934,16 @@ class PythonicGUI:
         
         # Update combo box
         self.preset_combo['values'] = preset_files
-        if preset_files:
+        
+        # Try to select the currently loaded preset in the combo box
+        last_preset = self.preferences_manager.get('last_preset')
+        if last_preset:
+            preset_filename = os.path.basename(last_preset)
+            if preset_filename in preset_files:
+                self.preset_combo.set(preset_filename)
+            else:
+                self.preset_combo.set('')
+        elif preset_files:
             self.preset_combo.set('')
     
     def _on_preset_combo_select(self, event=None):
@@ -1652,51 +1995,69 @@ class PythonicGUI:
         
         # Update pattern playback position (always do this, even when dropping)
         if self.pattern_manager.is_playing:
-            # Calculate frames per step
-            frames_per_step = (self.sample_rate * self.pattern_manager.step_duration_ms) / 1000.0
+            pattern_length = self.pattern_manager.get_playing_pattern().length
             
-            # Check if we've crossed into a new step
-            old_step = int(self.frames_since_last_step / frames_per_step)
+            # Convert frames to milliseconds for swing calculation
+            ms_per_frame = 1000.0 / self.sample_rate
+            old_time_ms = self.frames_since_last_step * ms_per_frame
             self.frames_since_last_step += frames
-            new_step = int(self.frames_since_last_step / frames_per_step)
+            new_time_ms = self.frames_since_last_step * ms_per_frame
             
-            # Only trigger on non-dropped callbacks to save CPU
-            if new_step != old_step and not drop_this_callback:
-                trigger_start = time.perf_counter()
-                
-                # Advanced to new step
-                pattern_length = self.pattern_manager.get_playing_pattern().length
-                new_position = new_step % pattern_length
-                
-                # Check if pattern has finished (wrapped around to step 0)
-                pattern_finished = (new_step > old_step) and (new_position == 0) and (old_step > 0 or new_step >= pattern_length)
-                
-                if pattern_finished:
-                    # Pattern ended - check for chaining
-                    advanced = self.pattern_manager.advance_to_next_pattern()
-                    if advanced:
-                        # Switched to a new pattern - reset frame counter
-                        self.frames_since_last_step = 0
-                        new_position = 0
-                        # Update selected pattern to match playing pattern for visual feedback
-                        # (Optional: uncomment if you want UI to follow playing pattern)
-                        # self.pattern_manager.selected_pattern_index = self.pattern_manager.playing_pattern_index
+            # Calculate pattern duration with swing (last step time + step duration)
+            pattern_duration_ms = self.pattern_manager.get_step_time_ms(pattern_length - 1) + self.pattern_manager.step_duration_ms
+            
+            # Check if pattern has finished first (before step changes)
+            pattern_finished = new_time_ms >= pattern_duration_ms
+            
+            if pattern_finished and not drop_this_callback:
+                # Pattern ended - check for chaining
+                advanced = self.pattern_manager.advance_to_next_pattern()
+                if advanced:
+                    # Switched to a new pattern - reset frame counter
+                    self.frames_since_last_step = 0
                 else:
-                    # Update pattern manager position
-                    self.pattern_manager.play_position = new_position
-                    
-                    # Reset frame counter when we wrap around (non-chained pattern)
-                    if new_position == 0:
-                        self.frames_since_last_step = 0
+                    # Loop the current pattern - reset to start
+                    self.frames_since_last_step = new_time_ms - pattern_duration_ms
                 
-                # Trigger channels at this step
-                self._trigger_pattern_step(new_position)
+                # Update time for step calculation
+                new_time_ms = self.frames_since_last_step * ms_per_frame
+                pattern_length = self.pattern_manager.get_playing_pattern().length
                 
-                # Update position for UI thread (thread-safe)
+                # Trigger step 0 of new/looped pattern
+                self._trigger_pattern_step(0)
+                self.pattern_manager.play_position = 0
+                
+                # Update position for UI thread
                 with self.position_lock:
-                    self.current_play_position = new_position
+                    self.current_play_position = 0
+            elif not drop_this_callback:
+                # Check which steps we've crossed (accounting for swing)
+                # Find current step by checking swing-adjusted times
+                old_step = -1
+                new_step = -1
                 
-                trigger_time = (time.perf_counter() - trigger_start) * 1000  # ms
+                for step_idx in range(pattern_length):
+                    step_time = self.pattern_manager.get_step_time_ms(step_idx)
+                    if step_time <= old_time_ms:
+                        old_step = step_idx
+                    if step_time <= new_time_ms:
+                        new_step = step_idx
+                
+                # Only trigger on step change
+                if new_step != old_step and new_step >= 0:
+                    trigger_start = time.perf_counter()
+                    
+                    # Update pattern manager position
+                    self.pattern_manager.play_position = new_step
+                    
+                    # Trigger channels at this step
+                    self._trigger_pattern_step(new_step)
+                    
+                    # Update position for UI thread (thread-safe)
+                    with self.position_lock:
+                        self.current_play_position = new_step
+                    
+                    trigger_time = (time.perf_counter() - trigger_start) * 1000  # ms
         
         # Process any pending fill triggers
         if self.pending_fills and not drop_this_callback:

@@ -1,6 +1,12 @@
 """
 Custom Widgets for Pythonic GUI
 Knobs, faders, and buttons styled like the real application
+
+Style features:
+- Hint window shows parameter name and value when dragging
+- Shift key for fine adjustments
+- Ctrl/Cmd click to reset to default
+- Alt click for linear vs circular mode
 """
 
 import tkinter as tk
@@ -8,21 +14,76 @@ from tkinter import ttk
 import math
 
 
+class HintWindow:
+    """
+    Floating hint window that displays parameter name and value
+    """
+    _instance = None  # Singleton instance
+    
+    @classmethod
+    def get_instance(cls, root):
+        if cls._instance is None or not cls._instance.window.winfo_exists():
+            cls._instance = cls(root)
+        return cls._instance
+    
+    def __init__(self, root):
+        self.window = tk.Toplevel(root)
+        self.window.overrideredirect(True)  # No window decorations
+        self.window.attributes('-topmost', True)
+        self.window.withdraw()  # Start hidden
+        
+        self.frame = tk.Frame(self.window, bg='#222233', bd=1, relief='solid')
+        self.frame.pack()
+        
+        self.name_label = tk.Label(self.frame, text="", 
+                                   font=('Segoe UI', 8), 
+                                   fg='#aaaacc', bg='#222233')
+        self.name_label.pack(padx=5, pady=(3, 0))
+        
+        self.value_label = tk.Label(self.frame, text="", 
+                                    font=('Segoe UI', 10, 'bold'), 
+                                    fg='#ffffff', bg='#222233')
+        self.value_label.pack(padx=5, pady=(0, 3))
+    
+    def show(self, name, value, x, y):
+        """Show hint at position with given name and value"""
+        self.name_label.config(text=name)
+        self.value_label.config(text=value)
+        
+        # Position above the cursor
+        self.window.geometry(f"+{x-30}+{y-50}")
+        self.window.deiconify()
+    
+    def hide(self):
+        """Hide the hint window"""
+        self.window.withdraw()
+
+
 class RotaryKnob(tk.Canvas):
     """
-    Rotary knob widget styled like Pythonic's metallic knobs
+    Rotary knob widget (metallic knobs)
+    
+    Features:
+    - Hint window shows parameter name and value when dragging
+    - Shift key for fine adjustments (1/10th sensitivity)
+    - Ctrl/Cmd click to reset to default value
+    - Alt click to toggle between circular and linear drag mode
+    - Mouse wheel for adjustment
+    - Double-click to reset to center
     """
     
     def __init__(self, parent, size=50, min_val=0, max_val=100, default=50,
-                 label="", logarithmic=False, command=None, **kwargs):
+                 label="", unit="", logarithmic=False, command=None, **kwargs):
         super().__init__(parent, width=size, height=size + 20,
                         bg='#3a3a4a', highlightthickness=0, **kwargs)
         
         self.size = size
         self.min_val = min_val
         self.max_val = max_val
+        self.default_val = default  # Store default for reset
         self.value = default
         self.label = label
+        self.unit = unit  # Unit string for display (Hz, dB, %, etc.)
         self.logarithmic = logarithmic
         self.command = command
         
@@ -35,7 +96,9 @@ class RotaryKnob(tk.Canvas):
         # Interaction state
         self.dragging = False
         self.drag_start_y = 0
+        self.drag_start_x = 0  # For circular mode
         self.drag_start_value = 0
+        self.linear_mode = True  # Default to linear (vertical) drag
         
         # Draw initial state
         self._draw()
@@ -46,6 +109,42 @@ class RotaryKnob(tk.Canvas):
         self.bind('<ButtonRelease-1>', self._on_release)
         self.bind('<Double-Button-1>', self._on_double_click)
         self.bind('<MouseWheel>', self._on_scroll)
+        self.bind('<Button-4>', self._on_scroll_linux)  # Linux scroll up
+        self.bind('<Button-5>', self._on_scroll_linux)  # Linux scroll down
+        self.bind('<Control-Button-1>', self._on_ctrl_click)  # Ctrl+click to reset
+    
+    def _get_formatted_value(self):
+        """Get value formatted with appropriate unit"""
+        val = self.value
+        
+        # Auto-detect unit from label if not specified
+        unit = self.unit
+        if not unit:
+            label_lower = self.label.lower()
+            if 'freq' in label_lower or 'rate' in label_lower:
+                unit = 'Hz'
+            elif 'gain' in label_lower or 'level' in label_lower:
+                unit = 'dB'
+            elif 'pan' in label_lower:
+                unit = ''
+                if val > 0:
+                    return f"R{abs(val):.0f}"
+                elif val < 0:
+                    return f"L{abs(val):.0f}"
+                else:
+                    return "C"
+            elif 'attack' in label_lower or 'decay' in label_lower:
+                unit = 'ms'
+        
+        # Format based on range and value
+        if abs(val) >= 1000:
+            return f"{val/1000:.2f}k{unit}"
+        elif abs(val) >= 100:
+            return f"{val:.0f}{unit}"
+        elif abs(val) >= 10:
+            return f"{val:.1f}{unit}"
+        else:
+            return f"{val:.2f}{unit}"
     
     def _draw(self):
         """Draw the knob"""
@@ -71,7 +170,11 @@ class RotaryKnob(tk.Canvas):
         
         # Calculate indicator angle
         # Range is 225° (bottom-left) to -45° (bottom-right) = 270° sweep
-        normalized = (self.value - self.min_val) / (self.max_val - self.min_val)
+        value_range = self.max_val - self.min_val
+        if value_range != 0:
+            normalized = (self.value - self.min_val) / value_range
+        else:
+            normalized = 0.5
         angle = math.radians(225 - normalized * 270)
         
         # Draw indicator line
@@ -93,36 +196,95 @@ class RotaryKnob(tk.Canvas):
                            font=('Segoe UI', 7))
     
     def _on_click(self, event):
-        """Start dragging"""
+        """Start dragging - Alt toggles linear/circular mode"""
+        # Check for Alt key (toggle drag mode)
+        if event.state & 0x20000:  # Alt key on Linux
+            self.linear_mode = not self.linear_mode
+        
         self.dragging = True
         self.drag_start_y = event.y
+        self.drag_start_x = event.x
         self.drag_start_value = self.value
+        
+        # Show hint window
+        self._show_hint()
+    
+    def _on_ctrl_click(self, event):
+        """Ctrl+click resets to default value"""
+        self.set_value(self.default_val)
+        return "break"  # Prevent normal click handling
     
     def _on_drag(self, event):
-        """Handle drag to change value"""
+        """Handle drag to change value - Shift for fine control"""
         if self.dragging:
-            # Calculate value change based on vertical movement
-            delta_y = self.drag_start_y - event.y
+            # Check for Shift key (fine adjustment)
+            fine_mode = event.state & 0x1  # Shift key
+            sensitivity_multiplier = 0.1 if fine_mode else 1.0
+            
             value_range = self.max_val - self.min_val
             
-            # Sensitivity: 200 pixels = full range
-            sensitivity = value_range / 200.0
+            if self.linear_mode:
+                # Linear/vertical drag
+                delta_y = self.drag_start_y - event.y
+                # Sensitivity: 200 pixels = full range
+                sensitivity = (value_range / 200.0) * sensitivity_multiplier
+                new_value = self.drag_start_value + delta_y * sensitivity
+            else:
+                # Circular drag mode
+                cx, cy = self.size // 2, self.size // 2
+                
+                # Calculate angle from center
+                dx = event.x - cx
+                dy = cy - event.y  # Inverted for screen coords
+                angle = math.atan2(dy, dx)
+                
+                # Convert angle to value (225° to -45° range)
+                # Normalize angle to 0-1 range
+                angle_deg = math.degrees(angle)
+                if angle_deg < -45:
+                    angle_deg += 360
+                normalized = (225 - angle_deg) / 270
+                normalized = max(0, min(1, normalized))
+                
+                new_value = self.min_val + normalized * value_range
             
-            new_value = self.drag_start_value + delta_y * sensitivity
             self.set_value(new_value)
+            self._show_hint()
     
     def _on_release(self, event):
         """Stop dragging"""
         self.dragging = False
+        # Hide hint window
+        try:
+            hint = HintWindow.get_instance(self.winfo_toplevel())
+            hint.hide()
+        except:
+            pass
+    
+    def _show_hint(self):
+        """Show the hint window with parameter name and value"""
+        try:
+            hint = HintWindow.get_instance(self.winfo_toplevel())
+            # Get screen position
+            x = self.winfo_rootx() + self.size // 2
+            y = self.winfo_rooty()
+            hint.show(self.label, self._get_formatted_value(), x, y)
+        except:
+            pass
     
     def _on_double_click(self, event):
         """Reset to default on double-click"""
-        default = (self.min_val + self.max_val) / 2
-        self.set_value(default)
+        self.set_value(self.default_val)
     
     def _on_scroll(self, event):
-        """Handle mouse wheel"""
+        """Handle mouse wheel (Windows/Mac)"""
         delta = event.delta / 120  # Windows scroll delta
+        step = (self.max_val - self.min_val) / 100
+        self.set_value(self.value + delta * step)
+    
+    def _on_scroll_linux(self, event):
+        """Handle mouse wheel on Linux"""
+        delta = 1 if event.num == 4 else -1
         step = (self.max_val - self.min_val) / 100
         self.set_value(self.value + delta * step)
     
@@ -141,11 +303,16 @@ class RotaryKnob(tk.Canvas):
 
 class VerticalSlider(tk.Canvas):
     """
-    Vertical slider/fader styled like Pythonic
+    Vertical slider/fader.
+    
+    Features:
+    - Hint window shows value when dragging
+    - Shift key for fine adjustments
+    - Ctrl+click to reset to default
     """
     
     def __init__(self, parent, width=30, height=100, min_val=0, max_val=100,
-                 default=50, label="", command=None, **kwargs):
+                 default=50, label="", unit="", command=None, **kwargs):
         super().__init__(parent, width=width, height=height + 20,
                         bg='#3a3a4a', highlightthickness=0, **kwargs)
         
@@ -153,8 +320,10 @@ class VerticalSlider(tk.Canvas):
         self.slider_height = height
         self.min_val = min_val
         self.max_val = max_val
+        self.default_val = default  # Store for reset
         self.value = default
         self.label = label
+        self.unit = unit
         self.command = command
         
         # Track dimensions
@@ -169,6 +338,8 @@ class VerticalSlider(tk.Canvas):
         
         # Interaction
         self.dragging = False
+        self.drag_start_y = 0
+        self.drag_start_value = 0
         
         self._draw()
         
@@ -176,6 +347,21 @@ class VerticalSlider(tk.Canvas):
         self.bind('<B1-Motion>', self._on_drag)
         self.bind('<ButtonRelease-1>', self._on_release)
         self.bind('<MouseWheel>', self._on_scroll)
+        self.bind('<Button-4>', self._on_scroll_linux)
+        self.bind('<Button-5>', self._on_scroll_linux)
+        self.bind('<Control-Button-1>', self._on_ctrl_click)
+        self.bind('<Double-Button-1>', self._on_double_click)
+    
+    def _get_formatted_value(self):
+        """Format value with unit"""
+        val = self.value
+        unit = self.unit or '%'
+        if abs(val) >= 100:
+            return f"{val:.0f}{unit}"
+        elif abs(val) >= 10:
+            return f"{val:.1f}{unit}"
+        else:
+            return f"{val:.2f}{unit}"
     
     def _draw(self):
         """Draw the slider"""
@@ -189,7 +375,11 @@ class VerticalSlider(tk.Canvas):
         )
         
         # Calculate handle position
-        normalized = (self.value - self.min_val) / (self.max_val - self.min_val)
+        value_range = self.max_val - self.min_val
+        if value_range != 0:
+            normalized = (self.value - self.min_val) / value_range
+        else:
+            normalized = 0.5
         handle_y = self.track_bottom - normalized * self.track_range
         
         # Draw handle
@@ -215,22 +405,65 @@ class VerticalSlider(tk.Canvas):
                            font=('Segoe UI', 7))
     
     def _on_click(self, event):
-        """Handle click"""
+        """Handle click - start dragging"""
         self.dragging = True
-        self._update_from_mouse(event.y)
+        self.drag_start_y = event.y
+        self.drag_start_value = self.value
+        self._show_hint()
+    
+    def _on_ctrl_click(self, event):
+        """Ctrl+click resets to default value"""
+        self.set_value(self.default_val)
+        return "break"
+    
+    def _on_double_click(self, event):
+        """Double-click resets to default value"""
+        self.set_value(self.default_val)
     
     def _on_drag(self, event):
-        """Handle drag"""
+        """Handle drag - Shift for fine control"""
         if self.dragging:
-            self._update_from_mouse(event.y)
+            # Check for Shift key (fine adjustment)
+            fine_mode = event.state & 0x1
+            sensitivity_multiplier = 0.1 if fine_mode else 1.0
+            
+            # Calculate value change
+            delta_y = self.drag_start_y - event.y
+            value_range = self.max_val - self.min_val
+            sensitivity = (value_range / self.track_range) * sensitivity_multiplier
+            
+            new_value = self.drag_start_value + delta_y * sensitivity
+            self.set_value(new_value)
+            self._show_hint()
     
     def _on_release(self, event):
         """Handle release"""
         self.dragging = False
+        try:
+            hint = HintWindow.get_instance(self.winfo_toplevel())
+            hint.hide()
+        except:
+            pass
+    
+    def _show_hint(self):
+        """Show hint window with current value"""
+        try:
+            hint = HintWindow.get_instance(self.winfo_toplevel())
+            x = self.winfo_rootx() + self.slider_width // 2
+            y = self.winfo_rooty()
+            hint.show(self.label, self._get_formatted_value(), x, y)
+        except:
+            pass
     
     def _on_scroll(self, event):
-        """Handle scroll"""
+        """Handle scroll (Windows/Mac)"""
         delta = event.delta / 120
+        step = (self.max_val - self.min_val) / 50
+        self.set_value(self.value + delta * step)
+    
+    def _on_scroll_linux(self, event):
+        """Handle scroll on Linux"""
+        delta = 1 if event.num == 4 else -1
         step = (self.max_val - self.min_val) / 50
         self.set_value(self.value + delta * step)
     
@@ -256,6 +489,65 @@ class VerticalSlider(tk.Canvas):
     def get_value(self):
         """Get current value"""
         return self.value
+
+
+class CircularButton(tk.Canvas):
+    """
+    Circular button
+    """
+    
+    def __init__(self, parent, text="", size=35, command=None, 
+                 bg_color='#4a4a5a', fg_color='#ccccee', **kwargs):
+        super().__init__(parent, width=size, height=size,
+                        bg='#3a3a4a', highlightthickness=0, **kwargs)
+        
+        self.size = size
+        self.text = text
+        self.command = command
+        self.btn_bg_color = bg_color
+        self.btn_fg_color = fg_color
+        self.active = False
+        
+        self._draw()
+        
+        self.bind('<Button-1>', self._on_click)
+    
+    def _draw(self):
+        """Draw circular button"""
+        self.delete('all')
+        
+        # Outer ring
+        self.create_oval(2, 2, self.size - 2, self.size - 2,
+                        fill=self.btn_bg_color, outline='#666688', width=2)
+        
+        # Inner highlight
+        self.create_oval(4, 4, self.size - 4, self.size - 4,
+                        fill='', outline='#888899', width=1)
+        
+        # Text/symbol
+        self.create_text(self.size // 2, self.size // 2,
+                        text=self.text,
+                        fill=self.btn_fg_color, 
+                        font=('Segoe UI', 12, 'bold'))
+        
+        # Glow if active
+        if self.active:
+            self.create_oval(4, 4, self.size - 4, self.size - 4,
+                            fill='', outline='#44ff88', width=2)
+    
+    def _on_click(self, event):
+        if self.command:
+            self.command()
+    
+    def set_active(self, active):
+        """Set active state (glowing)"""
+        self.active = active
+        self._draw()
+    
+    def set_bg_color(self, color):
+        """Update background color"""
+        self.btn_bg_color = color
+        self._draw()
 
 
 class ChannelButton(tk.Canvas):
@@ -543,13 +835,13 @@ class PatternEditor(tk.Canvas):
             all_channels_command: Callback for multi-channel operations (step_index, lane_type, value, muted_channels)
             length_change_callback: Callback when pattern length is changed (new_length)
         """
-        # Calculate dimensions - made more compact
-        step_width = 25
-        lane_height = 12  # Reduced from 20 to 12 for more compact display
-        num_lanes = 4  # triggers, accents, fills, length display
+        # Calculate dimensions - wider steps for better usability
+        step_width = 45  # Wider steps for better click targets
+        lane_height = 18  # Taller lanes for better visibility
+        num_lanes = 5  # triggers, accents, fills, length display, step numbers
         
-        width = num_steps * step_width + 40
-        height = num_lanes * lane_height + 10
+        width = num_steps * step_width + 50  # 50px for lane labels
+        height = num_lanes * lane_height + 15
         
         super().__init__(parent, width=width, height=height,
                         bg='#2a2a3a', highlightthickness=1,
@@ -735,16 +1027,16 @@ class PatternEditor(tk.Canvas):
         # Draw lane labels on left
         for i, lane_name in enumerate(self.lanes):
             y = 5 + i * self.lane_height + self.lane_height // 2
-            self.create_text(15, y, text=lane_name, fill='#8888aa',
-                           font=('Segoe UI', 7), anchor='center')
+            self.create_text(25, y, text=lane_name, fill='#8888aa',
+                           font=('Segoe UI', 8), anchor='center')
         
         # Draw length indicator lane label
         y = 5 + 3 * self.lane_height + self.lane_height // 2
-        self.create_text(15, y, text='len', fill='#8888aa',
-                       font=('Segoe UI', 7), anchor='center')
+        self.create_text(25, y, text='len', fill='#8888aa',
+                       font=('Segoe UI', 8), anchor='center')
         
         # Draw steps for each lane
-        x_start = 40
+        x_start = 50
         
         # Draw trigger lane
         self._draw_lane(0, self.triggers, '#4488ff', '#3366cc')
@@ -758,10 +1050,13 @@ class PatternEditor(tk.Canvas):
         # Draw length indicator lane
         self._draw_length_lane()
         
+        # Draw step numbers row
+        self._draw_step_numbers()
+        
         # Draw vertical grid lines
         for step in range(self.num_steps + 1):
             x = x_start + step * self.step_width
-            self.create_line(x, 0, x, self.winfo_height(),
+            self.create_line(x, 0, x, self.winfo_height() - self.lane_height,
                            fill='#3a3a4a', dash=(2,))
         
         # Draw horizontal grid lines
@@ -777,7 +1072,7 @@ class PatternEditor(tk.Canvas):
     
     def _draw_lane(self, lane_index, data, color_on, color_off):
         """Draw a single lane of steps"""
-        x_start = 40
+        x_start = 50
         y_base = 5 + lane_index * self.lane_height
         
         for step, is_on in enumerate(data):
@@ -793,18 +1088,38 @@ class PatternEditor(tk.Canvas):
             if lane_index > 0 and not self.triggers[step]:
                 color = '#444455'
             
-            self.create_rectangle(x, y, x + w, y + h,
-                                fill=color, outline='#555566', width=1)
-            
-            # Draw a small indicator inside
-            if is_on:
-                self.create_oval(x + 2, y + 2, x + w - 2, y + h - 2,
-                               outline='#ffffff', width=1)
+            # Draw pill-shaped (rounded) step button
+            radius = min(w, h) // 2
+            self._draw_rounded_rect(x, y, x + w, y + h, radius, fill=color, outline='#555566')
+    
+    def _draw_rounded_rect(self, x1, y1, x2, y2, radius, **kwargs):
+        """Draw a rounded rectangle (pill shape)"""
+        # Clamp radius to half the smaller dimension
+        radius = min(radius, (x2 - x1) // 2, (y2 - y1) // 2)
+        
+        # Create points for a rounded rectangle using polygon
+        points = [
+            x1 + radius, y1,
+            x2 - radius, y1,
+            x2, y1,
+            x2, y1 + radius,
+            x2, y2 - radius,
+            x2, y2,
+            x2 - radius, y2,
+            x1 + radius, y2,
+            x1, y2,
+            x1, y2 - radius,
+            x1, y1 + radius,
+            x1, y1,
+        ]
+        
+        # Use smooth polygon for rounded corners
+        self.create_polygon(points, smooth=True, **kwargs)
     
     def _draw_length_lane(self):
         """Draw the pattern length indicator"""
         lane_index = 3
-        x_start = 40
+        x_start = 50
         y_base = 5 + lane_index * self.lane_height
         
         # Show steps 0 to pattern_length
@@ -822,14 +1137,22 @@ class PatternEditor(tk.Canvas):
                 # Dimmed for outside pattern length
                 color = '#222233'
             
-            self.create_rectangle(x, y, x + w, y + h,
-                                fill=color, outline='#555566', width=1)
-            
-            # Draw step number
-            step_num = (step % 16) + 1
-            if step_num in [1, 5, 9, 13]:  # Every 4 steps
-                self.create_text(x + w // 2, y + h // 2, text=str(step_num),
-                               fill='#6688ff', font=('Segoe UI', 6))
+            # Draw pill-shaped step like other lanes
+            radius = min(w, h) // 2
+            self._draw_rounded_rect(x, y, x + w, y + h, radius, fill=color, outline='#555566')
+    
+    def _draw_step_numbers(self):
+        """Draw the step numbers row (1-16)"""
+        lane_index = 4
+        x_start = 50
+        y_base = 5 + lane_index * self.lane_height
+        
+        for step in range(self.num_steps):
+            x = x_start + step * self.step_width + self.step_width // 2
+            y = y_base + self.lane_height // 2
+            step_num = step + 1
+            self.create_text(x, y, text=str(step_num),
+                           fill='#8888aa', font=('Segoe UI', 7))
     
     def get_triggers(self):
         """Get current triggers"""
