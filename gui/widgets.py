@@ -604,7 +604,7 @@ class ChannelButton(tk.Canvas):
     def _on_click(self, event):
         """Handle click"""
         if self.command:
-            self.command(self.channel_num)
+            self.command(self.channel_num, event)
     
     def set_selected(self, selected):
         """Set selected state"""

@@ -1056,8 +1056,26 @@ class PythonicGUI:
         self._update_ui_from_channel()
         self._update_pattern_editors()
     
-    def _on_channel_select(self, channel_idx):
-        """Handle channel selection"""
+    def _on_channel_select(self, channel_idx, event=None):
+        """Handle channel selection
+        
+        If clicking on an already-selected channel, trigger the drum to preview it.
+        Hold Ctrl for accented trigger (velocity 127), otherwise normal (velocity 64).
+        """
+        # Check if clicking on already-selected channel -> trigger preview
+        if channel_idx == self.selected_channel:
+            # Trigger the drum to preview
+            # Check if Ctrl is held for accented trigger
+            if event and (event.state & 0x4):  # Control key mask
+                velocity = 127  # Accented
+            else:
+                velocity = 64   # Normal
+            self.synth.trigger_drum(channel_idx, velocity)
+            # Flash the button
+            self.channel_buttons[channel_idx].set_triggered(True)
+            self.root.after(100, lambda: self.channel_buttons[channel_idx].set_triggered(False))
+            return
+        
         # Update button states
         for i, btn in enumerate(self.channel_buttons):
             btn.set_selected(i == channel_idx)
