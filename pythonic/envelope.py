@@ -245,31 +245,100 @@ class Envelope:
 
 class ModulatedEnvelope(Envelope):
     """
-    Envelope with amplitude modulation (for handclap sounds)
+    Envelope with retriggered bursts for handclap sounds.
+    
+    Implements the "Mod" noise envelope mode:
+    - During attack phase: Multiple overlapping bursts that create the "clap" texture
+    - After attack phase: Normal exponential decay
+    
+    The attack parameter controls the duration of the burst phase.
+    The decay parameter controls the final decay time after bursts.
     """
+    
+    # Retrigger rate during attack phase (Hz)
+    # Based on reference analysis: peaks ~0.72ms apart = ~1400 Hz
+    RETRIGGER_RATE_HZ = 1400.0
+    
+    # Each burst has a short decay time
+    BURST_DECAY_MS = 1.5
     
     def __init__(self, sample_rate: int = 44100):
         super().__init__(sample_rate)
-        self.mod_frequency = 50.0  # Hz
-        self.mod_phase = 0.0
+        self.mod_frequency = 50.0  # Legacy - not used in new implementation
+        self.mod_phase = 0.0  # Legacy
+        
+        # State for burst generation
+        self._sample_pos = 0  # Current sample position since trigger
+        self._burst_envelope = 1.0  # Current overlapped burst envelope level
+        
+        # Pre-computed coefficients
+        self._burst_decay_coeff = 0.0  # Decay coefficient for individual bursts
+        self._main_decay_coeff = 0.0  # Decay coefficient for main envelope
+        self._retrigger_interval = 0  # Samples between retriggers
     
     def set_mod_frequency(self, freq: float):
-        """Set modulation frequency in Hz"""
+        """Set modulation frequency in Hz (legacy, kept for API compatibility)"""
         self.mod_frequency = np.clip(freq, 0.0, 100.0)
     
+    def trigger(self):
+        """Trigger the envelope - set up burst pattern"""
+        super().trigger()
+        self._sample_pos = 0
+        self._burst_envelope = 1.0
+        
+        # Calculate retrigger interval
+        self._retrigger_interval = max(1, int(self.sr / self.RETRIGGER_RATE_HZ))
+        
+        # Burst decay coefficient (each burst decays quickly)
+        burst_decay_samples = max(1, int(self.BURST_DECAY_MS * self.sr / 1000.0))
+        self._burst_decay_coeff = np.exp(-5.0 / burst_decay_samples)
+        
+        # Main envelope decay coefficient
+        main_decay_samples = max(1, int(self.decay_ms * self.sr / 1000.0))
+        self._main_decay_coeff = np.exp(-7.0 / main_decay_samples)
+    
     def process(self, num_samples: int) -> np.ndarray:
-        """Generate modulated envelope samples"""
-        # Get base envelope
-        base_env = super().process(num_samples)
+        """Generate clap envelope with retriggered bursts"""
+        if not self.is_active:
+            if num_samples <= len(self._output_buffer):
+                result = self._output_buffer[:num_samples]
+                result.fill(0)
+                return result
+            return np.zeros(num_samples, dtype=np.float32)
         
-        if not self.is_active and np.max(base_env) < 0.0001:
-            return base_env
+        # Use pre-allocated buffer
+        if num_samples <= len(self._output_buffer):
+            output = self._output_buffer[:num_samples]
+        else:
+            output = np.zeros(num_samples, dtype=np.float32)
         
-        # Apply amplitude modulation
-        t = np.arange(num_samples) / self.sr + self.mod_phase
-        modulation = 0.5 + 0.5 * np.sin(2.0 * np.pi * self.mod_frequency * t)
+        attack_samples = max(1, int(self.attack_ms * self.sr / 1000.0))
         
-        # Update phase
-        self.mod_phase = t[-1] if num_samples > 0 else self.mod_phase
+        for i in range(num_samples):
+            current_sample = self._sample_pos + i
+            
+            if current_sample < attack_samples:
+                # Burst phase: retriggering pattern
+                # Check if we should retrigger (boost the envelope back up)
+                if current_sample % self._retrigger_interval == 0:
+                    # Retrigger: add new burst on top of existing level
+                    # This creates overlapping decays
+                    self._burst_envelope = min(1.0, self._burst_envelope + 0.7)
+                
+                # Apply burst decay
+                self._burst_envelope *= self._burst_decay_coeff
+                output[i] = self._burst_envelope
+            else:
+                # Main decay phase
+                self._burst_envelope *= self._main_decay_coeff
+                output[i] = self._burst_envelope
+                
+                # Check if done
+                if self._burst_envelope < 0.0001:
+                    self.is_active = False
+                    # Fill rest with zeros
+                    output[i+1:] = 0
+                    break
         
-        return base_env * modulation
+        self._sample_pos += num_samples
+        return output

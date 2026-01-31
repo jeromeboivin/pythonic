@@ -16,9 +16,9 @@ class DrumChannel:
     Combines oscillator, noise generator, mixing, distortion, and EQ
     """
     
-    # Internal headroom adjusted
-    INTERNAL_HEADROOM_DB = -2.0
-    INTERNAL_HEADROOM_LINEAR = 10.0 ** (INTERNAL_HEADROOM_DB / 20.0)  # ~0.794
+    # Internal headroom
+    INTERNAL_HEADROOM_DB = 0.0
+    INTERNAL_HEADROOM_LINEAR = 10.0 ** (INTERNAL_HEADROOM_DB / 20.0)  # 1.0
     
     # Oscillator level scaling relative to noise
     # Oscillator level is lower than a full-scale waveform

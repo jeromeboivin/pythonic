@@ -136,11 +136,14 @@ class NoiseGenerator:
         self._update_envelope()
     
     def set_decay(self, decay_ms: float):
-        """Set decay time in ms (or mod frequency for modulated mode)"""
+        """Set decay time in ms
+        
+        For MODULATED mode, this sets the decay time after the burst phase.
+        """
+        self.decay_ms = np.clip(decay_ms, 1.0, 10000.0)
+        # Keep mod_frequency updated for backwards compatibility
         if self.envelope_mode == NoiseEnvelopeMode.MODULATED:
             self.mod_frequency = np.clip(decay_ms, 0.0, 100.0)
-        else:
-            self.decay_ms = np.clip(decay_ms, 1.0, 10000.0)
         self._update_envelope()
     
     def set_velocity_gain(self, gain: float):
