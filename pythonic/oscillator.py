@@ -48,6 +48,9 @@ class Oscillator:
         self.pitch_mod_amount = 0.0  # Semitones (-120 to +120 for decay, ±48 for sine)
         self.pitch_mod_rate = 100.0  # Decay time constant (ms) or LFO frequency (Hz)
         
+        # Pitch drift (from vintage analog simulation)
+        self.pitch_drift_multiplier = 1.0  # Frequency multiplier for analog drift
+        
         # State
         self.phase = 0.0
         self.mod_time = 0.0  # Time since trigger (seconds)
@@ -120,6 +123,14 @@ class Oscillator:
         """Set velocity-based modulation amount multiplier"""
         self.velocity_mod_scale = scale
 
+    def set_pitch_drift(self, multiplier: float):
+        """Set pitch drift multiplier (for analog simulation)
+        
+        Args:
+            multiplier: Frequency multiplier (1.0 = no drift)
+        """
+        self.pitch_drift_multiplier = multiplier
+
     def process(self, num_samples: int) -> np.ndarray:
         """
         Generate audio samples
@@ -186,9 +197,12 @@ class Oscillator:
         """
         # Apply velocity-based modulation scaling
         effective_mod_amount = self.pitch_mod_amount * self.velocity_mod_scale
+        
+        # Base frequency with pitch drift applied
+        base_freq = self.frequency * self.pitch_drift_multiplier
 
         if abs(effective_mod_amount) < 0.01:
-            return np.full_like(time_array, self.frequency)
+            return np.full_like(time_array, base_freq)
         
         # Convert mod_rate (in ms) to decay time constant
         mod_rate_sec = self.pitch_mod_rate / 1000.0  # Convert ms to seconds
@@ -207,15 +221,18 @@ class Oscillator:
         else:
             freq_multiplier = np.ones_like(time_array)
         
-        return self.frequency * freq_multiplier
+        return base_freq * freq_multiplier
     
     def _apply_sine_mod(self, time_array: np.ndarray) -> np.ndarray:
         """Apply sine/FM modulation"""
         # Apply velocity-based modulation scaling
         effective_mod_amount = self.pitch_mod_amount * self.velocity_mod_scale
         
+        # Base frequency with pitch drift applied
+        base_freq = self.frequency * self.pitch_drift_multiplier
+        
         if abs(effective_mod_amount) < 0.01:
-            return np.full_like(time_array, self.frequency)
+            return np.full_like(time_array, base_freq)
         
         # Convert semitones to frequency ratio
         mod_ratio = 2.0 ** (effective_mod_amount / 12.0) - 1.0
@@ -226,15 +243,18 @@ class Oscillator:
         # Apply modulation
         freq_multiplier = 1.0 + mod_ratio * lfo
         
-        return self.frequency * freq_multiplier
+        return base_freq * freq_multiplier
     
     def _apply_random_mod(self, num_samples: int) -> np.ndarray:
         """Apply random/noise modulation (vectorized)"""
         # Apply velocity-based modulation scaling
         effective_mod_amount = self.pitch_mod_amount * self.velocity_mod_scale
         
+        # Base frequency with pitch drift applied
+        base_freq = self.frequency * self.pitch_drift_multiplier
+        
         if effective_mod_amount < 0.01:
-            return np.full(num_samples, self.frequency)
+            return np.full(num_samples, base_freq)
         
         # Generate filtered random noise
         noise = self._random_state.randn(num_samples)
@@ -259,7 +279,7 @@ class Oscillator:
         mod_semitones = effective_mod_amount / 1000.0 * 12.0  # Scale down
         freq_multiplier = 2.0 ** (filtered_noise * mod_semitones / 12.0)
         
-        return self.frequency * freq_multiplier
+        return base_freq * freq_multiplier
     
     def _generate_waveform(self, phases: np.ndarray) -> np.ndarray:
         """Generate waveform samples from phase array with gain compensation

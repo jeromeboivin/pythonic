@@ -8,6 +8,7 @@ from .oscillator import Oscillator, WaveformType, PitchModMode
 from .noise import NoiseGenerator, NoiseFilterMode, NoiseEnvelopeMode
 from .envelope import Envelope
 from .filter import EQFilter
+from .vintage import VintageProcessor
 
 
 class DrumChannel:
@@ -35,6 +36,10 @@ class DrumChannel:
         self.osc_envelope = Envelope(sample_rate)
         self.eq_filter_l = EQFilter(sample_rate)
         self.eq_filter_r = EQFilter(sample_rate)
+        self.vintage = VintageProcessor(sample_rate)
+        
+        # Vintage amount (0.0 to 1.0) - simulates analog circuit behavior
+        self.vintage_amount = 0.0
         
         # Mixing parameters
         self.osc_noise_mix = 0.5  # 0 = all noise, 1 = all oscillator
@@ -141,6 +146,7 @@ class DrumChannel:
         self.oscillator.reset_phase()
         self.osc_envelope.trigger()
         self.noise_gen.trigger()
+        self.vintage.reset()
     
     def process(self, num_samples: int) -> np.ndarray:
         """
@@ -157,6 +163,14 @@ class DrumChannel:
             result = self._output_buffer[:num_samples]
             result.fill(0)
             return result
+        
+        # Apply vintage pitch drift if enabled
+        if self.vintage_amount > 0.001:
+            self.vintage.set_amount(self.vintage_amount)
+            pitch_drift_mult = self.vintage.get_pitch_multiplier()
+            self.oscillator.set_pitch_drift(pitch_drift_mult)
+        else:
+            self.oscillator.set_pitch_drift(1.0)
         
         # Generate oscillator signal
         osc_raw = self.oscillator.process(num_samples)
@@ -223,6 +237,11 @@ class DrumChannel:
         # Apply internal headroom (in-place)
         gain = level_linear * self.INTERNAL_HEADROOM_LINEAR
         np.multiply(mixed, gain, out=mixed)
+        
+        # Apply vintage analog simulation (after level, before pan)
+        if self.vintage_amount > 0.001:
+            self.vintage.set_amount(self.vintage_amount)
+            mixed = self.vintage.process(mixed)
         
         # Apply pan (in-place where possible)
         output = self._apply_pan_inplace(mixed)
@@ -422,6 +441,7 @@ class DrumChannel:
             'osc_vel_sensitivity': self.osc_vel_sensitivity,
             'noise_vel_sensitivity': self.noise_vel_sensitivity,
             'mod_vel_sensitivity': self.mod_vel_sensitivity,
+            'vintage_amount': self.vintage_amount,
         }
     
     def set_parameters(self, params: dict):
@@ -478,3 +498,5 @@ class DrumChannel:
             self.noise_vel_sensitivity = np.clip(params['noise_vel_sensitivity'], 0.0, 2.0)
         if 'mod_vel_sensitivity' in params:
             self.mod_vel_sensitivity = np.clip(params['mod_vel_sensitivity'], 0.0, 2.0)
+        if 'vintage_amount' in params:
+            self.vintage_amount = np.clip(params['vintage_amount'], 0.0, 1.0)

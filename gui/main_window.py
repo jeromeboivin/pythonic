@@ -568,6 +568,16 @@ class PythonicGUI:
                                        command=self._on_eq_gain_change)
         self.eq_gain_knob.pack(side='left', padx=3)
         
+        # Row 3b: Vintage (analog simulation)
+        row3b = tk.Frame(section, bg=self.COLORS['bg_medium'])
+        row3b.pack(pady=3)
+        
+        self.vintage_knob = RotaryKnob(row3b, size=42,
+                                       min_val=0, max_val=100, default=0,
+                                       label="vintage",
+                                       command=self._on_vintage_change)
+        self.vintage_knob.pack(side='left', padx=3)
+        
         # Row 4: Level and Pan
         row4 = tk.Frame(section, bg=self.COLORS['bg_medium'])
         row4.pack(pady=3)
@@ -1129,6 +1139,19 @@ class PythonicGUI:
         if not self.updating_ui:
             channel = self.synth.get_selected_channel()
             channel.distortion = value / 100.0
+    
+    def _on_vintage_change(self, value):
+        """Handle vintage analog simulation change
+        
+        The vintage knob simulates analog circuit behavior:
+        - Oscillator pitch drift (random walk instability)
+        - Thermal noise floor
+        - Soft saturation for harmonic warmth
+        - High-frequency roll-off (capacitor loading)
+        """
+        if not self.updating_ui:
+            channel = self.synth.get_selected_channel()
+            channel.vintage_amount = value / 100.0
     
     def _on_level_change(self, value):
         """Handle level change"""
@@ -1775,6 +1798,7 @@ class PythonicGUI:
         self.eq_freq_knob.set_value(channel.eq_frequency)
         self.eq_gain_knob.set_value(channel.eq_gain_db)
         self.distort_knob.set_value(channel.distortion * 100)
+        self.vintage_knob.set_value(channel.vintage_amount * 100)
         self.level_knob.set_value(channel.level_db)
         self.pan_knob.set_value(channel.pan)
         self.choke_btn.set_value(channel.choke_enabled)
