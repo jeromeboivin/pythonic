@@ -6,13 +6,19 @@ using synthetic reference data. It ensures that changes to the codebase
 don't break existing functionality.
 
 Run with: pytest tests/ -v
-Or: python -m pytest tests/ -v
+Or: python tests/test_synthesis.py
 """
 
 import numpy as np
-import pytest
 import sys
 import os
+
+# Try to import pytest, but allow running without it
+try:
+    import pytest
+    PYTEST_AVAILABLE = True
+except ImportError:
+    PYTEST_AVAILABLE = False
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -822,5 +828,64 @@ class TestVelocitySensitivity:
             f"At vel=64 with 200% sens, osc gain should be ~{expected:.6f}, got {ch.oscillator.velocity_gain}"
 
 
+def run_tests_standalone():
+    """Run tests without pytest for environments where pytest is not available"""
+    import traceback
+    
+    test_classes = [
+        TestOscillatorWaveforms,
+        TestPitchModulation,
+        TestEnvelope,
+        TestNoiseGenerator,
+        TestDrumChannel,
+        TestWaveformGainCompensation,
+        TestEdgeCases,
+        TestDeterminism,
+        TestVelocitySensitivity,
+    ]
+    
+    total_passed = 0
+    total_failed = 0
+    failed_tests = []
+    
+    for test_class in test_classes:
+        print(f"\n{test_class.__name__}:")
+        instance = test_class()
+        
+        # Find all test methods
+        test_methods = [m for m in dir(instance) if m.startswith('test_')]
+        
+        for method_name in test_methods:
+            try:
+                method = getattr(instance, method_name)
+                method()
+                print(f"  ✓ {method_name}")
+                total_passed += 1
+            except AssertionError as e:
+                print(f"  ✗ {method_name}: {e}")
+                failed_tests.append((test_class.__name__, method_name, str(e)))
+                total_failed += 1
+            except Exception as e:
+                print(f"  ✗ {method_name}: {type(e).__name__}: {e}")
+                failed_tests.append((test_class.__name__, method_name, traceback.format_exc()))
+                total_failed += 1
+    
+    print(f"\n{'='*60}")
+    print(f"Results: {total_passed} passed, {total_failed} failed")
+    
+    if failed_tests:
+        print(f"\nFailed tests:")
+        for cls, method, error in failed_tests:
+            print(f"  - {cls}.{method}")
+        return 1
+    else:
+        print("\nAll tests passed!")
+        return 0
+
+
 if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
+    if PYTEST_AVAILABLE:
+        import pytest
+        exit(pytest.main([__file__, '-v']))
+    else:
+        exit(run_tests_standalone())

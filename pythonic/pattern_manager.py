@@ -566,6 +566,153 @@ class PatternManager:
         pattern = self.get_playing_pattern()
         self.play_position = position % pattern.length
 
+    # ============ Pattern Chaining ============
+
+    def chain_patterns(self, from_index: int, to_index: int):
+        """
+        Chain pattern at from_index to pattern at to_index.
+        Patterns are always chained in alphabetical order (A->B, B->C, etc.).
+        The 'to_index' must be from_index + 1.
+        """
+        if to_index != from_index + 1:
+            return False
+        if not (0 <= from_index < len(self.patterns) - 1):
+            return False
+        
+        self.patterns[from_index].chained_to_next = True
+        self.patterns[to_index].chained_from_prev = True
+        return True
+
+    def unchain_patterns(self, from_index: int, to_index: int):
+        """
+        Remove chain between pattern at from_index and pattern at to_index.
+        """
+        if to_index != from_index + 1:
+            return False
+        if not (0 <= from_index < len(self.patterns) - 1):
+            return False
+        
+        self.patterns[from_index].chained_to_next = False
+        self.patterns[to_index].chained_from_prev = False
+        return True
+
+    def toggle_chain_to_next(self, pattern_index: int) -> bool:
+        """
+        Toggle chain from pattern at pattern_index to the next pattern.
+        Returns the new chain state.
+        """
+        if not (0 <= pattern_index < len(self.patterns) - 1):
+            return False
+        
+        pattern = self.patterns[pattern_index]
+        next_pattern = self.patterns[pattern_index + 1]
+        
+        if pattern.chained_to_next:
+            pattern.chained_to_next = False
+            next_pattern.chained_from_prev = False
+        else:
+            pattern.chained_to_next = True
+            next_pattern.chained_from_prev = True
+        
+        return pattern.chained_to_next
+
+    def toggle_chain_from_prev(self, pattern_index: int) -> bool:
+        """
+        Toggle chain from previous pattern to pattern at pattern_index.
+        Returns the new chain state.
+        """
+        if not (0 < pattern_index < len(self.patterns)):
+            return False
+        
+        pattern = self.patterns[pattern_index]
+        prev_pattern = self.patterns[pattern_index - 1]
+        
+        if pattern.chained_from_prev:
+            pattern.chained_from_prev = False
+            prev_pattern.chained_to_next = False
+        else:
+            pattern.chained_from_prev = True
+            prev_pattern.chained_to_next = True
+        
+        return pattern.chained_from_prev
+
+    def get_chain_start(self, pattern_index: int) -> int:
+        """
+        Find the first pattern in the chain containing pattern at pattern_index.
+        Returns the index of the first pattern in the chain.
+        """
+        current = pattern_index
+        while current > 0 and self.patterns[current].chained_from_prev:
+            current -= 1
+        return current
+
+    def get_chain_end(self, pattern_index: int) -> int:
+        """
+        Find the last pattern in the chain containing pattern at pattern_index.
+        Returns the index of the last pattern in the chain.
+        """
+        current = pattern_index
+        while current < len(self.patterns) - 1 and self.patterns[current].chained_to_next:
+            current += 1
+        return current
+
+    def get_chain_patterns(self, pattern_index: int) -> List[int]:
+        """
+        Get all pattern indices in the chain containing pattern at pattern_index.
+        Returns list of pattern indices in order.
+        """
+        start = self.get_chain_start(pattern_index)
+        end = self.get_chain_end(pattern_index)
+        return list(range(start, end + 1))
+
+    def is_in_chain(self, pattern_index: int) -> bool:
+        """Check if pattern at pattern_index is part of a chain."""
+        pattern = self.patterns[pattern_index]
+        return pattern.chained_to_next or pattern.chained_from_prev
+
+    def get_next_pattern_in_chain(self, pattern_index: int) -> Optional[int]:
+        """
+        Get the next pattern in the chain after pattern at pattern_index.
+        If at the end of a chain, returns the chain start (loop).
+        If not in a chain, returns None (no chaining).
+        
+        Returns:
+            Next pattern index to play, or None if pattern should not chain.
+        """
+        pattern = self.patterns[pattern_index]
+        
+        if pattern.chained_to_next and pattern_index < len(self.patterns) - 1:
+            # Continue to next pattern in chain
+            return pattern_index + 1
+        elif self.is_in_chain(pattern_index):
+            # At end of chain, loop back to start
+            return self.get_chain_start(pattern_index)
+        else:
+            # Not in a chain, no automatic progression
+            return None
+
+    def advance_to_next_pattern(self) -> bool:
+        """
+        Advance playback to the next pattern in the chain.
+        Call this when the current pattern has finished playing.
+        
+        Returns:
+            True if advanced to a new pattern, False if staying on current or stopped.
+        """
+        if not self.is_playing:
+            return False
+        
+        next_pattern = self.get_next_pattern_in_chain(self.playing_pattern_index)
+        
+        if next_pattern is not None:
+            self.playing_pattern_index = next_pattern
+            self.play_position = 0
+            return True
+        else:
+            # Not in a chain - just loop current pattern
+            self.play_position = 0
+            return False
+
     # ============ Serialization ============
 
     def to_dict(self) -> Dict:
@@ -608,6 +755,7 @@ class PatternManager:
         # patterns_data is a dict with keys 'A'-'L'
         pattern_names = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L']
         
+        # First pass: load pattern data and set chained_to_next
         for i, pattern_name in enumerate(pattern_names):
             if pattern_name not in patterns_data:
                 continue
@@ -619,6 +767,7 @@ class PatternManager:
             length = pattern_info.get('length', 16)
             pattern.set_length(length)
             pattern.chained_to_next = pattern_info.get('chained', False)
+            pattern.chained_from_prev = False  # Reset, will be set in second pass
             
             # Load channel data
             channels_data = pattern_info.get('channels', {})
@@ -628,3 +777,8 @@ class PatternManager:
                     channel.set_triggers(channel_info['triggers'])
                     channel.set_accents(channel_info['accents'])
                     channel.set_fills(channel_info['fills'])
+        
+        # Second pass: set chained_from_prev based on previous pattern's chained_to_next
+        for i in range(1, len(self.patterns)):
+            if self.patterns[i - 1].chained_to_next:
+                self.patterns[i].chained_from_prev = True

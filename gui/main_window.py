@@ -98,6 +98,10 @@ class PythonicGUI:
         self.position_lock = threading.Lock()  # Protect position updates
         self.ui_update_timer = None  # Timer for UI updates
         
+        # Fill tracking: list of (frames_until_trigger, channel_id, velocity)
+        # Fills are triggered at sub-step intervals within the current step
+        self.pending_fills = []
+        
         # Performance monitoring
         self.callback_times = deque(maxlen=100)  # Last 100 callback times
         self.trigger_times = deque(maxlen=100)  # Time spent triggering
@@ -987,13 +991,17 @@ class PythonicGUI:
         selected_idx = self.pattern_manager.selected_pattern_index
         self.pattern_manager.start_playback(selected_idx)
         self.frames_since_last_step = 0  # Reset frame counter
+        self._last_playing_pattern_idx = selected_idx  # Track for chaining detection
         self.pattern_play_btn.config(text="⏹ Stop", bg=self.COLORS['led_on'])
+        self._update_pattern_button_states()
     
     def _on_pattern_stop(self):
         """Stop pattern playback"""
         self.pattern_manager.stop_playback()
         self.frames_since_last_step = 0
+        self._last_playing_pattern_idx = -1  # Reset tracking
         self.pattern_play_btn.config(text="⏹ Stop", bg=self.COLORS['bg_light'])
+        self._update_pattern_button_states()
         # Clear position display
         if hasattr(self, 'pattern_editors'):
             for editor in self.pattern_editors:
@@ -1273,22 +1281,20 @@ class PythonicGUI:
             messagebox.showerror("Export Error", f"Failed to export audio file:\\n{e}")
     
     def _on_chain_previous(self):
-        """Chain current pattern with previous"""
+        """Toggle chain from previous pattern to current"""
         idx = self.pattern_manager.selected_pattern_index
         if idx > 0:
-            pattern = self.pattern_manager.get_pattern(idx - 1)
-            pattern.chained_to_next = True
-            self.pattern_manager.get_pattern(idx).chained_from_prev = True
-            messagebox.showinfo("Pattern", "Patterns chained!")
+            new_state = self.pattern_manager.toggle_chain_from_prev(idx)
+            status = "chained" if new_state else "unchained"
+            self._update_pattern_button_states()
     
     def _on_chain_next(self):
-        """Chain current pattern with next"""
+        """Toggle chain from current pattern to next"""
         idx = self.pattern_manager.selected_pattern_index
         if idx < 11:
-            pattern = self.pattern_manager.get_pattern(idx)
-            pattern.chained_to_next = True
-            self.pattern_manager.get_pattern(idx + 1).chained_from_prev = True
-            messagebox.showinfo("Pattern", "Patterns chained!")
+            new_state = self.pattern_manager.toggle_chain_to_next(idx)
+            status = "chained" if new_state else "unchained"
+            self._update_pattern_button_states()
     
     def _on_matrix_toggle(self):
         """Toggle between lane and matrix editor views"""
@@ -1662,12 +1668,26 @@ class PythonicGUI:
                 pattern_length = self.pattern_manager.get_playing_pattern().length
                 new_position = new_step % pattern_length
                 
-                # Update pattern manager position
-                self.pattern_manager.play_position = new_position
+                # Check if pattern has finished (wrapped around to step 0)
+                pattern_finished = (new_step > old_step) and (new_position == 0) and (old_step > 0 or new_step >= pattern_length)
                 
-                # Reset frame counter when we wrap around
-                if new_position == 0:
-                    self.frames_since_last_step = 0
+                if pattern_finished:
+                    # Pattern ended - check for chaining
+                    advanced = self.pattern_manager.advance_to_next_pattern()
+                    if advanced:
+                        # Switched to a new pattern - reset frame counter
+                        self.frames_since_last_step = 0
+                        new_position = 0
+                        # Update selected pattern to match playing pattern for visual feedback
+                        # (Optional: uncomment if you want UI to follow playing pattern)
+                        # self.pattern_manager.selected_pattern_index = self.pattern_manager.playing_pattern_index
+                else:
+                    # Update pattern manager position
+                    self.pattern_manager.play_position = new_position
+                    
+                    # Reset frame counter when we wrap around (non-chained pattern)
+                    if new_position == 0:
+                        self.frames_since_last_step = 0
                 
                 # Trigger channels at this step
                 self._trigger_pattern_step(new_position)
@@ -1677,6 +1697,10 @@ class PythonicGUI:
                     self.current_play_position = new_position
                 
                 trigger_time = (time.perf_counter() - trigger_start) * 1000  # ms
+        
+        # Process any pending fill triggers
+        if self.pending_fills and not drop_this_callback:
+            self._process_pending_fills(frames)
         
         # Generate audio from synthesizer (skip if dropping)
         if drop_this_callback:
@@ -1698,7 +1722,7 @@ class PythonicGUI:
                 print(f"DEBUG: No active channels but process_audio took {process_time:.1f}ms!", flush=True)
         
         # Copy to output buffer
-        outdata[:] = audio
+        outdata[:]  = audio
         
         # Store as last good audio for potential reuse
         if frames <= len(self._last_good_audio):
@@ -1799,10 +1823,63 @@ class PythonicGUI:
                     
                     # Handle fills if enabled
                     if step.fill:
-                        fill_rate = self.pattern_manager.fill_rate
-                        # TODO: Implement fill triggers (multiple triggers per step)
-                        # For now, just trigger once
-                        pass
+                        self._schedule_fill_triggers(channel_id, step.accent)
+    
+    def _schedule_fill_triggers(self, channel_id: int, accented: bool):
+        """
+        Schedule fill triggers for a channel.
+        
+        Fills create rapid drum rolls at the fill rate (2-8 hits per step).
+        Velocities decay from the initial velocity to simulate natural rolling.
+        
+        Per spec:
+        - Accented fills: velocity 127 -> 64 over the roll
+        - Normal fills: velocity 64 -> 0 over the roll
+        """
+        fill_rate = self.pattern_manager.fill_rate
+        step_duration_ms = self.pattern_manager.step_duration_ms
+        
+        # Calculate time between fill hits in frames
+        hit_interval_ms = step_duration_ms / fill_rate
+        hit_interval_frames = int((hit_interval_ms / 1000.0) * self.sample_rate)
+        
+        # Determine velocity range
+        if accented:
+            start_velocity = 127
+            end_velocity = 64
+        else:
+            start_velocity = 64
+            end_velocity = 0
+        
+        # Schedule fill hits (skip first one since it's already triggered)
+        for i in range(1, fill_rate):
+            # Calculate velocity with linear decay
+            progress = i / (fill_rate - 1) if fill_rate > 1 else 0
+            velocity = int(start_velocity - (start_velocity - end_velocity) * progress)
+            velocity = max(1, velocity)  # Ensure at least velocity 1
+            
+            # Schedule the trigger (frames from now)
+            frames_until_trigger = hit_interval_frames * i
+            self.pending_fills.append((frames_until_trigger, channel_id, velocity))
+    
+    def _process_pending_fills(self, frames: int):
+        """
+        Process and trigger any pending fill hits that fall within this audio buffer.
+        Updates remaining frames for fills that haven't triggered yet.
+        """
+        triggered = []
+        remaining = []
+        
+        for frames_until, channel_id, velocity in self.pending_fills:
+            if frames_until <= frames:
+                # This fill should trigger in this buffer
+                self.synth.trigger_drum(channel_id, velocity)
+                triggered.append((frames_until, channel_id, velocity))
+            else:
+                # Still waiting - reduce frame count
+                remaining.append((frames_until - frames, channel_id, velocity))
+        
+        self.pending_fills = remaining
     
     def _start_ui_update_timer(self):
         """Start timer for UI updates (runs on main thread)"""
@@ -1814,6 +1891,20 @@ class PythonicGUI:
             # Get current position safely
             with self.position_lock:
                 position = self.current_play_position
+            
+            # Check if playing pattern changed (due to chaining)
+            current_playing_idx = self.pattern_manager.playing_pattern_index
+            if not hasattr(self, '_last_playing_pattern_idx'):
+                self._last_playing_pattern_idx = current_playing_idx
+            
+            if current_playing_idx != self._last_playing_pattern_idx:
+                # Playing pattern changed - update button states and editors
+                self._last_playing_pattern_idx = current_playing_idx
+                
+                # Auto-select the playing pattern so editors follow playback
+                self.pattern_manager.select_pattern(current_playing_idx)
+                self._update_pattern_button_states()
+                self._update_pattern_editors()
             
             # Update UI with current position
             if hasattr(self, 'pattern_editors'):
