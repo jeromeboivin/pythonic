@@ -46,7 +46,8 @@ class NoiseGenerator:
         # Internal components
         self.filter_left = StateVariableFilter(sample_rate)
         self.filter_right = StateVariableFilter(sample_rate)
-        self.envelope = Envelope(sample_rate)
+        # Create envelope with exponential attack shape for EXPONENTIAL mode
+        self.envelope = Envelope(sample_rate, attack_shape='exponential')
         self.mod_envelope = ModulatedEnvelope(sample_rate)
         
         # State
@@ -54,8 +55,14 @@ class NoiseGenerator:
         self.velocity_gain = 1.0
         
         # Random state for reproducible stereo decorrelation
-        self._rng_left = np.random.RandomState(12345)
-        self._rng_right = np.random.RandomState(67890)
+        # Use the new Generator interface which supports out= parameter
+        self._rng_left = np.random.default_rng(12345)
+        self._rng_right = np.random.default_rng(67890)
+        
+        # Pre-allocated buffers for performance
+        self._output_buffer = np.zeros((8192, 2), dtype=np.float32)
+        self._noise_left = np.zeros(8192, dtype=np.float32)
+        self._noise_right = np.zeros(8192, dtype=np.float32)
         
         self._update_filter()
         self._update_envelope()
@@ -71,10 +78,9 @@ class NoiseGenerator:
         
         filter_mode = mode_map[self.filter_mode]
         
-        # Convert Q knob value to actual filter Q
-        # Exponential mapping: Q_filter = 0.5 * 2^Q_knob
-        # Q_knob=0 -> Q=0.5 (gentle), Q_knob=5 -> Q=16 (resonant)
-        effective_q = 0.5 * (2.0 ** self.filter_q)
+        # Q parameter is used directly with a minimum of 0.5
+        # Q=0.5: gentle rolloff, Q=15: moderate resonance, Q=60: high resonance
+        effective_q = max(0.5, self.filter_q)
         
         self.filter_left.set_frequency(self.filter_frequency)
         self.filter_left.set_q(effective_q)
@@ -104,8 +110,8 @@ class NoiseGenerator:
         self._update_filter()
     
     def set_filter_q(self, q: float):
-        """Set filter Q/resonance (0-10 scale, exponentially mapped)"""
-        self.filter_q = np.clip(q, 0.0, 10.0)
+        """Set filter Q/resonance (direct Q value, typically 0.5 to 100)"""
+        self.filter_q = np.clip(q, 0.0, 100.0)
         self._update_filter()
     
     def set_stereo(self, enabled: bool):
@@ -113,8 +119,16 @@ class NoiseGenerator:
         self.stereo = enabled
     
     def set_envelope_mode(self, mode: NoiseEnvelopeMode):
-        """Set envelope mode"""
+        """Set envelope mode and update envelope attack shape accordingly"""
         self.envelope_mode = mode
+        # Update attack shape based on envelope mode
+        # EXPONENTIAL mode uses exponential attack (slow start, fast finish)
+        # LINEAR mode uses linear attack
+        # MODULATED mode uses the ModulatedEnvelope which has its own behavior
+        if mode == NoiseEnvelopeMode.EXPONENTIAL:
+            self.envelope.attack_shape = 'exponential'
+        elif mode == NoiseEnvelopeMode.LINEAR:
+            self.envelope.attack_shape = 'linear'
     
     def set_attack(self, attack_ms: float):
         """Set attack time in ms"""
@@ -158,41 +172,44 @@ class NoiseGenerator:
             Stereo output array [num_samples, 2]
         """
         if not self.is_active:
+            if num_samples <= len(self._output_buffer):
+                result = self._output_buffer[:num_samples]
+                result.fill(0)
+                return result
             return np.zeros((num_samples, 2), dtype=np.float32)
         
-        # Generate white noise (scaled to have consistent RMS)
-        noise_left = self._rng_left.randn(num_samples).astype(np.float32)
+        # Generate white noise using pre-allocated buffers
+        if num_samples <= len(self._noise_left):
+            noise_left = self._noise_left[:num_samples]
+            noise_left[:] = self._rng_left.standard_normal(num_samples, dtype=np.float32)
+        else:
+            noise_left = self._rng_left.standard_normal(num_samples).astype(np.float32)
         
         if self.stereo:
-            noise_right = self._rng_right.randn(num_samples).astype(np.float32)
+            if num_samples <= len(self._noise_right):
+                noise_right = self._noise_right[:num_samples]
+                noise_right[:] = self._rng_right.standard_normal(num_samples, dtype=np.float32)
+            else:
+                noise_right = self._rng_right.standard_normal(num_samples).astype(np.float32)
         else:
-            noise_right = noise_left.copy()
+            noise_right = noise_left
         
         # Apply filter
         filtered_left = self.filter_left.process(noise_left)
         filtered_right = self.filter_right.process(noise_right)
         
         # Apply filter normalization
-        # Effective Q from the exponential mapping
-        effective_q = 0.5 * (2.0 ** self.filter_q)
+        effective_q = max(0.5, self.filter_q)
         
-        # Empirical normalization factors
-        # Calibrated against TEST Noise LP/BP/HP.wav at their respective Q values:
-        #   LP: Q_knob=2.0 (eff_Q=2.0) -> target peak ~0.30 (standard headroom)
-        #   BP: Q_knob=3.0 (eff_Q=4.0) -> target peak ~0.53 (higher output)
-        #   HP: Q_knob=1.5 (eff_Q=1.4) -> target peak ~0.55 (higher output)
-        # 
-        # Note: The output will be further scaled by DrumChannel's INTERNAL_HEADROOM_LINEAR
+        # Normalization to maintain consistent output level
         if self.filter_mode == NoiseFilterMode.LOW_PASS:
-            # LP: calibrated for Q_knob=2.0, targeting ~1.0 before headroom
-            norm_factor = 1.35 * np.sqrt(effective_q)
+            norm_factor = np.sqrt(effective_q)
         elif self.filter_mode == NoiseFilterMode.HIGH_PASS:
-            # HP: calibrated for Q_knob=1.5, targeting ~1.8 before headroom
-            norm_factor = 0.55 * np.sqrt(effective_q)
+            norm_factor = 0.5 * np.sqrt(effective_q)
         else:  # BAND_PASS
-            # BP: calibrated for Q_knob=3.0, targeting ~1.7 before headroom
-            norm_factor = 1.13 * effective_q
+            norm_factor = 0.7 * effective_q
         
+        # Apply normalization in-place
         filtered_left *= norm_factor
         filtered_right *= norm_factor
         
@@ -206,10 +223,16 @@ class NoiseGenerator:
             env = self.envelope.process(num_samples)
             self.is_active = self.envelope.is_active
         
-        # Apply envelope and velocity
-        output = np.zeros((num_samples, 2), dtype=np.float32)
-        output[:, 0] = filtered_left * env * self.velocity_gain
-        output[:, 1] = filtered_right * env * self.velocity_gain
+        # Apply envelope and velocity - use pre-allocated buffer
+        if num_samples <= len(self._output_buffer):
+            output = self._output_buffer[:num_samples]
+        else:
+            output = np.empty((num_samples, 2), dtype=np.float32)
+        
+        # Apply envelope and velocity gain together
+        env_vel = env * self.velocity_gain
+        output[:, 0] = filtered_left * env_vel
+        output[:, 1] = filtered_right * env_vel
         
         return output
     

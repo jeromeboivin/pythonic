@@ -21,11 +21,16 @@ class Envelope:
     
     When attack time is 0, the envelope starts at full level immediately.
     Click prevention is handled by the oscillator starting at phase 0 (zero crossing).
-    When attack time > 0, uses an S-curve (smoothstep) for smooth attack.
+    
+    Attack shape modes:
+    - 'exponential': slow start, accelerates to peak
+    - 'linear': constant rate increase
+    - 'smoothstep': S-curve (legacy oscillator style)
     """
     
-    def __init__(self, sample_rate: int = 44100):
+    def __init__(self, sample_rate: int = 44100, attack_shape: str = 'smoothstep'):
         self.sr = sample_rate
+        self.attack_shape = attack_shape  # 'exponential', 'linear', or 'smoothstep'
         
         # Parameters (in milliseconds)
         self.attack_ms = 0.0
@@ -43,6 +48,9 @@ class Envelope:
         self._attack_increment = 0.0
         self._decay_coefficient = 0.0
         
+        # Pre-allocated buffer for output (avoid allocations in process)
+        self._output_buffer = np.zeros(8192, dtype=np.float32)
+        
         self._update_coefficients()
     
     def _update_coefficients(self):
@@ -58,24 +66,12 @@ class Envelope:
         self._decay_samples = max(1, int(self.decay_ms * self.sr / 1000.0))
         
         # Exponential decay coefficient
-        # Using time constant: level = exp(-t/tau) where tau = decay_samples/K
+        # Using time constant: level = exp(-K * t / decay_samples)
         # 
-        # K varies based on decay time:
-        # - Short decays (<100ms): K=9 for punchy attack/decay
-        # - Medium decays (100-500ms): K=9 for natural percussion
-        # - Long decays (500-1500ms): K=9 to 12 (gradual transition)
-        # - Very long decays (>1500ms): K=12 to 16 for faster tail cutoff
-        #
-        # This interpolation helps decay behavior across
-        # different drum types (kicks with long decay vs hats with short decay)
-        if self.decay_ms <= 500:
-            K = 9.0
-        elif self.decay_ms <= 1500:
-            # Linear interpolation from 9 to 12 over 500-1500ms range
-            K = 9.0 + (self.decay_ms - 500) / 1000 * 3.0
-        else:
-            # Linear interpolation from 12 to 16 over 1500-5000ms range
-            K = 12.0 + min((self.decay_ms - 1500) / 3500 * 4.0, 4.0)
+        # K = 7.0 corresponds to ~-60dB at decay_ms, which matches
+        # Exponential decay behavior where decay_ms is
+        # the time to reach approximately -60dB (RT60 convention).
+        K = 7.0
         
         self._decay_coefficient = np.exp(-K / self._decay_samples)
     
@@ -125,6 +121,25 @@ class Envelope:
         """
         return 3 * t * t - 2 * t * t * t
     
+    @staticmethod
+    def _exponential_attack(t: np.ndarray) -> np.ndarray:
+        """Exponential attack shape: starts slowly, accelerates to peak
+        
+        Uses formula: (exp(K*t) - 1) / (exp(K) - 1)
+        K controls the curve steepness.
+        """
+        K = 7.0  # Steepness factor calibrated against reference
+        return (np.exp(K * t) - 1.0) / (np.exp(K) - 1.0)
+    
+    def _compute_attack(self, normalized_time: np.ndarray) -> np.ndarray:
+        """Compute attack envelope values based on attack_shape setting"""
+        if self.attack_shape == 'exponential':
+            return self._exponential_attack(normalized_time)
+        elif self.attack_shape == 'linear':
+            return normalized_time
+        else:  # 'smoothstep' (default)
+            return self._smoothstep(normalized_time)
+    
     def process(self, num_samples: int) -> np.ndarray:
         """
         Generate envelope samples (vectorized)
@@ -136,37 +151,43 @@ class Envelope:
             numpy array of envelope values (0.0 to 1.0)
         """
         if not self.is_active:
+            # Use pre-allocated buffer or create new if needed
+            if num_samples <= len(self._output_buffer):
+                result = self._output_buffer[:num_samples]
+                result.fill(0)
+                return result
             return np.zeros(num_samples, dtype=np.float32)
         
-        output = np.zeros(num_samples, dtype=np.float32)
+        # Use pre-allocated buffer
+        if num_samples <= len(self._output_buffer):
+            output = self._output_buffer[:num_samples]
+            output.fill(0)
+        else:
+            output = np.zeros(num_samples, dtype=np.float32)
+        
         idx = 0
         
         # Process attack phase
-        if self.stage == EnvelopeStage.ATTACK and idx < num_samples:
+        if self.stage == EnvelopeStage.ATTACK:
             if self._attack_samples > 0:
-                # Calculate samples remaining in attack
-                # sample_index tracks position within attack phase
                 remaining_attack = self._attack_samples - self.sample_index
-                attack_samples = min(remaining_attack, num_samples - idx)
+                attack_samples = min(remaining_attack, num_samples)
                 
                 if attack_samples > 0:
-                    # S-curve attack: smooth start, accelerates, smooth finish
-                    # Uses smoothstep formula: 3t² - 2t³
-                    sample_positions = np.arange(self.sample_index, self.sample_index + attack_samples)
+                    # Compute attack curve based on attack_shape setting
+                    end_idx = self.sample_index + attack_samples
+                    sample_positions = np.arange(self.sample_index, end_idx, dtype=np.float32)
                     normalized_time = sample_positions / self._attack_samples
-                    levels = self._smoothstep(normalized_time)
-                    levels = np.minimum(levels, 1.0)
-                    output[idx:idx + attack_samples] = levels
-                    self.current_level = levels[-1]
-                    self.sample_index += attack_samples
-                    idx += attack_samples
+                    np.minimum(self._compute_attack(normalized_time), 1.0, out=output[:attack_samples])
+                    self.current_level = output[attack_samples - 1]
+                    self.sample_index = end_idx
+                    idx = attack_samples
                     
                     if self.sample_index >= self._attack_samples:
                         self.current_level = 1.0
                         self.stage = EnvelopeStage.DECAY
                         self.sample_index = 0
             else:
-                # Should not reach here due to minimum attack, but handle gracefully
                 self.current_level = 1.0
                 self.stage = EnvelopeStage.DECAY
                 self.sample_index = 0
@@ -175,16 +196,13 @@ class Envelope:
         if self.stage == EnvelopeStage.DECAY and idx < num_samples:
             decay_samples = num_samples - idx
             
-            # Vectorized exponential decay: level * coeff^n
-            # Start from n=0 so first sample is at full level (coeff^0 = 1)
-            # This ensures punchy attacks when attack_ms = 0
-            exponents = np.arange(0, decay_samples, dtype=np.float32)
-            decay_curve = self.current_level * np.power(self._decay_coefficient, exponents)
+            # Vectorized exponential decay
+            exponents = np.arange(decay_samples, dtype=np.float32)
+            np.power(self._decay_coefficient, exponents, out=output[idx:])
+            output[idx:] *= self.current_level
             
-            output[idx:] = decay_curve
-            # Update current_level to be the level AFTER this block (for next call)
-            # This is coeff^decay_samples relative to start
-            self.current_level = self.current_level * np.power(self._decay_coefficient, decay_samples)
+            # Update state
+            self.current_level *= self._decay_coefficient ** decay_samples
             self.sample_index += decay_samples
             
             # Check if envelope finished

@@ -175,6 +175,14 @@ class PythonicPresetParser:
         elif self.content[self.pos:self.pos+5] == 'false' and (self.pos + 5 >= len(self.content) or not self.content[self.pos+5].isalnum()):
             self.pos += 5
             return False
+        elif self.content[self.pos:self.pos+3] == 'inf' and (self.pos + 3 >= len(self.content) or not self.content[self.pos+3].isalnum()):
+            self.pos += 3
+            # Skip any trailing unit (like 'ms')
+            while self.pos < len(self.content) and self.content[self.pos] in ' \t':
+                self.pos += 1
+            while self.pos < len(self.content) and (self.content[self.pos].isalpha() or self.content[self.pos] in '%x'):
+                self.pos += 1
+            return float('inf')
         else:
             return self._parse_number_or_identifier()
 
@@ -212,10 +220,15 @@ class PythonicPresetParser:
             self.pos += 1
         
         # Check for special case: "number / number" format (e.g., Mix: 50.00 / 50.00)
+        # Or step rate format like "1/16"
         if self.pos < len(self.content) and self.content[self.pos] == '/':
-            # This is a fraction value, parse the second number
+            # Check if this looks like a step rate (1/8, 1/16, 1/32, etc.)
+            saved_pos = self.pos
             self.pos += 1  # skip '/'
-            self._skip_whitespace()
+            
+            # Skip whitespace after '/'
+            while self.pos < len(self.content) and self.content[self.pos] in ' \t':
+                self.pos += 1
             
             # Parse second number
             second_start = self.pos
@@ -226,8 +239,16 @@ class PythonicPresetParser:
             
             second_value_str = self.content[second_start:self.pos].strip()
             
-            # For Mix parameter (osc/noise), just return the first value (osc percentage)
-            # as that's what the synth format expects
+            # Check for 'T' suffix (triplet, e.g., 1/16T)
+            if self.pos < len(self.content) and self.content[self.pos] == 'T':
+                self.pos += 1
+                second_value_str += 'T'
+            
+            # If second part is a common step rate divisor, return as string
+            if second_value_str in ['8', '8T', '16', '16T', '32']:
+                return f"{value_str}/{second_value_str}"
+            
+            # Otherwise it's a Mix-style fraction, return just the first number
             try:
                 return float(value_str) if '.' in value_str else int(value_str)
             except ValueError:
@@ -273,6 +294,8 @@ class PythonicPresetParser:
             'master_volume_db': preset_data.get('MastVol', 0.0),
             'tempo': preset_data.get('Tempo', 120),
             'step_rate': preset_data.get('StepRate', '1/16'),
+            'swing': preset_data.get('Swing', 0.5),  # 0.5 = no swing, range 0-1
+            'fill_rate': preset_data.get('FillRate', 4.0),
             'drums': [],
             'mutes': preset_data.get('Mutes', [False] * 8),
             'patterns': None,

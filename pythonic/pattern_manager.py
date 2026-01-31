@@ -240,6 +240,11 @@ class PatternManager:
             '1/32': 8,     # 8 steps per beat (thirty-second notes)
         }
         self.step_rate = '1/16'  # Default to 1/16 notes
+        
+        # Swing: 0.0 = no swing (equal timing), ~0.67 = classic swing, range 0-1
+        # 0% = no swing, 100% = max swing
+        # Affects even-numbered steps (1, 3, 5, etc. in 0-indexed)
+        self.swing = 0.0
 
         self._update_step_duration()
 
@@ -265,6 +270,50 @@ class PatternManager:
     def set_fill_rate(self, rate: int):
         """Set fill rate (2-8 times per step)"""
         self.fill_rate = max(2, min(8, rate))
+    
+    def set_swing(self, swing: float):
+        """Set swing amount (0.0-1.0, where 0.5 = no swing)
+        
+        Swing delays even-indexed steps (1, 3, 5, ...) relative to the beat.
+        At swing=0.5: even timing (no swing)
+        At swing=0.67: classic shuffle/swing feel
+        At swing=1.0: even steps pushed to just before the next odd step
+        """
+        self.swing = max(0.0, min(1.0, swing))
+    
+    def get_step_time_ms(self, step_index: int) -> float:
+        """Get the time offset for a step in milliseconds, accounting for swing.
+        
+        Swing affects pairs of steps. In each pair (0,1), (2,3), (4,5)...:
+        - First step (0, 2, 4, ...) plays at the expected time
+        - Second step (1, 3, 5, ...) is delayed by swing amount
+        
+        Swing formula:
+        - At swing=0: second step at 50% of pair duration (no swing)
+        - At swing=1: second step at 75% of pair duration (max swing, triplet feel)
+        
+        Returns time offset from pattern start in ms.
+        """
+        pair_index = step_index // 2
+        is_swung_step = (step_index % 2) == 1
+        
+        # Base time for the start of this pair
+        pair_duration_ms = self.step_duration_ms * 2
+        pair_start_ms = pair_index * pair_duration_ms
+        
+        if is_swung_step:
+            # Swung step: delayed within the pair
+            # swing=0 -> at 50% of pair duration (normal 1/16 position)
+            # swing=1 -> at 90% of pair duration (maximum shuffle)
+            # Linear interpolation: position = 0.5 + swing * 0.40
+            # Calibrated from "Pedinner Guranodous (129)" reference recording:
+            #   Step 1 (swing 0.6335) peaks at ~174ms = position 0.747
+            #   Step 3 peaks at ~410ms = position 0.762 within pair
+            swing_position = 0.5 + self.swing * 0.40
+            return pair_start_ms + pair_duration_ms * swing_position
+        else:
+            # Non-swung step: at start of pair
+            return pair_start_ms
 
     def get_pattern(self, index: int) -> Optional[Pattern]:
         """Get pattern by index (0-11)"""

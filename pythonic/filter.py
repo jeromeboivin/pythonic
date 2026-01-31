@@ -39,8 +39,11 @@ class StateVariableFilter:
         # lfilter state (will be initialized on first use)
         self._zi_left = None
         self._zi_right = None
-        self._last_b = None
-        self._last_a = None
+        
+        # Cached biquad coefficients (avoid recomputing every process() call)
+        self._cached_b = None
+        self._cached_a = None
+        self._coeffs_dirty = True
         
         # Coefficients
         self.g = 0.0
@@ -66,20 +69,27 @@ class StateVariableFilter:
     
     def set_frequency(self, freq: float):
         """Set cutoff/center frequency in Hz (20-20000)"""
-        self.frequency = np.clip(freq, 20.0, 20000.0)
-        self._update_coefficients()
+        new_freq = np.clip(freq, 20.0, 20000.0)
+        if new_freq != self.frequency:
+            self.frequency = new_freq
+            self._coeffs_dirty = True
+            self._update_coefficients()
     
     def set_q(self, q: float):
         """Set Q/resonance (0.1 to 10000)"""
-        self.q = np.clip(q, 0.1, 10000.0)
-        self._update_coefficients()
+        new_q = np.clip(q, 0.1, 10000.0)
+        if new_q != self.q:
+            self.q = new_q
+            self._coeffs_dirty = True
+            self._update_coefficients()
     
     def set_mode(self, mode: FilterMode):
         """Set filter mode (LP, BP, HP)"""
-        self.mode = mode
-    
-        self._zi_left = None
-        self._zi_right = None
+        if mode != self.mode:
+            self.mode = mode
+            self._coeffs_dirty = True
+            self._zi_left = None
+            self._zi_right = None
     def reset(self):
         """Reset filter state"""
         self.ic1eq = 0.0
@@ -155,15 +165,18 @@ class StateVariableFilter:
         Returns:
             Filtered output array
         """
-        # Get current coefficients
-        b, a = self._get_biquad_coeffs()
-        
-        # Check if coefficients changed, reset state if so
-        if self._last_b is None or not np.allclose(b, self._last_b) or not np.allclose(a, self._last_a):
+        # Use cached coefficients or recompute if dirty
+        if self._coeffs_dirty or self._cached_b is None:
+            b, a = self._get_biquad_coeffs()
+            self._cached_b = b
+            self._cached_a = a
+            self._coeffs_dirty = False
+            # Reset filter state when coefficients change
             self._zi_left = None
             self._zi_right = None
-            self._last_b = b.copy()
-            self._last_a = a.copy()
+        else:
+            b = self._cached_b
+            a = self._cached_a
         
         if x_array.ndim == 1:
             # Mono processing

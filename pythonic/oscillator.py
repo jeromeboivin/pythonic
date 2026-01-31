@@ -58,6 +58,11 @@ class Oscillator:
         self._random_state = np.random.RandomState(42)
         self._noise_buffer = np.zeros(512)
         self._noise_index = 0
+        
+        # Pre-allocated buffers for performance
+        self._output_buffer = np.zeros(8192, dtype=np.float32)
+        self._freq_buffer = np.zeros(8192, dtype=np.float32)
+        self._phase_buffer = np.zeros(8192, dtype=np.float32)
     
     def reset_phase(self):
         """Reset oscillator phase to zero crossing going positive.
@@ -126,24 +131,30 @@ class Oscillator:
             numpy array of audio samples
         """
         # Time array for this block - start from 0 for first sample
-        sample_times = np.arange(num_samples) / self.sr
-        time_array = self.mod_time + sample_times
+        time_array = self.mod_time + np.arange(num_samples, dtype=np.float32) / self.sr
         
         # Calculate instantaneous frequency based on modulation mode
         freq_array = self._calculate_frequency(time_array, num_samples)
         
         # Calculate phase increments
-        phase_increments = 2.0 * np.pi * freq_array / self.sr
+        phase_increments = (2.0 * np.pi / self.sr) * freq_array
         
-        # Build phase array: first sample uses current phase, then accumulate
-        # This ensures the very first sample after trigger uses phase=0
+        # Build phase array using pre-allocated buffer if possible
+        if num_samples <= len(self._phase_buffer):
+            phases = self._phase_buffer[:num_samples]
+        else:
+            phases = np.empty(num_samples, dtype=np.float32)
+        
+        # Cumulative phase
         cumulative = np.cumsum(phase_increments)
-        phases = self.phase + np.concatenate([[0], cumulative[:-1]])
+        phases[0] = self.phase
+        if num_samples > 1:
+            phases[1:] = self.phase + cumulative[:-1]
         
         # Wrap phase to [0, 2π]
-        phases = np.mod(phases, 2.0 * np.pi)
+        np.mod(phases, 2.0 * np.pi, out=phases)
         
-        # Update state for next block (advance past last sample)
+        # Update state for next block
         self.phase = np.mod(self.phase + cumulative[-1], 2.0 * np.pi) if num_samples > 0 else self.phase
         self.mod_time += num_samples / self.sr
         
@@ -151,7 +162,10 @@ class Oscillator:
         output = self._generate_waveform(phases)
         
         # Apply velocity gain
-        return output * self.velocity_gain
+        if self.velocity_gain != 1.0:
+            output *= self.velocity_gain
+        
+        return output
     
     def _calculate_frequency(self, time_array: np.ndarray, num_samples: int) -> np.ndarray:
         """Calculate frequency array based on modulation mode"""

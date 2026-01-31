@@ -16,8 +16,14 @@ class DrumChannel:
     Combines oscillator, noise generator, mixing, distortion, and EQ
     """
     
-    INTERNAL_HEADROOM_DB = -10.35
-    INTERNAL_HEADROOM_LINEAR = 10.0 ** (INTERNAL_HEADROOM_DB / 20.0)  # ~0.304
+    # Internal headroom adjusted
+    INTERNAL_HEADROOM_DB = -2.0
+    INTERNAL_HEADROOM_LINEAR = 10.0 ** (INTERNAL_HEADROOM_DB / 20.0)  # ~0.794
+    
+    # Oscillator level scaling relative to noise
+    # Oscillator level is lower than a full-scale waveform
+    # This scaling matches the observed output ratio
+    OSC_LEVEL_SCALING = 0.27
     
     def __init__(self, channel_id: int, sample_rate: int = 44100):
         self.channel_id = channel_id
@@ -156,6 +162,7 @@ class DrumChannel:
         osc_raw = self.oscillator.process(num_samples)
         osc_env = self.osc_envelope.process(num_samples)
         osc_signal = osc_raw * osc_env
+        osc_signal *= self.OSC_LEVEL_SCALING
         
         # Generate noise signal (already stereo)
         noise_signal = self.noise_gen.process(num_samples)
@@ -165,23 +172,31 @@ class DrumChannel:
         if num_samples <= len(self._osc_stereo_buffer):
             osc_stereo = self._osc_stereo_buffer[:num_samples]
         else:
-            osc_stereo = np.zeros((num_samples, 2), dtype=np.float32)
+            osc_stereo = np.empty((num_samples, 2), dtype=np.float32)
         
         osc_stereo[:, 0] = osc_signal
         osc_stereo[:, 1] = osc_signal
         
-        # Mix based on osc_noise_mix parameter
-        # At mix=80% (osc_noise_mix=0.8): noise_scale = 0.2/0.8 = 0.25
-        # At mix=100%: pure oscillator, at mix=0%: pure noise
+        # Mix based on osc_noise_mix parameter using power-scaled crossfade
         mix = self.osc_noise_mix
         if mix > 0.999:
-            mixed = osc_stereo.copy()
+            # Pure oscillator - reuse osc_stereo
+            mixed = osc_stereo
         elif mix < 0.001:
-            mixed = noise_signal.copy()
+            # Pure noise
+            mixed = noise_signal
         else:
-            # Additive formula: osc + noise * ((1-mix)/mix)
-            noise_scale = (1.0 - mix) / mix
-            mixed = osc_stereo + noise_signal * noise_scale
+            # Power-preserving squared crossfade
+            osc_gain = mix * mix
+            noise_gain = (1.0 - mix) * (1.0 - mix)
+            # Use pre-allocated buffer for mixed output
+            if num_samples <= len(self._mixed_buffer):
+                mixed = self._mixed_buffer[:num_samples]
+            else:
+                mixed = np.empty((num_samples, 2), dtype=np.float32)
+            # In-place operations
+            np.multiply(osc_stereo, osc_gain, out=mixed)
+            mixed += noise_signal * noise_gain
         
         # Apply distortion
         if self.distortion > 0.001:
@@ -205,11 +220,12 @@ class DrumChannel:
             level_linear = 0.0
         else:
             level_linear = 10.0 ** (self.level_db / 20.0)
-        # Apply internal headroom
-        mixed *= level_linear * self.INTERNAL_HEADROOM_LINEAR
+        # Apply internal headroom (in-place)
+        gain = level_linear * self.INTERNAL_HEADROOM_LINEAR
+        np.multiply(mixed, gain, out=mixed)
         
-        # Apply pan
-        output = self._apply_pan(mixed)
+        # Apply pan (in-place where possible)
+        output = self._apply_pan_inplace(mixed)
         
         # Check if voice is done
         if not self.osc_envelope.is_active and not self.noise_gen.is_active:
@@ -239,10 +255,9 @@ class DrumChannel:
             return signal
         
         # Exponential drive curve:
-        # 0% -> drive=1, 25% -> drive~3, 50% -> drive~50, 100% -> drive~200
-        # Formula: drive = exp(5.3 * distortion) gives:
-        #   0% -> 1.0, 25% -> 3.8, 50% -> 14.2, 75% -> 53, 100% -> 200
-        drive = np.exp(5.3 * self.distortion)
+        # Formula: drive = exp(2.5 * distortion) gives:
+        #   0% -> 1.0, 50% -> 3.5, 100% -> 12.2
+        drive = np.exp(2.5 * self.distortion)
         
         # Pre-gain the signal
         driven = signal * drive
@@ -283,6 +298,37 @@ class DrumChannel:
             # Panning right
             left_gain = 1.0 - pan_normalized  # 1 at center, 0 at full right
             right_gain = 1.0
+        
+        output = np.zeros_like(stereo_signal)
+        output[:, 0] = stereo_signal[:, 0] * left_gain
+        output[:, 1] = stereo_signal[:, 1] * right_gain
+        
+        return output
+    
+    def _apply_pan_inplace(self, stereo_signal: np.ndarray) -> np.ndarray:
+        """
+        Apply stereo panning in-place using linear pan law
+        
+        Args:
+            stereo_signal: Input stereo signal [samples, 2] - MODIFIED IN PLACE
+            
+        Returns:
+            Panned stereo signal (same array)
+        """
+        # Convert pan (-100 to +100) to normalized (-1 to 1)
+        pan_normalized = self.pan / 100.0
+        
+        # Linear pan law
+        if pan_normalized <= 0:
+            right_gain = 1.0 + pan_normalized
+            if right_gain != 1.0:
+                stereo_signal[:, 1] *= right_gain
+        else:
+            left_gain = 1.0 - pan_normalized
+            if left_gain != 1.0:
+                stereo_signal[:, 0] *= left_gain
+        
+        return stereo_signal
         
         output = np.zeros_like(stereo_signal)
         output[:, 0] = stereo_signal[:, 0] * left_gain
