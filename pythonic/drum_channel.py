@@ -9,6 +9,8 @@ from .noise import NoiseGenerator, NoiseFilterMode, NoiseEnvelopeMode
 from .envelope import Envelope
 from .filter import EQFilter
 from .vintage import VintageProcessor
+from .reverb import FastStereoReverb
+from .delay import FastStereoDelay, DelayTime
 
 
 class DrumChannel:
@@ -38,8 +40,25 @@ class DrumChannel:
         self.eq_filter_r = EQFilter(sample_rate)
         self.vintage = VintageProcessor(sample_rate)
         
+        # Per-channel stereo reverb effect (using FastStereoReverb for real-time performance)
+        self.reverb = FastStereoReverb(sample_rate)
+        
+        # Per-channel tempo-synced delay/echo effect
+        self.delay = FastStereoDelay(sample_rate)
+        
         # Vintage amount (0.0 to 1.0) - simulates analog circuit behavior
         self.vintage_amount = 0.0
+        
+        # Reverb parameters (per-channel decay/reverb stereo effect)
+        self.reverb_decay = 0.0   # 0.0 to 1.0 (reverb time)
+        self.reverb_mix = 0.0     # 0.0 to 1.0 (dry/wet)
+        self.reverb_width = 1.0   # 0.0 to 2.0 (stereo width)
+        
+        # Delay/echo parameters (tempo-synced)
+        self.delay_time = DelayTime.EIGHTH  # Default to 1/8 note
+        self.delay_feedback = 0.3           # 0.0 to 0.95
+        self.delay_mix = 0.0                # 0.0 to 1.0 (dry/wet)
+        self.delay_ping_pong = False        # Stereo ping-pong mode
         
         # Mixing parameters
         self.osc_noise_mix = 0.5  # 0 = all noise, 1 = all oscillator
@@ -243,6 +262,21 @@ class DrumChannel:
             self.vintage.set_amount(self.vintage_amount)
             mixed = self.vintage.process(mixed)
         
+        # Apply per-channel tempo-synced delay/echo (after vintage)
+        if self.delay_mix > 0.001:
+            self.delay.set_delay_time(self.delay_time)
+            self.delay.set_feedback(self.delay_feedback)
+            self.delay.set_mix(self.delay_mix)
+            self.delay.set_ping_pong(self.delay_ping_pong)
+            mixed = self.delay.process(mixed)
+        
+        # Apply per-channel stereo reverb (after delay, before pan)
+        if self.reverb_mix > 0.001:
+            self.reverb.set_decay(self.reverb_decay)
+            self.reverb.set_mix(self.reverb_mix)
+            self.reverb.set_width(self.reverb_width)
+            mixed = self.reverb.process(mixed)
+        
         # Apply pan (in-place where possible)
         output = self._apply_pan_inplace(mixed)
         
@@ -412,6 +446,10 @@ class DrumChannel:
         """Set noise envelope decay"""
         self.noise_gen.set_decay(decay_ms)
     
+    def set_bpm(self, bpm: float):
+        """Set BPM for tempo-synced delay effect"""
+        self.delay.set_bpm(bpm)
+    
     def get_parameters(self) -> dict:
         """Get all parameters as a dictionary"""
         return {
@@ -442,6 +480,13 @@ class DrumChannel:
             'noise_vel_sensitivity': self.noise_vel_sensitivity,
             'mod_vel_sensitivity': self.mod_vel_sensitivity,
             'vintage_amount': self.vintage_amount,
+            'reverb_decay': self.reverb_decay,
+            'reverb_mix': self.reverb_mix,
+            'reverb_width': self.reverb_width,
+            'delay_time': self.delay_time.value,
+            'delay_feedback': self.delay_feedback,
+            'delay_mix': self.delay_mix,
+            'delay_ping_pong': self.delay_ping_pong,
         }
     
     def set_parameters(self, params: dict):
@@ -500,3 +545,17 @@ class DrumChannel:
             self.mod_vel_sensitivity = np.clip(params['mod_vel_sensitivity'], 0.0, 2.0)
         if 'vintage_amount' in params:
             self.vintage_amount = np.clip(params['vintage_amount'], 0.0, 1.0)
+        if 'reverb_decay' in params:
+            self.reverb_decay = np.clip(params['reverb_decay'], 0.0, 1.0)
+        if 'reverb_mix' in params:
+            self.reverb_mix = np.clip(params['reverb_mix'], 0.0, 1.0)
+        if 'reverb_width' in params:
+            self.reverb_width = np.clip(params['reverb_width'], 0.0, 2.0)
+        if 'delay_time' in params:
+            self.delay_time = DelayTime(int(params['delay_time']))
+        if 'delay_feedback' in params:
+            self.delay_feedback = np.clip(params['delay_feedback'], 0.0, 0.95)
+        if 'delay_mix' in params:
+            self.delay_mix = np.clip(params['delay_mix'], 0.0, 1.0)
+        if 'delay_ping_pong' in params:
+            self.delay_ping_pong = bool(params['delay_ping_pong'])

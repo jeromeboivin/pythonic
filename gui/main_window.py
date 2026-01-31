@@ -128,6 +128,9 @@ class PythonicGUI:
         if AUDIO_AVAILABLE:
             self._start_audio()
         
+        # Initialize synth BPM from pattern manager (for tempo-synced delay)
+        self.synth.set_bpm(self.pattern_manager.bpm)
+        
         # Update UI with current channel
         self._update_ui_from_channel()
         
@@ -578,6 +581,61 @@ class PythonicGUI:
                                        command=self._on_vintage_change)
         self.vintage_knob.pack(side='left', padx=3)
         
+        # Row 3c: Reverb controls (per-channel stereo reverb/decay effect)
+        reverb_row = tk.Frame(section, bg=self.COLORS['bg_medium'])
+        reverb_row.pack(pady=3)
+        
+        self.reverb_decay_knob = RotaryKnob(reverb_row, size=38,
+                                            min_val=0, max_val=100, default=0,
+                                            label="rvb time",
+                                            command=self._on_reverb_decay_change)
+        self.reverb_decay_knob.pack(side='left', padx=2)
+        
+        self.reverb_mix_knob = RotaryKnob(reverb_row, size=38,
+                                          min_val=0, max_val=100, default=0,
+                                          label="rvb mix",
+                                          command=self._on_reverb_mix_change)
+        self.reverb_mix_knob.pack(side='left', padx=2)
+        
+        self.reverb_width_knob = RotaryKnob(reverb_row, size=38,
+                                            min_val=0, max_val=200, default=100,
+                                            label="rvb wide",
+                                            command=self._on_reverb_width_change)
+        self.reverb_width_knob.pack(side='left', padx=2)
+        
+        # Row 3d: Delay/Echo controls (tempo-synced)
+        delay_row = tk.Frame(section, bg=self.COLORS['bg_medium'])
+        delay_row.pack(pady=3)
+        
+        # Delay time selector (musical divisions)
+        self.delay_time_options = ['1/4', '1/8', '1/16', '1/8T', '1/4.']
+        self.delay_time_indices = [2, 3, 4, 8, 11]  # Map to DelayTime enum values
+        self.delay_time_selector = ModeSelector(delay_row, 
+                                                options=self.delay_time_options,
+                                                width=120,
+                                                command=self._on_delay_time_change)
+        self.delay_time_selector.pack(side='left', padx=2)
+        
+        delay_knobs_row = tk.Frame(section, bg=self.COLORS['bg_medium'])
+        delay_knobs_row.pack(pady=2)
+        
+        self.delay_feedback_knob = RotaryKnob(delay_knobs_row, size=36,
+                                              min_val=0, max_val=95, default=30,
+                                              label="dly fdbk",
+                                              command=self._on_delay_feedback_change)
+        self.delay_feedback_knob.pack(side='left', padx=2)
+        
+        self.delay_mix_knob = RotaryKnob(delay_knobs_row, size=36,
+                                         min_val=0, max_val=100, default=0,
+                                         label="dly mix",
+                                         command=self._on_delay_mix_change)
+        self.delay_mix_knob.pack(side='left', padx=2)
+        
+        self.delay_pingpong_btn = ToggleButton(delay_knobs_row, text="P.P", 
+                                               width=32, height=20,
+                                               command=self._on_delay_pingpong_toggle)
+        self.delay_pingpong_btn.pack(side='left', padx=2)
+        
         # Row 4: Level and Pan
         row4 = tk.Frame(section, bg=self.COLORS['bg_medium'])
         row4.pack(pady=3)
@@ -957,6 +1015,7 @@ class PythonicGUI:
             bpm = int(self.bpm_var.get())
             bpm = max(1, min(300, bpm))  # Clamp to valid range
             self.pattern_manager.set_bpm(bpm)
+            self.synth.set_bpm(bpm)  # Update synth for tempo-synced delay
             self.bpm_var.set(str(bpm))  # Update display with clamped value
         except ValueError:
             # Restore current BPM if invalid input
@@ -1152,6 +1211,111 @@ class PythonicGUI:
         if not self.updating_ui:
             channel = self.synth.get_selected_channel()
             channel.vintage_amount = value / 100.0
+    
+    def _on_reverb_decay_change(self, value):
+        """Handle reverb decay time change
+        
+        Controls the RT60 (time for reverb to decay by 60dB).
+        Range: 0-100% maps to approximately 0.1s to 4s decay time.
+        """
+        if not self.updating_ui:
+            if self.edit_all_mode:
+                for ch in self.synth.channels:
+                    if not ch.muted:
+                        ch.reverb_decay = value / 100.0
+            else:
+                channel = self.synth.get_selected_channel()
+                channel.reverb_decay = value / 100.0
+    
+    def _on_reverb_mix_change(self, value):
+        """Handle reverb dry/wet mix change
+        
+        Controls the balance between dry (original) and wet (reverb) signal.
+        0% = fully dry, 100% = fully wet.
+        """
+        if not self.updating_ui:
+            if self.edit_all_mode:
+                for ch in self.synth.channels:
+                    if not ch.muted:
+                        ch.reverb_mix = value / 100.0
+            else:
+                channel = self.synth.get_selected_channel()
+                channel.reverb_mix = value / 100.0
+    
+    def _on_reverb_width_change(self, value):
+        """Handle reverb stereo width change
+        
+        Controls the stereo width of the reverb effect.
+        0% = mono reverb, 100% = normal stereo, 200% = extra wide.
+        """
+        if not self.updating_ui:
+            if self.edit_all_mode:
+                for ch in self.synth.channels:
+                    if not ch.muted:
+                        ch.reverb_width = value / 100.0
+            else:
+                channel = self.synth.get_selected_channel()
+                channel.reverb_width = value / 100.0
+    
+    def _on_delay_time_change(self, index):
+        """Handle delay time selector change
+        
+        Sets the tempo-synced delay time (1/4, 1/8, 1/16, triplets, dotted).
+        """
+        if not self.updating_ui:
+            from pythonic.delay import DelayTime
+            delay_time_value = self.delay_time_indices[index]
+            if self.edit_all_mode:
+                for ch in self.synth.channels:
+                    if not ch.muted:
+                        ch.delay_time = DelayTime(delay_time_value)
+            else:
+                channel = self.synth.get_selected_channel()
+                channel.delay_time = DelayTime(delay_time_value)
+    
+    def _on_delay_feedback_change(self, value):
+        """Handle delay feedback change
+        
+        Controls how many echoes/repeats occur.
+        0% = single echo, 95% = many repeating echoes.
+        """
+        if not self.updating_ui:
+            if self.edit_all_mode:
+                for ch in self.synth.channels:
+                    if not ch.muted:
+                        ch.delay_feedback = value / 100.0
+            else:
+                channel = self.synth.get_selected_channel()
+                channel.delay_feedback = value / 100.0
+    
+    def _on_delay_mix_change(self, value):
+        """Handle delay dry/wet mix change
+        
+        Controls the balance between dry (original) and wet (delayed) signal.
+        0% = no delay, 100% = full delay effect.
+        """
+        if not self.updating_ui:
+            if self.edit_all_mode:
+                for ch in self.synth.channels:
+                    if not ch.muted:
+                        ch.delay_mix = value / 100.0
+            else:
+                channel = self.synth.get_selected_channel()
+                channel.delay_mix = value / 100.0
+    
+    def _on_delay_pingpong_toggle(self, enabled):
+        """Handle delay ping-pong mode toggle
+        
+        When enabled, echoes alternate between left and right channels.
+        """
+        if not self.updating_ui:
+            if self.edit_all_mode:
+                for ch in self.synth.channels:
+                    if not ch.muted:
+                        ch.delay_ping_pong = enabled
+            else:
+                channel = self.synth.get_selected_channel()
+                channel.delay_ping_pong = enabled
     
     def _on_level_change(self, value):
         """Handle level change"""
@@ -1799,6 +1963,22 @@ class PythonicGUI:
         self.eq_gain_knob.set_value(channel.eq_gain_db)
         self.distort_knob.set_value(channel.distortion * 100)
         self.vintage_knob.set_value(channel.vintage_amount * 100)
+        self.reverb_decay_knob.set_value(channel.reverb_decay * 100)
+        self.reverb_mix_knob.set_value(channel.reverb_mix * 100)
+        self.reverb_width_knob.set_value(channel.reverb_width * 100)
+        
+        # Delay controls
+        # Map DelayTime enum value back to selector index
+        delay_time_val = channel.delay_time.value
+        try:
+            delay_selector_idx = self.delay_time_indices.index(delay_time_val)
+        except ValueError:
+            delay_selector_idx = 1  # Default to 1/8
+        self.delay_time_selector.set_value(delay_selector_idx)
+        self.delay_feedback_knob.set_value(channel.delay_feedback * 100)
+        self.delay_mix_knob.set_value(channel.delay_mix * 100)
+        self.delay_pingpong_btn.set_value(channel.delay_ping_pong)
+        
         self.level_knob.set_value(channel.level_db)
         self.pan_knob.set_value(channel.pan)
         self.choke_btn.set_value(channel.choke_enabled)

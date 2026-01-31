@@ -239,6 +239,11 @@ class PythonicSynthesizer:
         """Set master volume in dB"""
         self.master_volume_db = np.clip(volume_db, -60.0, 10.0)
     
+    def set_bpm(self, bpm: float):
+        """Set BPM for all channels (for tempo-synced delay effects)"""
+        for channel in self.channels:
+            channel.set_bpm(bpm)
+    
     def cleanup(self):
         """Cleanup thread pool resources (call on shutdown)"""
         if hasattr(self, '_thread_pool'):
