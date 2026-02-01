@@ -1077,6 +1077,9 @@ class PythonicGUI:
         menu.add_command(label="Open Preset...", command=self._load_preset)
         menu.add_command(label="Save Preset As...", command=self._save_preset)
         menu.add_separator()
+        menu.add_command(label="Load Drum Patch (.mtdrum)...", command=self._load_drum_patch)
+        menu.add_command(label="Save Drum Patch (.mtdrum)...", command=self._save_drum_patch)
+        menu.add_separator()
         menu.add_command(label="Cut Preset", command=self._cut_preset)
         menu.add_command(label="Copy Preset", command=self._copy_preset)
         menu.add_command(label="Paste Preset", command=self._paste_preset)
@@ -2042,6 +2045,57 @@ class PythonicGUI:
         
         if filename:
             self._load_preset_file(filename)
+    
+    def _load_drum_patch(self):
+        """Load a single drum patch (.mtdrum) into the currently selected channel"""
+        preset_folder = self.preferences_manager.get_preset_folder()
+        filename = filedialog.askopenfilename(
+            initialdir=preset_folder,
+            filetypes=[
+                ('Drum Patch', '*.mtdrum'),
+                ('All files', '*.*')
+            ],
+            title=f'Load Drum Patch into Channel {self.selected_channel + 1}'
+        )
+        
+        if filename:
+            try:
+                # Load the drum patch into the currently selected channel
+                self.preset_manager.load_drum_patch(filename, self.selected_channel)
+                
+                # Update UI to reflect the new drum parameters
+                self._update_ui_from_channel()
+                
+                # Get the patch name from the file
+                import os
+                patch_name = os.path.splitext(os.path.basename(filename))[0]
+                messagebox.showinfo("Loaded", f"Drum patch loaded into channel {self.selected_channel + 1}:\n{patch_name}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to load drum patch: {e}")
+    
+    def _save_drum_patch(self):
+        """Save the currently selected drum to a .mtdrum file"""
+        preset_folder = self.preferences_manager.get_preset_folder()
+        
+        # Get current channel name as default filename
+        channel = self.synth.channels[self.selected_channel]
+        default_name = getattr(channel, 'name', f'Drum_{self.selected_channel + 1}')
+        
+        filename = filedialog.asksaveasfilename(
+            initialdir=preset_folder,
+            defaultextension='.mtdrum',
+            initialfile=f'{default_name}.mtdrum',
+            filetypes=[('Drum Patch', '*.mtdrum'), ('All files', '*.*')],
+            title=f'Save Drum {self.selected_channel + 1} Patch'
+        )
+        
+        if filename:
+            try:
+                # Save the drum patch
+                self.preset_manager.save_drum_patch(self.selected_channel, filename)
+                messagebox.showinfo("Saved", f"Drum patch saved to:\n{filename}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to save drum patch: {e}")
     
     def _export_all_wavs(self):
         """Export all drums to WAV files"""
