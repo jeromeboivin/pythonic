@@ -1555,6 +1555,10 @@ class PythonicGUI:
             channel.set_fill(step, value)
         elif lane_type == 'prob':
             channel.set_probability(step, value)
+        elif lane_type == 'sub':
+            # Update substeps pattern for the step
+            if step < len(channel.steps):
+                channel.steps[step].substeps = value
     
     def _on_toggle_prob_mode(self):
         """Toggle probability editing mode for pattern editor"""
@@ -1586,13 +1590,19 @@ class PythonicGUI:
                     channel.set_fill(step, value)
                 elif lane_type == 'prob':
                     channel.set_probability(step, value)
+                elif lane_type == 'sub':
+                    # Update substeps pattern for the step
+                    if step < len(channel.steps):
+                        channel.steps[step].substeps = value
                 
-                # Update that channel's editor
+                # Update that channel's editor with substeps
+                substeps = [s.substeps for s in channel.steps]
                 self.pattern_editors[ch_idx].set_pattern_data(
                     channel.get_triggers(),
                     channel.get_accents(),
                     channel.get_fills(),
-                    channel.get_probabilities()
+                    channel.get_probabilities(),
+                    substeps
                 )
     
     def _on_pattern_length_change(self, new_length):
@@ -2013,7 +2023,8 @@ class PythonicGUI:
             accents = [step.accent for step in channel.steps]
             fills = [step.fill for step in channel.steps]
             probabilities = [step.probability for step in channel.steps]
-            editor.set_pattern_data(triggers, accents, fills, probabilities)
+            substeps = [step.substeps for step in channel.steps]
+            editor.set_pattern_data(triggers, accents, fills, probabilities, substeps)
     
     def _update_pattern_ui(self):
         """Update all pattern UI elements (buttons and editors) after loading patterns"""
@@ -2119,7 +2130,16 @@ class PythonicGUI:
         )
         
         if filename:
+            # Get synth data
             data = self.synth.get_preset_data()
+            # Add pattern data (includes substeps via PatternChannel.to_dict)
+            data['patterns'] = self.pattern_manager.to_dict()
+            # Add global settings
+            data['tempo'] = self.pattern_manager.bpm
+            data['step_rate'] = self.pattern_manager.step_rate
+            data['swing'] = self.pattern_manager.swing
+            data['fill_rate'] = self.pattern_manager.fill_rate
+            
             with open(filename, 'w') as f:
                 json.dump(data, f, indent=2)
             self.preferences_manager.add_recent_file(filename)
@@ -2267,6 +2287,33 @@ class PythonicGUI:
                 with open(filename, 'r') as f:
                     data = json.load(f)
                 self.synth.load_preset_data(data)
+                
+                # Load patterns if available (includes substeps)
+                if 'patterns' in data:
+                    self.pattern_manager.from_dict(data['patterns'])
+                    self._update_pattern_ui()
+                
+                # Load global settings
+                if 'tempo' in data:
+                    self.pattern_manager.set_bpm(int(data['tempo']))
+                    if hasattr(self, 'bpm_var'):
+                        self.bpm_var.set(str(self.pattern_manager.bpm))
+                
+                if 'step_rate' in data:
+                    self.pattern_manager.set_step_rate(data['step_rate'])
+                    if hasattr(self, 'step_rate_buttons'):
+                        for r, btn in self.step_rate_buttons:
+                            if r == data['step_rate']:
+                                btn.config(bg=self.COLORS['highlight'])
+                            else:
+                                btn.config(bg=self.COLORS['bg_light'])
+                
+                if 'swing' in data:
+                    self.pattern_manager.set_swing(data['swing'])
+                
+                if 'fill_rate' in data:
+                    self.pattern_manager.set_fill_rate(int(data['fill_rate']))
+                
                 self._update_ui_from_channel()
                 self.preferences_manager.add_recent_file(filename)
                 self.preferences_manager.set('last_preset', filename)
@@ -3700,12 +3747,55 @@ class PythonicGUI:
                     # Accent = 127, Normal = 64 (per spec)
                     velocity = 127 if step.accent else 64
                     
-                    # Trigger the channel with velocity
-                    self.synth.trigger_drum(channel_id, velocity)
+                    # Check if substeps are defined
+                    if step.substeps and len(step.substeps) > 0:
+                        # Use substeps to determine which subdivisions to trigger
+                        self._schedule_substep_triggers(channel_id, step.substeps, velocity)
+                    else:
+                        # Normal single trigger at step start
+                        self.synth.trigger_drum(channel_id, velocity)
                     
-                    # Handle fills if enabled
+                    # Handle fills if enabled (fills work normally with substeps)
                     if step.fill:
                         self._schedule_fill_triggers(channel_id, step.accent)
+    
+    def _schedule_substep_triggers(self, channel_id: int, substep_pattern: str, velocity: int):
+        """
+        Schedule substep triggers for a channel.
+        
+        Substeps divide a step into multiple subdivisions where each can be on or off.
+        Format: 'o' = trigger, '-' = no trigger
+        Examples: 'oo-' = 3 subdivisions, first two trigger
+                  'o-o-' = 4 subdivisions, alternating triggers
+        
+        Args:
+            channel_id: Channel to trigger
+            substep_pattern: String pattern like 'oo-' or 'o-o-'
+            velocity: MIDI velocity for all substep triggers
+        """
+        if not substep_pattern:
+            return
+        
+        num_substeps = len(substep_pattern)
+        if num_substeps == 0:
+            return
+        
+        step_duration_ms = self.pattern_manager.step_duration_ms
+        substep_interval_ms = step_duration_ms / num_substeps
+        substep_interval_frames = int((substep_interval_ms / 1000.0) * self.sample_rate)
+        
+        # Schedule triggers for each substep
+        for i, substep_char in enumerate(substep_pattern):
+            if substep_char == 'o' or substep_char == 'O':
+                # This substep should trigger
+                frames_until_trigger = substep_interval_frames * i
+                
+                if i == 0:
+                    # First substep: trigger immediately
+                    self.synth.trigger_drum(channel_id, velocity)
+                else:
+                    # Later substeps: schedule for future
+                    self.pending_fills.append((frames_until_trigger, channel_id, velocity))
     
     def _schedule_fill_triggers(self, channel_id: int, accented: bool):
         """

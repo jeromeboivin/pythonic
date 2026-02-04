@@ -418,13 +418,15 @@ class PythonicPresetParser:
                 'triggers': [False] * expected_length,
                 'accents': [False] * expected_length,
                 'fills': [False] * expected_length,
-                'probabilities': [100] * expected_length
+                'probabilities': [100] * expected_length,
+                'substeps': [''] * expected_length
             }
         
         triggers_str = channel_data.get('Triggers', '')
         accents_str = channel_data.get('Accents', '')
         fills_str = channel_data.get('Fills', '')
         probs_str = channel_data.get('Probabilities', '')
+        substeps_str = channel_data.get('Substeps', '')  # New: parse substeps
         
         # Convert pattern strings to boolean lists
         # '#' means on, '-' means off
@@ -442,17 +444,26 @@ class PythonicPresetParser:
         else:
             probabilities = [100] * expected_length
         
+        # Parse substeps - format is comma-separated patterns (e.g., "oo-,o-o-,,oo-")
+        # Empty means no substeps for that step
+        if substeps_str:
+            substeps = substeps_str.split(',')
+        else:
+            substeps = [''] * expected_length
+        
         # Ensure all lists are the expected length
         triggers = triggers[:expected_length] + [False] * max(0, expected_length - len(triggers))
         accents = accents[:expected_length] + [False] * max(0, expected_length - len(accents))
         fills = fills[:expected_length] + [False] * max(0, expected_length - len(fills))
         probabilities = probabilities[:expected_length] + [100] * max(0, expected_length - len(probabilities))
+        substeps = substeps[:expected_length] + [''] * max(0, expected_length - len(substeps))
         
         return {
             'triggers': triggers,
             'accents': accents,
             'fills': fills,
-            'probabilities': probabilities
+            'probabilities': probabilities,
+            'substeps': substeps
         }
 
 

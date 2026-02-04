@@ -939,7 +939,7 @@ class ToggleButton(tk.Canvas):
 
 class PatternEditor(tk.Canvas):
     """
-    Pattern editor widget showing triggers, accents, fills, and length for a pattern channel
+    Pattern editor widget showing triggers, accents, fills, substeps, and length for a pattern channel
     Supports probability mode where clicking adjusts step probability instead of triggers
     """
 
@@ -959,7 +959,7 @@ class PatternEditor(tk.Canvas):
         # Calculate dimensions - wider steps for better usability
         step_width = 45  # Wider steps for better click targets
         lane_height = 18  # Taller lanes for better visibility
-        num_lanes = 5  # triggers, accents, fills, length display, step numbers
+        num_lanes = 6  # triggers, accents, fills, substeps, length display, step numbers
         
         width = num_steps * step_width + 50  # 50px for lane labels
         height = num_lanes * lane_height + 15
@@ -982,6 +982,7 @@ class PatternEditor(tk.Canvas):
         self.accents = [False] * num_steps
         self.fills = [False] * num_steps
         self.probabilities = [100] * num_steps  # Per-step probability (0-100)
+        self.substeps = [''] * num_steps  # Per-step substep pattern ('o' = play, '-' = don't play)
         
         # Display state
         self.current_position = 0  # Current playback position (green highlight)
@@ -990,7 +991,7 @@ class PatternEditor(tk.Canvas):
         self.probability_mode = False
         
         # Lane names
-        self.lanes = ['trig', 'acc', 'fill']
+        self.lanes = ['trig', 'acc', 'fill', 'sub']
         
         # Mouse state
         self.dragging = False
@@ -1006,10 +1007,11 @@ class PatternEditor(tk.Canvas):
         self.bind('<Button-1>', self._on_click)
         self.bind('<Control-Button-1>', self._on_ctrl_click)
         self.bind('<Shift-Button-1>', self._on_shift_click)
+        self.bind('<Button-3>', self._on_right_click)  # Right-click for substeps menu
         self.bind('<B1-Motion>', self._on_drag)
         self.bind('<ButtonRelease-1>', self._on_release)
     
-    def set_pattern_data(self, triggers, accents, fills, probabilities=None):
+    def set_pattern_data(self, triggers, accents, fills, probabilities=None, substeps=None):
         """Update pattern data from pattern manager"""
         self.triggers = list(triggers)
         self.accents = list(accents)
@@ -1018,6 +1020,10 @@ class PatternEditor(tk.Canvas):
             self.probabilities = list(probabilities)
         else:
             self.probabilities = [100] * len(triggers)
+        if substeps is not None:
+            self.substeps = list(substeps)
+        else:
+            self.substeps = [''] * len(triggers)
         self._draw()
     
     def set_probability_mode(self, enabled: bool):
@@ -1031,12 +1037,12 @@ class PatternEditor(tk.Canvas):
         self._draw()
     
     def _get_lane_at_y(self, y):
-        """Determine which lane was clicked (trig, acc, fill, or length)"""
+        """Determine which lane was clicked (trig, acc, fill, sub, or length)"""
         relative_y = y - 5
         lane = int(relative_y / self.lane_height)
-        if lane >= 0 and lane < 3:
+        if lane >= 0 and lane < 4:
             return self.lanes[lane]
-        elif lane == 3:
+        elif lane == 4:
             return 'length'
         return None
     
@@ -1063,7 +1069,10 @@ class PatternEditor(tk.Canvas):
         
         lane = self._get_lane_at_y(event.y)
         
-        if lane == 'length' and step is not None and self.length_change_callback:
+        if lane == 'sub' and step is not None:
+            # Click on substeps lane - show substeps editor popup
+            self._show_substeps_menu(event.x_root, event.y_root, step)
+        elif lane == 'length' and step is not None and self.length_change_callback:
             # Click on length lane sets the pattern length to clicked step + 1
             new_length = step + 1
             self.pattern_length = new_length
@@ -1121,6 +1130,80 @@ class PatternEditor(tk.Canvas):
             
             # Call the all-channels callback with empty muted_channels set (all channels active)
             self.all_channels_command(step, lane, new_value, set())
+    
+    def _on_right_click(self, event):
+        """Handle right-click: show substeps menu for any step"""
+        step = self._get_step_at_x(event.x)
+        if step is not None:
+            self._show_substeps_menu(event.x_root, event.y_root, step)
+    
+    def _show_substeps_menu(self, x, y, step):
+        """Show context menu for editing substeps at the given step"""
+        import tkinter as tk
+        menu = tk.Menu(self, tearoff=0)
+        
+        current_substeps = self.substeps[step] if step < len(self.substeps) else ''
+        
+        # Clear substeps option
+        menu.add_command(label="No substeps" + (" ✓" if current_substeps == '' else ""),
+                        command=lambda: self._set_substeps(step, ''))
+        menu.add_separator()
+        
+        # Common substep patterns
+        patterns = [
+            ('oo', '2 subs: ○○ (both play)'),
+            ('o-', '2 subs: ○- (1st only)'),
+            ('-o', '2 subs: -○ (2nd only)'),
+            ('ooo', '3 subs: ○○○ (all play)'),
+            ('oo-', '3 subs: ○○- (1st, 2nd)'),
+            ('o-o', '3 subs: ○-○ (1st, 3rd)'),
+            ('o--', '3 subs: ○-- (1st only)'),
+            ('-oo', '3 subs: -○○ (2nd, 3rd)'),
+            ('--o', '3 subs: --○ (3rd only)'),
+            ('oooo', '4 subs: ○○○○ (all play)'),
+            ('o-o-', '4 subs: ○-○- (alternating)'),
+            ('-o-o', '4 subs: -○-○ (alternating)'),
+            ('ooo-', '4 subs: ○○○- (first 3)'),
+            ('o---', '4 subs: ○--- (1st only)'),
+        ]
+        
+        for pattern, label in patterns:
+            check = " ✓" if current_substeps == pattern else ""
+            menu.add_command(label=label + check,
+                           command=lambda p=pattern: self._set_substeps(step, p))
+        
+        menu.add_separator()
+        menu.add_command(label="Custom...", command=lambda: self._show_custom_substeps_dialog(step))
+        
+        menu.tk_popup(x, y)
+    
+    def _set_substeps(self, step, pattern):
+        """Set substeps pattern for a step"""
+        if step < len(self.substeps):
+            self.substeps[step] = pattern
+            self._draw()
+            if self.command:
+                self.command(self.channel_id, step, 'sub', pattern)
+    
+    def _show_custom_substeps_dialog(self, step):
+        """Show dialog for entering custom substeps pattern"""
+        import tkinter as tk
+        from tkinter import simpledialog
+        
+        current = self.substeps[step] if step < len(self.substeps) else ''
+        result = simpledialog.askstring(
+            "Custom Substeps",
+            f"Enter substep pattern for step {step + 1}:\n" +
+            "Use 'o' for play, '-' for skip\n" +
+            f"Examples: 'oo-', 'o-o-', 'ooo'\n" +
+            f"Current: '{current}'",
+            initialvalue=current,
+            parent=self
+        )
+        if result is not None:
+            # Validate: only allow 'o', 'O', '-' characters
+            clean = ''.join(c if c in 'oO-' else '' for c in result).lower()
+            self._set_substeps(step, clean)
 
     
     def _on_drag(self, event):
@@ -1195,7 +1278,7 @@ class PatternEditor(tk.Canvas):
                            font=('Segoe UI', 8), anchor='center')
         
         # Draw length indicator lane label
-        y = 5 + 3 * self.lane_height + self.lane_height // 2
+        y = 5 + 4 * self.lane_height + self.lane_height // 2
         self.create_text(25, y, text='len', fill='#8888aa',
                        font=('Segoe UI', 8), anchor='center')
         
@@ -1211,6 +1294,9 @@ class PatternEditor(tk.Canvas):
         # Draw fill lane
         self._draw_lane(2, self.fills, '#4488ff', '#2266aa')
         
+        # Draw substeps lane
+        self._draw_substeps_lane()
+        
         # Draw length indicator lane
         self._draw_length_lane()
         
@@ -1224,7 +1310,7 @@ class PatternEditor(tk.Canvas):
                            fill='#3a3a4a', dash=(2,))
         
         # Draw horizontal grid lines
-        for lane in range(4):
+        for lane in range(5):  # 5 grid lines for 5 data lanes
             y = 5 + (lane + 1) * self.lane_height
             self.create_line(x_start, y, x_start + self.num_steps * self.step_width, y,
                            fill='#3a3a4a')
@@ -1329,7 +1415,7 @@ class PatternEditor(tk.Canvas):
     
     def _draw_length_lane(self):
         """Draw the pattern length indicator"""
-        lane_index = 3
+        lane_index = 4
         x_start = 50
         y_base = 5 + lane_index * self.lane_height
         
@@ -1354,7 +1440,7 @@ class PatternEditor(tk.Canvas):
     
     def _draw_step_numbers(self):
         """Draw the step numbers row (1-16)"""
-        lane_index = 4
+        lane_index = 5
         x_start = 50
         y_base = 5 + lane_index * self.lane_height
         
@@ -1380,6 +1466,68 @@ class PatternEditor(tk.Canvas):
     def get_probabilities(self):
         """Get current probabilities"""
         return list(self.probabilities)
+    
+    def get_substeps(self):
+        """Get current substeps patterns"""
+        return list(self.substeps)
+    
+    def _draw_substeps_lane(self):
+        """Draw the substeps lane showing substep patterns"""
+        lane_index = 3
+        x_start = 50
+        y_base = 5 + lane_index * self.lane_height
+        
+        for step in range(self.num_steps):
+            substep_pattern = self.substeps[step] if step < len(self.substeps) else ''
+            has_trigger = self.triggers[step] if step < len(self.triggers) else False
+            
+            x = x_start + step * self.step_width + 2
+            y = y_base + 2
+            w = self.step_width - 4
+            h = self.lane_height - 4
+            
+            # Background color based on whether substeps are set
+            if substep_pattern and has_trigger:
+                # Has substeps and trigger - show active
+                color = '#aa44aa'  # Purple for active substeps
+            elif substep_pattern:
+                # Has substeps but no trigger - dimmed
+                color = '#553355'
+            else:
+                # No substeps - default
+                color = '#3a3a4a'
+            
+            # Draw pill-shaped step button
+            radius = min(w, h) // 2
+            self._draw_rounded_rect(x, y, x + w, y + h, radius, fill=color, outline='#555566')
+            
+            # Draw substep pattern visualization inside the cell
+            if substep_pattern:
+                self._draw_substep_dots(x, y, w, h, substep_pattern)
+    
+    def _draw_substep_dots(self, x, y, w, h, pattern):
+        """Draw small dots representing substep pattern inside a cell"""
+        if not pattern:
+            return
+        
+        num_subs = len(pattern)
+        dot_spacing = w / (num_subs + 1)
+        dot_radius = min(3, (h - 4) // 2)
+        
+        for i, char in enumerate(pattern):
+            dot_x = x + dot_spacing * (i + 1)
+            dot_y = y + h // 2
+            
+            if char == 'o' or char == 'O':
+                # Filled dot for 'play'
+                self.create_oval(dot_x - dot_radius, dot_y - dot_radius,
+                               dot_x + dot_radius, dot_y + dot_radius,
+                               fill='#ffffff', outline='')
+            else:
+                # Empty dot outline for 'skip'
+                self.create_oval(dot_x - dot_radius, dot_y - dot_radius,
+                               dot_x + dot_radius, dot_y + dot_radius,
+                               fill='', outline='#888888', width=1)
 
 
 class MatrixEditor(tk.Canvas):

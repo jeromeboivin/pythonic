@@ -17,9 +17,10 @@ class PatternStep:
         self.accent = False       # Is this step accented?
         self.fill = False         # Does this step have a fill?
         self.probability = 100    # Step probability (0-100%, default 100%)
+        self.substeps = ""        # Sub-step pattern: 'o' = play, '-' = don't play (e.g., "oo-" or "o-o-")
 
     def __repr__(self):
-        return f"Step(trig={self.trigger}, acc={self.accent}, fill={self.fill}, prob={self.probability})"
+        return f"Step(trig={self.trigger}, acc={self.accent}, fill={self.fill}, prob={self.probability}, sub={self.substeps})"
 
     def copy(self):
         """Create a deep copy of this step"""
@@ -28,6 +29,7 @@ class PatternStep:
         new_step.accent = self.accent
         new_step.fill = self.fill
         new_step.probability = self.probability
+        new_step.substeps = self.substeps
         return new_step
 
 
@@ -112,7 +114,8 @@ class PatternChannel:
                     'trigger': step.trigger,
                     'accent': step.accent,
                     'fill': step.fill,
-                    'probability': step.probability
+                    'probability': step.probability,
+                    'substeps': step.substeps
                 }
                 for step in self.steps
             ]
@@ -127,6 +130,7 @@ class PatternChannel:
             channel.steps[i].accent = step_data['accent']
             channel.steps[i].fill = step_data['fill']
             channel.steps[i].probability = step_data.get('probability', 100)
+            channel.steps[i].substeps = step_data.get('substeps', '')
         return channel
 
 
@@ -798,6 +802,11 @@ class PatternManager:
                     # Load probabilities if available (default to 100)
                     if 'probabilities' in channel_info:
                         channel.set_probabilities(channel_info['probabilities'])
+                    # Load substeps if available (default to empty)
+                    if 'substeps' in channel_info:
+                        for i, substep_pattern in enumerate(channel_info['substeps']):
+                            if i < len(channel.steps):
+                                channel.steps[i].substeps = substep_pattern
         
         # Second pass: set chained_from_prev based on previous pattern's chained_to_next
         for i in range(1, len(self.patterns)):
