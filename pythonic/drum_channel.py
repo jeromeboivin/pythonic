@@ -11,12 +11,17 @@ from .filter import EQFilter
 from .vintage import VintageProcessor
 from .reverb import FastStereoReverb
 from .delay import FastStereoDelay, DelayTime
+from .smoothed_parameter import SmoothedParameter, LogSmoothedParameter
 
 
 class DrumChannel:
     """
     Complete drum synthesis channel
     Combines oscillator, noise generator, mixing, distortion, and EQ
+    
+    Parameter Smoothing:
+    Frequency and filter parameters use smoothed values to prevent
+    clicks and zippering artifacts when adjusting in real-time.
     """
     
     # Internal headroom
@@ -28,9 +33,15 @@ class DrumChannel:
     # This scaling matches the observed output ratio
     OSC_LEVEL_SCALING = 0.27
     
+    # Default smoothing time constant (ms)
+    DEFAULT_SMOOTHING_MS = 30.0
+    
     def __init__(self, channel_id: int, sample_rate: int = 44100):
         self.channel_id = channel_id
         self.sr = sample_rate
+        
+        # Smoothing time constant (can be changed globally)
+        self._smoothing_ms = self.DEFAULT_SMOOTHING_MS
         
         # Components
         self.oscillator = Oscillator(sample_rate)
@@ -68,9 +79,35 @@ class DrumChannel:
         # Distortion
         self.distortion = 0.0  # 0 to 1
         
-        # EQ
+        # EQ (raw target values - smoothing applied in process)
         self.eq_frequency = 632.46  # Hz
         self.eq_gain_db = 0.0  # dB (-40 to +40)
+        
+        # Smoothed parameters for click-free real-time control
+        self._smoothed_osc_freq = LogSmoothedParameter(
+            initial_value=440.0, time_constant_ms=self._smoothing_ms,
+            sample_rate=sample_rate, min_val=20.0, max_val=20000.0
+        )
+        self._smoothed_noise_freq = LogSmoothedParameter(
+            initial_value=20000.0, time_constant_ms=self._smoothing_ms,
+            sample_rate=sample_rate, min_val=20.0, max_val=20000.0
+        )
+        self._smoothed_noise_q = LogSmoothedParameter(
+            initial_value=0.707, time_constant_ms=self._smoothing_ms,
+            sample_rate=sample_rate, min_val=0.5, max_val=20.0
+        )
+        self._smoothed_eq_freq = LogSmoothedParameter(
+            initial_value=632.46, time_constant_ms=self._smoothing_ms,
+            sample_rate=sample_rate, min_val=20.0, max_val=20000.0
+        )
+        self._smoothed_distortion = SmoothedParameter(
+            initial_value=0.0, time_constant_ms=self._smoothing_ms,
+            sample_rate=sample_rate, min_val=0.0, max_val=1.0
+        )
+        self._smoothed_mix = SmoothedParameter(
+            initial_value=0.5, time_constant_ms=self._smoothing_ms,
+            sample_rate=sample_rate, min_val=0.0, max_val=1.0
+        )
         
         # Choke and output
         self.choke_enabled = False
@@ -81,6 +118,9 @@ class DrumChannel:
         self.osc_vel_sensitivity = 0.0
         self.noise_vel_sensitivity = 0.0
         self.mod_vel_sensitivity = 0.0
+        
+        # Probability (0-100, chance of triggering during pattern playback)
+        self.probability = 100
         
         # State
         self.is_active = False
@@ -183,6 +223,20 @@ class DrumChannel:
             result.fill(0)
             return result
         
+        # Update smoothed parameters (get current smoothed values)
+        # These advance the smoothing filters per-block for efficiency
+        smoothed_osc_freq = self._smoothed_osc_freq.get_next_value()
+        smoothed_noise_freq = self._smoothed_noise_freq.get_next_value()
+        smoothed_noise_q = self._smoothed_noise_q.get_next_value()
+        smoothed_eq_freq = self._smoothed_eq_freq.get_next_value()
+        smoothed_distortion = self._smoothed_distortion.get_next_value()
+        smoothed_mix = self._smoothed_mix.get_next_value()
+        
+        # Apply smoothed values to components
+        self.oscillator.set_frequency(smoothed_osc_freq)
+        self.noise_gen.set_filter_frequency(smoothed_noise_freq)
+        self.noise_gen.set_filter_q(smoothed_noise_q)
+        
         # Apply vintage pitch drift if enabled
         if self.vintage_amount > 0.001:
             self.vintage.set_amount(self.vintage_amount)
@@ -210,8 +264,8 @@ class DrumChannel:
         osc_stereo[:, 0] = osc_signal
         osc_stereo[:, 1] = osc_signal
         
-        # Mix based on osc_noise_mix parameter using power-scaled crossfade
-        mix = self.osc_noise_mix
+        # Mix based on smoothed osc_noise_mix parameter using power-scaled crossfade
+        mix = smoothed_mix
         if mix > 0.999:
             # Pure oscillator - reuse osc_stereo
             mixed = osc_stereo
@@ -231,15 +285,16 @@ class DrumChannel:
             np.multiply(osc_stereo, osc_gain, out=mixed)
             mixed += noise_signal * noise_gain
         
-        # Apply distortion
-        if self.distortion > 0.001:
+        # Apply smoothed distortion
+        if smoothed_distortion > 0.001:
+            self.distortion = smoothed_distortion  # Update for _apply_distortion
             mixed = self._apply_distortion(mixed)
         
-        # Apply EQ (process left and right separately)
+        # Apply EQ with smoothed frequency (process left and right separately)
         if abs(self.eq_gain_db) > 0.1:
-            self.eq_filter_l.set_frequency(self.eq_frequency)
+            self.eq_filter_l.set_frequency(smoothed_eq_freq)
             self.eq_filter_l.set_gain(self.eq_gain_db)
-            self.eq_filter_r.set_frequency(self.eq_frequency)
+            self.eq_filter_r.set_frequency(smoothed_eq_freq)
             self.eq_filter_r.set_gain(self.eq_gain_db)
             
             # Process left channel
@@ -389,9 +444,35 @@ class DrumChannel:
         
         return output
     
+    # Smoothing configuration
+    def set_smoothing_time(self, time_ms: float):
+        """Set the smoothing time constant for all smoothed parameters.
+        
+        Args:
+            time_ms: Smoothing time in milliseconds (20-50 recommended)
+        """
+        self._smoothing_ms = max(0.0, time_ms)
+        self._smoothed_osc_freq.set_time_constant(self._smoothing_ms)
+        self._smoothed_noise_freq.set_time_constant(self._smoothing_ms)
+        self._smoothed_noise_q.set_time_constant(self._smoothing_ms)
+        self._smoothed_eq_freq.set_time_constant(self._smoothing_ms)
+        self._smoothed_distortion.set_time_constant(self._smoothing_ms)
+        self._smoothed_mix.set_time_constant(self._smoothing_ms)
+    
+    def get_smoothing_time(self) -> float:
+        """Get the current smoothing time constant in milliseconds."""
+        return self._smoothing_ms
+    
     # Parameter setters for GUI binding
     def set_osc_frequency(self, freq: float):
-        """Set oscillator frequency"""
+        """Set oscillator frequency (smoothed)"""
+        self._smoothed_osc_freq.set_target(freq)
+        # Also set immediately for non-realtime use
+        self.oscillator.set_frequency(freq)
+    
+    def set_osc_frequency_immediate(self, freq: float):
+        """Set oscillator frequency immediately (no smoothing)"""
+        self._smoothed_osc_freq.set_immediate(freq)
         self.oscillator.set_frequency(freq)
     
     def set_osc_waveform(self, waveform: WaveformType):
@@ -423,11 +504,25 @@ class DrumChannel:
         self.noise_gen.set_filter_mode(mode)
     
     def set_noise_filter_freq(self, freq: float):
-        """Set noise filter frequency"""
+        """Set noise filter frequency (smoothed)"""
+        self._smoothed_noise_freq.set_target(freq)
+        # Also set immediately for non-realtime use
+        self.noise_gen.set_filter_frequency(freq)
+    
+    def set_noise_filter_freq_immediate(self, freq: float):
+        """Set noise filter frequency immediately (no smoothing)"""
+        self._smoothed_noise_freq.set_immediate(freq)
         self.noise_gen.set_filter_frequency(freq)
     
     def set_noise_filter_q(self, q: float):
-        """Set noise filter Q"""
+        """Set noise filter Q (smoothed)"""
+        self._smoothed_noise_q.set_target(q)
+        # Also set immediately for non-realtime use
+        self.noise_gen.set_filter_q(q)
+    
+    def set_noise_filter_q_immediate(self, q: float):
+        """Set noise filter Q immediately (no smoothing)"""
+        self._smoothed_noise_q.set_immediate(q)
         self.noise_gen.set_filter_q(q)
     
     def set_noise_stereo(self, enabled: bool):
@@ -445,6 +540,44 @@ class DrumChannel:
     def set_noise_decay(self, decay_ms: float):
         """Set noise envelope decay"""
         self.noise_gen.set_decay(decay_ms)
+    
+    def set_osc_noise_mix(self, mix: float):
+        """Set oscillator/noise mix (smoothed)
+        
+        Args:
+            mix: 0.0 = all noise, 1.0 = all oscillator
+        """
+        mix = np.clip(mix, 0.0, 1.0)
+        self.osc_noise_mix = mix
+        self._smoothed_mix.set_target(mix)
+    
+    def set_osc_noise_mix_immediate(self, mix: float):
+        """Set oscillator/noise mix immediately (no smoothing)"""
+        mix = np.clip(mix, 0.0, 1.0)
+        self.osc_noise_mix = mix
+        self._smoothed_mix.set_immediate(mix)
+    
+    def set_eq_frequency(self, freq: float):
+        """Set EQ frequency (smoothed)"""
+        self.eq_frequency = np.clip(freq, 20.0, 20000.0)
+        self._smoothed_eq_freq.set_target(self.eq_frequency)
+    
+    def set_eq_frequency_immediate(self, freq: float):
+        """Set EQ frequency immediately (no smoothing)"""
+        self.eq_frequency = np.clip(freq, 20.0, 20000.0)
+        self._smoothed_eq_freq.set_immediate(self.eq_frequency)
+    
+    def set_distortion(self, amount: float):
+        """Set distortion amount (smoothed)"""
+        amount = np.clip(amount, 0.0, 1.0)
+        self.distortion = amount
+        self._smoothed_distortion.set_target(amount)
+    
+    def set_distortion_immediate(self, amount: float):
+        """Set distortion amount immediately (no smoothing)"""
+        amount = np.clip(amount, 0.0, 1.0)
+        self.distortion = amount
+        self._smoothed_distortion.set_immediate(amount)
     
     def set_bpm(self, bpm: float):
         """Set BPM for tempo-synced delay effect"""
@@ -489,12 +622,20 @@ class DrumChannel:
             'delay_ping_pong': self.delay_ping_pong,
         }
     
-    def set_parameters(self, params: dict):
-        """Set all parameters from a dictionary"""
+    def set_parameters(self, params: dict, immediate: bool = True):
+        """Set all parameters from a dictionary
+        
+        Args:
+            params: Dictionary of parameter values
+            immediate: If True, set values immediately without smoothing (for preset loading)
+        """
         if 'name' in params:
             self.name = params['name']
         if 'osc_frequency' in params:
-            self.set_osc_frequency(params['osc_frequency'])
+            if immediate:
+                self.set_osc_frequency_immediate(params['osc_frequency'])
+            else:
+                self.set_osc_frequency(params['osc_frequency'])
         if 'osc_waveform' in params:
             self.set_osc_waveform(WaveformType(params['osc_waveform']))
         if 'pitch_mod_mode' in params:
@@ -510,9 +651,15 @@ class DrumChannel:
         if 'noise_filter_mode' in params:
             self.set_noise_filter_mode(NoiseFilterMode(params['noise_filter_mode']))
         if 'noise_filter_freq' in params:
-            self.set_noise_filter_freq(params['noise_filter_freq'])
+            if immediate:
+                self.set_noise_filter_freq_immediate(params['noise_filter_freq'])
+            else:
+                self.set_noise_filter_freq(params['noise_filter_freq'])
         if 'noise_filter_q' in params:
-            self.set_noise_filter_q(params['noise_filter_q'])
+            if immediate:
+                self.set_noise_filter_q_immediate(params['noise_filter_q'])
+            else:
+                self.set_noise_filter_q(params['noise_filter_q'])
         if 'noise_stereo' in params:
             self.set_noise_stereo(params['noise_stereo'])
         if 'noise_envelope_mode' in params:
@@ -522,11 +669,20 @@ class DrumChannel:
         if 'noise_decay' in params:
             self.set_noise_decay(params['noise_decay'])
         if 'osc_noise_mix' in params:
-            self.osc_noise_mix = np.clip(params['osc_noise_mix'], 0.0, 1.0)
+            if immediate:
+                self.set_osc_noise_mix_immediate(params['osc_noise_mix'])
+            else:
+                self.set_osc_noise_mix(params['osc_noise_mix'])
         if 'distortion' in params:
-            self.distortion = np.clip(params['distortion'], 0.0, 1.0)
+            if immediate:
+                self.set_distortion_immediate(params['distortion'])
+            else:
+                self.set_distortion(params['distortion'])
         if 'eq_frequency' in params:
-            self.eq_frequency = np.clip(params['eq_frequency'], 20.0, 20000.0)
+            if immediate:
+                self.set_eq_frequency_immediate(params['eq_frequency'])
+            else:
+                self.set_eq_frequency(params['eq_frequency'])
         if 'eq_gain_db' in params:
             self.eq_gain_db = np.clip(params['eq_gain_db'], -40.0, 40.0)
         if 'level_db' in params:

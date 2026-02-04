@@ -12,6 +12,7 @@ Style features:
 import tkinter as tk
 from tkinter import ttk
 import math
+import numpy as np
 
 
 class HintWindow:
@@ -70,7 +71,14 @@ class RotaryKnob(tk.Canvas):
     - Alt click to toggle between circular and linear drag mode
     - Mouse wheel for adjustment
     - Double-click to reset to center
+    - Logarithmic scaling for frequency/time parameters
     """
+    
+    # Logarithmic scaling types
+    LOG_FREQUENCY = 'frequency'  # For frequency knobs (20-20000 Hz)
+    LOG_TIME = 'time'            # For attack/decay (0-10000 ms)
+    LOG_RATE = 'rate'            # For rate knobs (1-2000 Hz)
+    LOG_Q = 'q'                  # For filter Q (0.5-20)
     
     def __init__(self, parent, size=50, min_val=0, max_val=100, default=50,
                  label="", unit="", logarithmic=False, command=None, **kwargs):
@@ -81,11 +89,13 @@ class RotaryKnob(tk.Canvas):
         self.min_val = min_val
         self.max_val = max_val
         self.default_val = default  # Store default for reset
-        self.value = default
         self.label = label
         self.unit = unit  # Unit string for display (Hz, dB, %, etc.)
-        self.logarithmic = logarithmic
+        self.logarithmic = logarithmic  # Can be True, False, or a LOG_* type string
         self.command = command
+        
+        # Initialize value (convert default if logarithmic)
+        self.value = default
         
         # Knob appearance
         self.knob_color = '#8888aa'
@@ -146,6 +156,53 @@ class RotaryKnob(tk.Canvas):
         else:
             return f"{val:.2f}{unit}"
     
+    def _get_log_floor(self):
+        """Get the minimum value for logarithmic calculations.
+        Uses a smart floor based on the parameter type."""
+        if self.min_val > 0:
+            return self.min_val
+        
+        # Smart floor based on label/type
+        label_lower = self.label.lower() if self.label else ""
+        if 'attack' in label_lower or 'decay' in label_lower:
+            return 0.1  # 0.1ms for time parameters
+        elif 'freq' in label_lower or 'rate' in label_lower:
+            return 1.0  # 1Hz for frequency parameters
+        else:
+            return 0.001  # Default floor
+    
+    def _value_to_normalized(self, value):
+        """Convert actual value to normalized 0-1 position (for display)"""
+        if not self.logarithmic:
+            # Linear scaling
+            value_range = self.max_val - self.min_val
+            if value_range != 0:
+                return (value - self.min_val) / value_range
+            return 0.5
+        else:
+            # Logarithmic scaling
+            min_val = self._get_log_floor()
+            max_val = self.max_val
+            value = max(value, min_val)
+            
+            # Use log scale
+            return np.log(value / min_val) / np.log(max_val / min_val)
+    
+    def _normalized_to_value(self, normalized):
+        """Convert normalized 0-1 position to actual value"""
+        normalized = max(0.0, min(1.0, normalized))
+        
+        if not self.logarithmic:
+            # Linear scaling
+            return self.min_val + normalized * (self.max_val - self.min_val)
+        else:
+            # Logarithmic scaling
+            min_val = self._get_log_floor()
+            max_val = self.max_val
+            
+            # Exponential mapping: output = min * (max/min)^normalized
+            return min_val * np.power(max_val / min_val, normalized)
+    
     def _draw(self):
         """Draw the knob"""
         self.delete('all')
@@ -168,13 +225,9 @@ class RotaryKnob(tk.Canvas):
                            self.size - 4 - offset, self.size - 4 - offset,
                            fill=color, outline='')
         
-        # Calculate indicator angle
+        # Calculate indicator angle using normalized position
         # Range is 225° (bottom-left) to -45° (bottom-right) = 270° sweep
-        value_range = self.max_val - self.min_val
-        if value_range != 0:
-            normalized = (self.value - self.min_val) / value_range
-        else:
-            normalized = 0.5
+        normalized = self._value_to_normalized(self.value)
         angle = math.radians(225 - normalized * 270)
         
         # Draw indicator line
@@ -221,14 +274,20 @@ class RotaryKnob(tk.Canvas):
             fine_mode = event.state & 0x1  # Shift key
             sensitivity_multiplier = 0.1 if fine_mode else 1.0
             
-            value_range = self.max_val - self.min_val
-            
             if self.linear_mode:
-                # Linear/vertical drag
+                # Linear/vertical drag - work in normalized space for log scaling
                 delta_y = self.drag_start_y - event.y
-                # Sensitivity: 200 pixels = full range
-                sensitivity = (value_range / 200.0) * sensitivity_multiplier
-                new_value = self.drag_start_value + delta_y * sensitivity
+                
+                # Get start position in normalized space
+                start_normalized = self._value_to_normalized(self.drag_start_value)
+                
+                # Sensitivity: 200 pixels = full normalized range (0-1)
+                delta_normalized = (delta_y / 200.0) * sensitivity_multiplier
+                new_normalized = start_normalized + delta_normalized
+                new_normalized = max(0.0, min(1.0, new_normalized))
+                
+                # Convert back to actual value
+                new_value = self._normalized_to_value(new_normalized)
             else:
                 # Circular drag mode
                 cx, cy = self.size // 2, self.size // 2
@@ -238,15 +297,15 @@ class RotaryKnob(tk.Canvas):
                 dy = cy - event.y  # Inverted for screen coords
                 angle = math.atan2(dy, dx)
                 
-                # Convert angle to value (225° to -45° range)
-                # Normalize angle to 0-1 range
+                # Convert angle to normalized 0-1 range
                 angle_deg = math.degrees(angle)
                 if angle_deg < -45:
                     angle_deg += 360
                 normalized = (225 - angle_deg) / 270
                 normalized = max(0, min(1, normalized))
                 
-                new_value = self.min_val + normalized * value_range
+                # Convert to actual value (respects log scaling)
+                new_value = self._normalized_to_value(normalized)
             
             self.set_value(new_value)
             self._show_hint()
@@ -279,14 +338,20 @@ class RotaryKnob(tk.Canvas):
     def _on_scroll(self, event):
         """Handle mouse wheel (Windows/Mac)"""
         delta = event.delta / 120  # Windows scroll delta
-        step = (self.max_val - self.min_val) / 100
-        self.set_value(self.value + delta * step)
+        # Work in normalized space for proper log scaling
+        current_normalized = self._value_to_normalized(self.value)
+        new_normalized = current_normalized + delta / 100.0
+        new_normalized = max(0.0, min(1.0, new_normalized))
+        self.set_value(self._normalized_to_value(new_normalized))
     
     def _on_scroll_linux(self, event):
         """Handle mouse wheel on Linux"""
         delta = 1 if event.num == 4 else -1
-        step = (self.max_val - self.min_val) / 100
-        self.set_value(self.value + delta * step)
+        # Work in normalized space for proper log scaling
+        current_normalized = self._value_to_normalized(self.value)
+        new_normalized = current_normalized + delta / 100.0
+        new_normalized = max(0.0, min(1.0, new_normalized))
+        self.set_value(self._normalized_to_value(new_normalized))
     
     def set_value(self, value):
         """Set knob value"""
@@ -309,10 +374,11 @@ class VerticalSlider(tk.Canvas):
     - Hint window shows value when dragging
     - Shift key for fine adjustments
     - Ctrl+click to reset to default
+    - Logarithmic scaling for time parameters
     """
     
     def __init__(self, parent, width=30, height=100, min_val=0, max_val=100,
-                 default=50, label="", unit="", command=None, **kwargs):
+                 default=50, label="", unit="", logarithmic=False, command=None, **kwargs):
         super().__init__(parent, width=width, height=height + 20,
                         bg='#3a3a4a', highlightthickness=0, **kwargs)
         
@@ -324,6 +390,7 @@ class VerticalSlider(tk.Canvas):
         self.value = default
         self.label = label
         self.unit = unit
+        self.logarithmic = logarithmic  # Support logarithmic scaling
         self.command = command
         
         # Track dimensions
@@ -363,6 +430,51 @@ class VerticalSlider(tk.Canvas):
         else:
             return f"{val:.2f}{unit}"
     
+    def _get_log_floor(self):
+        """Get the minimum value for logarithmic calculations.
+        Uses a smart floor based on the parameter type."""
+        if self.min_val > 0:
+            return self.min_val
+        
+        # Smart floor based on label/type
+        label_lower = self.label.lower() if self.label else ""
+        if 'attack' in label_lower or 'decay' in label_lower:
+            return 0.1  # 0.1ms for time parameters
+        elif 'freq' in label_lower or 'rate' in label_lower:
+            return 1.0  # 1Hz for frequency parameters
+        else:
+            return 0.1  # Default floor for sliders
+    
+    def _value_to_normalized(self, value):
+        """Convert actual value to normalized 0-1 position (for display)"""
+        if not self.logarithmic:
+            # Linear scaling
+            value_range = self.max_val - self.min_val
+            if value_range != 0:
+                return (value - self.min_val) / value_range
+            return 0.5
+        else:
+            # Logarithmic scaling
+            min_val = self._get_log_floor()
+            max_val = self.max_val
+            value = max(value, min_val)
+            
+            return np.log(value / min_val) / np.log(max_val / min_val)
+    
+    def _normalized_to_value(self, normalized):
+        """Convert normalized 0-1 position to actual value"""
+        normalized = max(0.0, min(1.0, normalized))
+        
+        if not self.logarithmic:
+            # Linear scaling
+            return self.min_val + normalized * (self.max_val - self.min_val)
+        else:
+            # Logarithmic scaling
+            min_val = self._get_log_floor()
+            max_val = self.max_val
+            
+            return min_val * np.power(max_val / min_val, normalized)
+    
     def _draw(self):
         """Draw the slider"""
         self.delete('all')
@@ -374,12 +486,8 @@ class VerticalSlider(tk.Canvas):
             fill='#222233', outline='#555566'
         )
         
-        # Calculate handle position
-        value_range = self.max_val - self.min_val
-        if value_range != 0:
-            normalized = (self.value - self.min_val) / value_range
-        else:
-            normalized = 0.5
+        # Calculate handle position using normalized value
+        normalized = self._value_to_normalized(self.value)
         handle_y = self.track_bottom - normalized * self.track_range
         
         # Draw handle
@@ -427,12 +535,16 @@ class VerticalSlider(tk.Canvas):
             fine_mode = event.state & 0x1
             sensitivity_multiplier = 0.1 if fine_mode else 1.0
             
-            # Calculate value change
+            # Work in normalized space for proper log scaling
             delta_y = self.drag_start_y - event.y
-            value_range = self.max_val - self.min_val
-            sensitivity = (value_range / self.track_range) * sensitivity_multiplier
+            start_normalized = self._value_to_normalized(self.drag_start_value)
             
-            new_value = self.drag_start_value + delta_y * sensitivity
+            # Sensitivity: full track range = full normalized range
+            delta_normalized = (delta_y / self.track_range) * sensitivity_multiplier
+            new_normalized = start_normalized + delta_normalized
+            new_normalized = max(0.0, min(1.0, new_normalized))
+            
+            new_value = self._normalized_to_value(new_normalized)
             self.set_value(new_value)
             self._show_hint()
     
@@ -458,23 +570,31 @@ class VerticalSlider(tk.Canvas):
     def _on_scroll(self, event):
         """Handle scroll (Windows/Mac)"""
         delta = event.delta / 120
-        step = (self.max_val - self.min_val) / 50
-        self.set_value(self.value + delta * step)
+        # Work in normalized space for proper log scaling
+        current_normalized = self._value_to_normalized(self.value)
+        new_normalized = current_normalized + delta / 50.0
+        new_normalized = max(0.0, min(1.0, new_normalized))
+        self.set_value(self._normalized_to_value(new_normalized))
     
     def _on_scroll_linux(self, event):
         """Handle scroll on Linux"""
         delta = 1 if event.num == 4 else -1
-        step = (self.max_val - self.min_val) / 50
-        self.set_value(self.value + delta * step)
+        # Work in normalized space for proper log scaling
+        current_normalized = self._value_to_normalized(self.value)
+        new_normalized = current_normalized + delta / 50.0
+        new_normalized = max(0.0, min(1.0, new_normalized))
+        self.set_value(self._normalized_to_value(new_normalized))
     
     def _update_from_mouse(self, y):
         """Update value from mouse position"""
         # Clamp y to track range
         y = max(self.track_top, min(self.track_bottom, y))
         
-        # Convert to value (inverted: top = max)
+        # Convert to normalized (inverted: top = max)
         normalized = 1.0 - (y - self.track_top) / self.track_range
-        value = self.min_val + normalized * (self.max_val - self.min_val)
+        
+        # Convert to actual value (respects log scaling)
+        value = self._normalized_to_value(normalized)
         
         self.set_value(value)
     
@@ -820,6 +940,7 @@ class ToggleButton(tk.Canvas):
 class PatternEditor(tk.Canvas):
     """
     Pattern editor widget showing triggers, accents, fills, and length for a pattern channel
+    Supports probability mode where clicking adjusts step probability instead of triggers
     """
 
     def __init__(self, parent, channel_id=0, pattern_length=16, num_steps=16,
@@ -860,9 +981,13 @@ class PatternEditor(tk.Canvas):
         self.triggers = [False] * num_steps
         self.accents = [False] * num_steps
         self.fills = [False] * num_steps
+        self.probabilities = [100] * num_steps  # Per-step probability (0-100)
         
         # Display state
         self.current_position = 0  # Current playback position (green highlight)
+        
+        # Probability mode (when enabled, clicking adjusts probability)
+        self.probability_mode = False
         
         # Lane names
         self.lanes = ['trig', 'acc', 'fill']
@@ -871,6 +996,8 @@ class PatternEditor(tk.Canvas):
         self.dragging = False
         self.drag_lane = None
         self.drag_start_x = 0
+        self._drag_start_step = None
+        self._drag_start_y = 0
         
         # Draw initial
         self._draw()
@@ -882,11 +1009,20 @@ class PatternEditor(tk.Canvas):
         self.bind('<B1-Motion>', self._on_drag)
         self.bind('<ButtonRelease-1>', self._on_release)
     
-    def set_pattern_data(self, triggers, accents, fills):
+    def set_pattern_data(self, triggers, accents, fills, probabilities=None):
         """Update pattern data from pattern manager"""
         self.triggers = list(triggers)
         self.accents = list(accents)
         self.fills = list(fills)
+        if probabilities is not None:
+            self.probabilities = list(probabilities)
+        else:
+            self.probabilities = [100] * len(triggers)
+        self._draw()
+    
+    def set_probability_mode(self, enabled: bool):
+        """Enable/disable probability editing mode"""
+        self.probability_mode = enabled
         self._draw()
     
     def set_current_position(self, position):
@@ -916,8 +1052,16 @@ class PatternEditor(tk.Canvas):
     
     def _on_click(self, event):
         """Handle click start"""
-        lane = self._get_lane_at_y(event.y)
         step = self._get_step_at_x(event.x)
+        
+        # In probability mode, clicking on any step adjusts probability
+        if self.probability_mode and step is not None:
+            self._drag_start_step = step
+            self._drag_start_y = event.y
+            self.dragging = True
+            return
+        
+        lane = self._get_lane_at_y(event.y)
         
         if lane == 'length' and step is not None and self.length_change_callback:
             # Click on length lane sets the pattern length to clicked step + 1
@@ -980,17 +1124,34 @@ class PatternEditor(tk.Canvas):
 
     
     def _on_drag(self, event):
-        """Handle drag to select multiple steps"""
-        if self.dragging and self.drag_lane:
-            # Allow continuous clicking across multiple steps
-            step = self._get_step_at_x(event.x)
-            if step is not None:
-                self._toggle_step(self.drag_lane, step)
+        """Handle drag to select multiple steps or adjust probability"""
+        if self.dragging:
+            # In probability mode, vertical drag adjusts probability
+            if self.probability_mode and self._drag_start_step is not None:
+                step = self._drag_start_step
+                # Calculate probability based on vertical position
+                # Drag up = higher probability, drag down = lower
+                delta_y = self._drag_start_y - event.y
+                # 100 pixels of drag = 100% change
+                new_prob = self.probabilities[step] + int(delta_y)
+                new_prob = max(0, min(100, new_prob))
+                if new_prob != self.probabilities[step]:
+                    self.probabilities[step] = new_prob
+                    self._drag_start_y = event.y
+                    self._draw()
+                    if self.command:
+                        self.command(self.channel_id, step, 'prob', new_prob)
+            elif self.drag_lane:
+                # Normal mode: allow continuous clicking across multiple steps
+                step = self._get_step_at_x(event.x)
+                if step is not None:
+                    self._toggle_step(self.drag_lane, step)
     
     def _on_release(self, event):
         """Handle drag end"""
         self.dragging = False
         self.drag_lane = None
+        self._drag_start_step = None
     
     def _toggle_step(self, lane, step):
         """Toggle a step in a lane"""
@@ -1020,14 +1181,17 @@ class PatternEditor(tk.Canvas):
         """Draw the pattern editor"""
         self.delete('all')
         
-        # Draw background
+        # Draw background - highlight in probability mode
+        bg_color = '#2a3a3a' if self.probability_mode else '#2a2a3a'
         self.create_rectangle(0, 0, self.winfo_width(), self.winfo_height(),
-                             fill='#2a2a3a', outline='#4a4a5a')
+                             fill=bg_color, outline='#4a4a5a')
         
         # Draw lane labels on left
         for i, lane_name in enumerate(self.lanes):
             y = 5 + i * self.lane_height + self.lane_height // 2
-            self.create_text(25, y, text=lane_name, fill='#8888aa',
+            # Highlight "trig" label in probability mode
+            label_color = '#66ddaa' if (self.probability_mode and i == 0) else '#8888aa'
+            self.create_text(25, y, text=lane_name, fill=label_color,
                            font=('Segoe UI', 8), anchor='center')
         
         # Draw length indicator lane label
@@ -1038,8 +1202,8 @@ class PatternEditor(tk.Canvas):
         # Draw steps for each lane
         x_start = 50
         
-        # Draw trigger lane
-        self._draw_lane(0, self.triggers, '#4488ff', '#3366cc')
+        # Draw trigger lane (with probability visualization)
+        self._draw_trigger_lane_with_prob()
         
         # Draw accent lane
         self._draw_lane(1, self.accents, '#ffaa44', '#ff8822')
@@ -1069,6 +1233,53 @@ class PatternEditor(tk.Canvas):
         current_x = x_start + self.current_position * self.step_width + self.step_width // 2
         self.create_line(current_x, 0, current_x, self.winfo_height(),
                        fill='#44ff88', width=2)
+    
+    def _draw_trigger_lane_with_prob(self):
+        """Draw trigger lane with probability visualization"""
+        lane_index = 0
+        x_start = 50
+        y_base = 5 + lane_index * self.lane_height
+        
+        for step in range(len(self.triggers)):
+            is_on = self.triggers[step]
+            prob = self.probabilities[step] if step < len(self.probabilities) else 100
+            
+            x = x_start + step * self.step_width + 2
+            y = y_base + 2
+            w = self.step_width - 4
+            h = self.lane_height - 4
+            
+            # Base color depends on trigger state
+            if is_on:
+                # Interpolate color based on probability
+                # 100% = bright blue (#4488ff), 0% = dark (#223344)
+                if self.probability_mode:
+                    # In probability mode, show gradient from red (0%) to green (100%)
+                    r = int(0x88 + (0x44 - 0x88) * prob / 100)
+                    g = int(0x44 + (0xaa - 0x44) * prob / 100)
+                    b = 0x55
+                    color = f'#{r:02x}{g:02x}{b:02x}'
+                else:
+                    # Normal mode: brighter blue for higher probability
+                    intensity = 0.4 + 0.6 * (prob / 100.0)
+                    r = int(0x44 * intensity)
+                    g = int(0x88 * intensity)
+                    b = int(0xff * intensity)
+                    color = f'#{r:02x}{g:02x}{b:02x}'
+            else:
+                color = '#3366cc'
+            
+            # Draw pill-shaped step button
+            radius = min(w, h) // 2
+            outline = '#66ddaa' if self.probability_mode else '#555566'
+            self._draw_rounded_rect(x, y, x + w, y + h, radius, fill=color, outline=outline)
+            
+            # In probability mode, show percentage text on triggered steps
+            if self.probability_mode and is_on and prob < 100:
+                text_x = x + w // 2
+                text_y = y + h // 2
+                self.create_text(text_x, text_y, text=f'{prob}', 
+                               fill='#ffffff', font=('Segoe UI', 6, 'bold'))
     
     def _draw_lane(self, lane_index, data, color_on, color_off):
         """Draw a single lane of steps"""
@@ -1165,6 +1376,10 @@ class PatternEditor(tk.Canvas):
     def get_fills(self):
         """Get current fills"""
         return list(self.fills)
+    
+    def get_probabilities(self):
+        """Get current probabilities"""
+        return list(self.probabilities)
 
 
 class MatrixEditor(tk.Canvas):

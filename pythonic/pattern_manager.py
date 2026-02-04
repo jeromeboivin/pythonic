@@ -16,9 +16,10 @@ class PatternStep:
         self.trigger = False      # Is there a trigger at this step?
         self.accent = False       # Is this step accented?
         self.fill = False         # Does this step have a fill?
+        self.probability = 100    # Step probability (0-100%, default 100%)
 
     def __repr__(self):
-        return f"Step(trig={self.trigger}, acc={self.accent}, fill={self.fill})"
+        return f"Step(trig={self.trigger}, acc={self.accent}, fill={self.fill}, prob={self.probability})"
 
     def copy(self):
         """Create a deep copy of this step"""
@@ -26,6 +27,7 @@ class PatternStep:
         new_step.trigger = self.trigger
         new_step.accent = self.accent
         new_step.fill = self.fill
+        new_step.probability = self.probability
         return new_step
 
 
@@ -51,6 +53,10 @@ class PatternChannel:
         """Set fill at index"""
         self.steps[index % len(self.steps)].fill = value
 
+    def set_probability(self, index: int, value: int):
+        """Set probability at index (0-100)"""
+        self.steps[index % len(self.steps)].probability = max(0, min(100, value))
+
     def get_triggers(self) -> List[bool]:
         """Get all trigger values as list"""
         return [step.trigger for step in self.steps]
@@ -62,6 +68,10 @@ class PatternChannel:
     def get_fills(self) -> List[bool]:
         """Get all fill values as list"""
         return [step.fill for step in self.steps]
+    
+    def get_probabilities(self) -> List[int]:
+        """Get all probability values as list"""
+        return [step.probability for step in self.steps]
     
     def set_triggers(self, triggers: List[bool]):
         """Set all trigger values from list"""
@@ -80,6 +90,12 @@ class PatternChannel:
         for i, val in enumerate(fills):
             if i < len(self.steps):
                 self.steps[i].fill = val
+    
+    def set_probabilities(self, probabilities: List[int]):
+        """Set all probability values from list"""
+        for i, val in enumerate(probabilities):
+            if i < len(self.steps):
+                self.steps[i].probability = max(0, min(100, val))
 
     def copy(self):
         """Create a deep copy of this channel"""
@@ -95,7 +111,8 @@ class PatternChannel:
                 {
                     'trigger': step.trigger,
                     'accent': step.accent,
-                    'fill': step.fill
+                    'fill': step.fill,
+                    'probability': step.probability
                 }
                 for step in self.steps
             ]
@@ -109,6 +126,7 @@ class PatternChannel:
             channel.steps[i].trigger = step_data['trigger']
             channel.steps[i].accent = step_data['accent']
             channel.steps[i].fill = step_data['fill']
+            channel.steps[i].probability = step_data.get('probability', 100)
         return channel
 
 
@@ -777,6 +795,9 @@ class PatternManager:
                     channel.set_triggers(channel_info['triggers'])
                     channel.set_accents(channel_info['accents'])
                     channel.set_fills(channel_info['fills'])
+                    # Load probabilities if available (default to 100)
+                    if 'probabilities' in channel_info:
+                        channel.set_probabilities(channel_info['probabilities'])
         
         # Second pass: set chained_from_prev based on previous pattern's chained_to_next
         for i in range(1, len(self.patterns)):

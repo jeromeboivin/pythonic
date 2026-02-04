@@ -35,6 +35,21 @@ class PreferencesManager:
         'master_volume_db': 0.0,
         'recent_files': [],
         'max_recent_files': 10,
+        # Audio settings
+        'audio_output_device': None,  # None = system default
+        # Parameter smoothing settings
+        'param_smoothing_ms': 30.0,  # Smoothing time constant (20-50ms recommended)
+        # MIDI settings
+        'midi_input_device': None,  # Auto-connect to first if None
+        'midi_base_note': 36,  # C1 - default mapping for drum channels
+        'midi_enabled': True,  # Whether MIDI input is enabled
+        'midi_clock_sync': True,  # Sync BPM to incoming MIDI clock
+        # MIDI CC mappings: dict of {cc_number (as string): parameter_name}
+        # Default: CC1 (Mod Wheel) -> osc_freq, CC2 (Breath) -> noise_freq
+        'midi_cc_mappings': {
+            "1": "osc_freq",
+            "2": "noise_freq"
+        },
     }
     
     def __init__(self):

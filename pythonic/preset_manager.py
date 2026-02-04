@@ -372,6 +372,7 @@ class PythonicPresetParser:
             'osc_vel_sensitivity': 0.0,
             'noise_vel_sensitivity': 0.0,
             'mod_vel_sensitivity': 0.0,
+            'probability': 100,
         }
 
     def _convert_patterns(self, patterns_data: Dict) -> Dict:
@@ -416,12 +417,14 @@ class PythonicPresetParser:
             return {
                 'triggers': [False] * expected_length,
                 'accents': [False] * expected_length,
-                'fills': [False] * expected_length
+                'fills': [False] * expected_length,
+                'probabilities': [100] * expected_length
             }
         
         triggers_str = channel_data.get('Triggers', '')
         accents_str = channel_data.get('Accents', '')
         fills_str = channel_data.get('Fills', '')
+        probs_str = channel_data.get('Probabilities', '')
         
         # Convert pattern strings to boolean lists
         # '#' means on, '-' means off
@@ -429,15 +432,27 @@ class PythonicPresetParser:
         accents = [c == '#' for c in accents_str]
         fills = [c == '#' for c in fills_str]
         
+        # Parse probabilities - format is comma-separated integers (e.g., "100,75,50,100")
+        # Default to 100 if not present
+        if probs_str:
+            try:
+                probabilities = [int(p) for p in probs_str.split(',')]
+            except ValueError:
+                probabilities = [100] * expected_length
+        else:
+            probabilities = [100] * expected_length
+        
         # Ensure all lists are the expected length
         triggers = triggers[:expected_length] + [False] * max(0, expected_length - len(triggers))
         accents = accents[:expected_length] + [False] * max(0, expected_length - len(accents))
         fills = fills[:expected_length] + [False] * max(0, expected_length - len(fills))
+        probabilities = probabilities[:expected_length] + [100] * max(0, expected_length - len(probabilities))
         
         return {
             'triggers': triggers,
             'accents': accents,
-            'fills': fills
+            'fills': fills,
+            'probabilities': probabilities
         }
 
 
@@ -529,6 +544,7 @@ class PresetManager:
             'osc_vel_sensitivity': patch.get('OscVel', 0.0) / 100.0,
             'noise_vel_sensitivity': patch.get('NVel', 0.0) / 100.0,
             'mod_vel_sensitivity': patch.get('ModVel', 0.0) / 100.0,
+            'probability': patch.get('Prob', 100),
         }
 
     def _apply_drum_patch_to_channel(self, channel, data: Dict):
@@ -583,6 +599,9 @@ class PresetManager:
         channel.osc_vel_sensitivity = data.get('osc_vel_sensitivity', 0.0)
         channel.noise_vel_sensitivity = data.get('noise_vel_sensitivity', 0.0)
         channel.mod_vel_sensitivity = data.get('mod_vel_sensitivity', 0.0)
+        
+        # Probability (default 100 if not present)
+        channel.probability = data.get('probability', 100)
         
         # Update filters (EQ)
         channel.eq_filter_l.set_frequency(channel.eq_frequency)
@@ -898,6 +917,7 @@ class DrumPatchWriter:
             'OscVel': channel.osc_vel_sensitivity * 100.0,
             'NVel': channel.noise_vel_sensitivity * 100.0,
             'ModVel': channel.mod_vel_sensitivity * 100.0,
+            'Prob': channel.probability,
         }
         
         # Write to file
