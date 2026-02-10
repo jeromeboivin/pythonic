@@ -234,6 +234,7 @@ class PatternManager:
         # Current selection
         self.selected_pattern_index = 0  # Currently selected for editing
         self.playing_pattern_index = 0   # Currently playing
+        self.queued_pattern_index = None  # Queued for playback at end of current bar
 
         # Playback state
         self.is_playing = False
@@ -575,6 +576,7 @@ class PatternManager:
         self.is_playing = False
         self.play_position = 0
         self.current_step = 0
+        self.queued_pattern_index = None
 
     def toggle_playback(self, pattern_index: int = 0):
         """Toggle playback on/off"""
@@ -718,11 +720,21 @@ class PatternManager:
         Advance playback to the next pattern in the chain.
         Call this when the current pattern has finished playing.
         
+        A queued pattern (set by the user clicking a pattern during playback)
+        takes priority over chain logic.
+        
         Returns:
             True if advanced to a new pattern, False if staying on current or stopped.
         """
         if not self.is_playing:
             return False
+        
+        # User-queued pattern takes priority over chain logic
+        if self.queued_pattern_index is not None:
+            self.playing_pattern_index = self.queued_pattern_index
+            self.queued_pattern_index = None
+            self.play_position = 0
+            return True
         
         next_pattern = self.get_next_pattern_in_chain(self.playing_pattern_index)
         

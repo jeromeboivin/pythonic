@@ -27,6 +27,7 @@ from gui.widgets import (
     RotaryKnob, VerticalSlider, ChannelButton,
     WaveformSelector, ModeSelector, ToggleButton, PatternEditor, MatrixEditor
 )
+from gui.po32_import_dialog import PO32ImportDialog
 
 try:
     import sounddevice as sd
@@ -1155,6 +1156,8 @@ class PythonicGUI:
         menu.add_command(label="Audio Settings...", command=self._show_audio_preferences)
         menu.add_command(label="MIDI Settings...", command=self._show_midi_preferences)
         menu.add_command(label="Synthesis Settings...", command=self._show_synthesis_preferences)
+        menu.add_separator()
+        menu.add_command(label="Import from PO-32...", command=self._show_po32_import)
         
         try:
             menu.tk_popup(self.root.winfo_pointerx(), self.root.winfo_pointery())
@@ -1525,22 +1528,33 @@ class PythonicGUI:
     # ============ Pattern Callbacks ============
     
     def _on_pattern_select(self, pattern_index):
-        """Handle pattern selection"""
+        """Handle pattern selection.
+        
+        When playing, the selected pattern is queued and will start
+        playing after the current pattern finishes its bar.
+        When stopped, switches immediately.
+        """
         self.pattern_manager.select_pattern(pattern_index)
         
-        # Reset playback position to beginning when switching patterns
-        self.pattern_manager.play_position = 0
-        self.pattern_manager.current_step = 0
-        self.frames_since_last_step = 0
+        if self.pattern_manager.is_playing:
+            # Queue the pattern — audio callback will switch at bar end
+            if pattern_index != self.pattern_manager.playing_pattern_index:
+                self.pattern_manager.queued_pattern_index = pattern_index
+            else:
+                # Clicked the already-playing pattern → cancel any queue
+                self.pattern_manager.queued_pattern_index = None
+        else:
+            # Not playing — reset position immediately
+            self.pattern_manager.play_position = 0
+            self.pattern_manager.current_step = 0
+            self.frames_since_last_step = 0
+            if hasattr(self, 'pattern_editors'):
+                for editor in self.pattern_editors:
+                    editor.set_current_position(0)
         
-        # Update button states
+        # Update button states and editors
         self._update_pattern_button_states()
-        
-        # Update editors and show position at beginning
         self._update_pattern_editors()
-        if hasattr(self, 'pattern_editors'):
-            for editor in self.pattern_editors:
-                editor.set_current_position(0)
     
     def _on_pattern_edit(self, channel_id, step, lane_type, value):
         """Handle pattern editor edits"""
@@ -2145,6 +2159,20 @@ class PythonicGUI:
             self.preferences_manager.add_recent_file(filename)
             self._refresh_preset_list()
             messagebox.showinfo("Saved", f"Preset saved to {filename}")
+    
+    def _show_po32_import(self):
+        """Show the PO-32 import dialog."""
+        PO32ImportDialog(
+            parent=self.root,
+            synth=self.synth,
+            pattern_manager=self.pattern_manager,
+            on_import_callback=self._on_po32_import_complete,
+        )
+    
+    def _on_po32_import_complete(self):
+        """Refresh UI after a successful PO-32 import."""
+        self._update_ui_from_channel()
+        self._update_pattern_ui()
     
     def _load_preset(self):
         """Load preset from file"""
@@ -3901,6 +3929,7 @@ class PythonicGUI:
         """Update visual states of pattern buttons"""
         selected_idx = self.pattern_manager.selected_pattern_index
         playing_idx = self.pattern_manager.playing_pattern_index if self.pattern_manager.is_playing else -1
+        queued_idx = self.pattern_manager.queued_pattern_index if self.pattern_manager.is_playing else None
         
         for i, btn in enumerate(self.pattern_buttons):
             pattern = self.pattern_manager.get_pattern(i)
@@ -3909,6 +3938,9 @@ class PythonicGUI:
             if i == playing_idx and self.button_flash_state:
                 # Playing pattern - flash green
                 bg_color = self.COLORS['led_on']
+            elif queued_idx is not None and i == queued_idx and self.button_flash_state:
+                # Queued pattern - flash blue
+                bg_color = self.COLORS['highlight']
             elif i == selected_idx:
                 # Selected pattern - blue highlight
                 bg_color = self.COLORS['highlight']
