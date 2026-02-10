@@ -27,7 +27,8 @@ from gui.widgets import (
     RotaryKnob, VerticalSlider, ChannelButton,
     WaveformSelector, ModeSelector, ToggleButton, PatternEditor, MatrixEditor
 )
-from gui.po32_import_dialog import PO32ImportDialog
+from gui.po32_transfer import PO32TransferDialog
+from gui.po32_import import PO32ImportDialog
 
 try:
     import sounddevice as sd
@@ -63,6 +64,7 @@ class PythonicGUI:
         'highlight': '#4488ff',
         'led_on': '#44ff88',
         'led_off': '#333344',
+        'orange': '#ffaa44',
     }
     
     def __init__(self):
@@ -309,6 +311,17 @@ class PythonicGUI:
         tk.Label(logo_frame, text="PYTHONIC", 
                 font=('Segoe UI', 14, 'bold'), fg=self.COLORS['accent_light'],
                 bg=self.COLORS['bg_medium']).pack()
+        
+        # PO-32 Transfer button
+        self.po32_btn = tk.Button(logo_frame, text="PO-32",
+                                  font=('Segoe UI', 7, 'bold'),
+                                  bg=self.COLORS['bg_light'],
+                                  fg=self.COLORS['orange'],
+                                  activebackground=self.COLORS['bg_medium'],
+                                  width=5, height=1,
+                                  command=self._show_po32_transfer,
+                                  relief='raised', bd=1)
+        self.po32_btn.pack(pady=(2, 0))
         
         # Center-left: Preset name display with navigation
         preset_nav_frame = tk.Frame(preset_section, bg=self.COLORS['bg_medium'])
@@ -1152,6 +1165,9 @@ class PythonicGUI:
         menu.add_separator()
         menu.add_command(label="Select Preset Folder...", command=self._select_preset_folder)
         menu.add_command(label="Refresh Preset List", command=self._refresh_preset_list)
+        menu.add_separator()
+        menu.add_command(label="Transfer to PO-32...", command=self._show_po32_transfer)
+        menu.add_command(label="Import from PO-32...", command=self._show_po32_import)
         menu.add_separator()
         menu.add_command(label="Audio Settings...", command=self._show_audio_preferences)
         menu.add_command(label="MIDI Settings...", command=self._show_midi_preferences)
@@ -2824,6 +2840,36 @@ class PythonicGUI:
         """Reset the MIDI indicator to off state"""
         if hasattr(self, 'midi_indicator') and hasattr(self, '_midi_indicator_id'):
             self.midi_indicator.itemconfig(self._midi_indicator_id, fill=self.COLORS['led_off'])
+    
+    def _show_po32_transfer(self):
+        """Open the PO-32 Tonic transfer dialog"""
+        preset_name = getattr(self.preset_manager, 'current_preset_name', 'Untitled')
+        PO32TransferDialog(
+            self.root,
+            self.synth,
+            self.pattern_manager,
+            preset_name=preset_name
+        )
+    
+    def _show_po32_import(self):
+        """Open the PO-32 Tonic import dialog"""
+        def on_import_done(channel_idx, params):
+            """Callback after a channel is imported — refresh UI"""
+            pass  # UI refresh happens after dialog closes
+        
+        def on_dialog_close():
+            """Refresh all UI after import dialog closes"""
+            self._update_ui_from_channel()
+            self._update_pattern_editors()
+        
+        dialog = PO32ImportDialog(
+            self.root,
+            self.synth,
+            on_import_callback=on_import_done,
+        )
+        # Wait for dialog to close, then refresh UI
+        self.root.wait_window(dialog.dialog)
+        self._update_ui_from_channel()
     
     def _get_audio_output_devices(self):
         """Get list of available audio output devices"""
