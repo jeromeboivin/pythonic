@@ -28,7 +28,7 @@ from gui.widgets import (
     WaveformSelector, ModeSelector, ToggleButton, PatternEditor, MatrixEditor
 )
 from gui.po32_transfer import PO32TransferDialog
-from gui.po32_import import PO32ImportDialog
+from gui.po32_import_dialog import PO32ImportDialog
 
 try:
     import sounddevice as sd
@@ -1172,8 +1172,6 @@ class PythonicGUI:
         menu.add_command(label="Audio Settings...", command=self._show_audio_preferences)
         menu.add_command(label="MIDI Settings...", command=self._show_midi_preferences)
         menu.add_command(label="Synthesis Settings...", command=self._show_synthesis_preferences)
-        menu.add_separator()
-        menu.add_command(label="Import from PO-32...", command=self._show_po32_import)
         
         try:
             menu.tk_popup(self.root.winfo_pointerx(), self.root.winfo_pointery())
@@ -2176,20 +2174,6 @@ class PythonicGUI:
             self._refresh_preset_list()
             messagebox.showinfo("Saved", f"Preset saved to {filename}")
     
-    def _show_po32_import(self):
-        """Show the PO-32 import dialog."""
-        PO32ImportDialog(
-            parent=self.root,
-            synth=self.synth,
-            pattern_manager=self.pattern_manager,
-            on_import_callback=self._on_po32_import_complete,
-        )
-    
-    def _on_po32_import_complete(self):
-        """Refresh UI after a successful PO-32 import."""
-        self._update_ui_from_channel()
-        self._update_pattern_ui()
-    
     def _load_preset(self):
         """Load preset from file"""
         preset_folder = self.preferences_manager.get_preset_folder()
@@ -2852,24 +2836,22 @@ class PythonicGUI:
         )
     
     def _show_po32_import(self):
-        """Open the PO-32 Tonic import dialog"""
-        def on_import_done(channel_idx, params):
-            """Callback after a channel is imported — refresh UI"""
-            pass  # UI refresh happens after dialog closes
-        
-        def on_dialog_close():
-            """Refresh all UI after import dialog closes"""
+        """Open the PO-32 import dialog (with pattern & bank support)."""
+        def on_import_complete():
+            """Refresh all UI after import."""
             self._update_ui_from_channel()
             self._update_pattern_editors()
         
         dialog = PO32ImportDialog(
-            self.root,
-            self.synth,
-            on_import_callback=on_import_done,
+            parent=self.root,
+            synth=self.synth,
+            pattern_manager=self.pattern_manager,
+            on_import_callback=on_import_complete,
         )
         # Wait for dialog to close, then refresh UI
         self.root.wait_window(dialog.dialog)
         self._update_ui_from_channel()
+        self._update_pattern_editors()
     
     def _get_audio_output_devices(self):
         """Get list of available audio output devices"""
