@@ -47,6 +47,7 @@ except ImportError:
 
 # Import MIDI input manager
 from pythonic.midi_manager import MidiManager
+from pythonic.morph_manager import MorphManager
 
 class PythonicGUI:
     """
@@ -100,6 +101,9 @@ class PythonicGUI:
         self._midi_activity_time = 0  # For activity indicator
         self._midi_learn_target = None  # Parameter name being learned
         self._init_midi()
+        
+        # Morph manager
+        self.morph_manager = MorphManager(self.synth)
         
         # Audio state
         self.audio_stream = None
@@ -174,6 +178,7 @@ class PythonicGUI:
         
         # Update UI with current channel
         self._update_ui_from_channel()
+        self._update_morph_ui()
         
         # Start button state updates
         self.root.after(250, self._toggle_button_flash)
@@ -268,13 +273,23 @@ class PythonicGUI:
         self.program_combo.pack(side='left')
         self.program_combo.bind('<<ComboboxSelected>>', self._on_program_select)
         
-        # Center: Sound Morph slider
+        # Center: Sound Morph slider with A/B learn buttons
         morph_frame = tk.Frame(toolbar, bg=self.COLORS['bg_medium'])
         morph_frame.pack(side='left', padx=10, pady=2, expand=True)
         
         tk.Label(morph_frame, text="sound morph:", 
                 font=('Segoe UI', 7), fg=self.COLORS['text_dim'],
-                bg=self.COLORS['bg_medium']).pack(side='left', padx=(0, 5))
+                bg=self.COLORS['bg_medium']).pack(side='left', padx=(0, 3))
+        
+        # Learn A button (small square)
+        self.morph_learn_a_btn = tk.Button(
+            morph_frame, text="A", width=2, height=1,
+            font=('Segoe UI', 7, 'bold'),
+            bg='#444455', fg=self.COLORS['text_dim'],
+            activebackground='#555566',
+            relief='flat', bd=1,
+            command=self._on_morph_learn_a)
+        self.morph_learn_a_btn.pack(side='left', padx=(0, 2))
         
         self.morph_slider = tk.Scale(morph_frame, from_=0, to=100, 
                                     orient='horizontal', length=120,
@@ -284,6 +299,16 @@ class PythonicGUI:
                                     troughcolor=self.COLORS['bg_dark'],
                                     command=self._on_morph_change)
         self.morph_slider.pack(side='left')
+        
+        # Learn B button (small square)
+        self.morph_learn_b_btn = tk.Button(
+            morph_frame, text="B", width=2, height=1,
+            font=('Segoe UI', 7, 'bold'),
+            bg='#444455', fg=self.COLORS['text_dim'],
+            activebackground='#555566',
+            relief='flat', bd=1,
+            command=self._on_morph_learn_b)
+        self.morph_learn_b_btn.pack(side='left', padx=(2, 0))
         
         # Right side: Undo/Redo, options, master volume
         right_frame = tk.Frame(toolbar, bg=self.COLORS['bg_medium'])
@@ -1155,27 +1180,119 @@ class PythonicGUI:
         
         Sound morph interpolates all drum patch parameters
         between two end-points using this single slider.
+        During learn mode the slider stores the position but does not
+        affect the synth – the synth stays pinned to the learned endpoint.
         """
         morph_value = float(value) / 100.0  # Normalize to 0-1
-        # Future: implement morph interpolation between two preset endpoints
-        # For now, this is a placeholder
-        pass
+        self.morph_manager._position = max(0.0, min(1.0, morph_value))
+        if not self.morph_manager.is_learning():
+            self.morph_manager.apply_effective_position()
+            # Update UI to reflect interpolated parameters
+            self._update_ui_from_channel()
+    
+    def _on_morph_learn_a(self):
+        """Toggle learn mode for morph endpoint A."""
+        current = self.morph_manager.get_learn_mode()
+        if current == 'a':
+            # Stop learning A - capture current state
+            self.morph_manager.stop_learn()
+            # Re-apply the actual slider position now that learn is off
+            self.morph_manager.apply_effective_position()
+            self._update_ui_from_channel()
+            self._update_morph_ui()
+        else:
+            # Start learning A (stop B if active)
+            if current == 'b':
+                self.morph_manager.stop_learn()
+            self.morph_manager.start_learn_a()
+            # Apply effective position (0.0) so user hears endpoint A
+            self.morph_manager.apply_effective_position()
+            self._update_ui_from_channel()
+            self._update_morph_ui()
+    
+    def _on_morph_learn_b(self):
+        """Toggle learn mode for morph endpoint B."""
+        current = self.morph_manager.get_learn_mode()
+        if current == 'b':
+            # Stop learning B - capture current state
+            self.morph_manager.stop_learn()
+            # Re-apply the actual slider position now that learn is off
+            self.morph_manager.apply_effective_position()
+            self._update_ui_from_channel()
+            self._update_morph_ui()
+        else:
+            # Start learning B (stop A if active)
+            if current == 'a':
+                self.morph_manager.stop_learn()
+            self.morph_manager.start_learn_b()
+            # Apply effective position (1.0) so user hears endpoint B
+            self.morph_manager.apply_effective_position()
+            self._update_ui_from_channel()
+            self._update_morph_ui()
+    
+    def _update_morph_ui(self):
+        """Update morph learn button colors and slider enabled state."""
+        mode = self.morph_manager.get_learn_mode()
+        has_morph = self.morph_manager.has_different_endpoints()
+        
+        # A button: green when learning A, dark gray otherwise
+        if mode == 'a':
+            self.morph_learn_a_btn.config(
+                bg='#22cc55', fg='#000000',
+                activebackground='#33dd66')
+        else:
+            self.morph_learn_a_btn.config(
+                bg='#444455', fg=self.COLORS['text_dim'],
+                activebackground='#555566')
+        
+        # B button: green when learning B, dark gray otherwise
+        if mode == 'b':
+            self.morph_learn_b_btn.config(
+                bg='#22cc55', fg='#000000',
+                activebackground='#33dd66')
+        else:
+            self.morph_learn_b_btn.config(
+                bg='#444455', fg=self.COLORS['text_dim'],
+                activebackground='#555566')
+        
+        # Slider: enabled only when endpoints differ or learn is active
+        if has_morph or mode is not None:
+            self.morph_slider.config(
+                state='normal',
+                fg=self.COLORS['text'],
+                troughcolor=self.COLORS['bg_dark'])
+        else:
+            self.morph_slider.config(
+                state='disabled',
+                fg=self.COLORS['text_dim'],
+                troughcolor=self.COLORS['bg_medium'])
     
     def _get_full_state_snapshot(self):
-        """Capture a deep copy of all synth + pattern state for undo/redo"""
+        """Capture a deep copy of all synth + pattern + morph state for undo/redo"""
         synth_data = copy.deepcopy(self.synth.get_preset_data())
         pattern_data = copy.deepcopy(self.pattern_manager.to_dict())
-        return (synth_data, pattern_data)
+        morph_data = copy.deepcopy(self.morph_manager.to_dict())
+        return (synth_data, pattern_data, morph_data)
 
     def _restore_state_snapshot(self, snapshot):
-        """Restore synth + pattern state from a snapshot"""
-        synth_data, pattern_data = snapshot
+        """Restore synth + pattern + morph state from a snapshot"""
+        if len(snapshot) == 3:
+            synth_data, pattern_data, morph_data = snapshot
+        else:
+            # Backward compat with old 2-tuple snapshots
+            synth_data, pattern_data = snapshot
+            morph_data = None
         self.synth.load_preset_data(copy.deepcopy(synth_data))
         self.pattern_manager.from_dict(copy.deepcopy(pattern_data))
+        if morph_data:
+            self.morph_manager.from_dict(copy.deepcopy(morph_data))
+            # Update morph slider position
+            self.morph_slider.set(int(self.morph_manager.position * 100))
         self._update_ui_from_channel()
         self._update_pattern_editors()
         self._update_matrix_editor()
         self._update_undo_redo_buttons()
+        self._update_morph_ui()
 
     def _push_undo_state(self):
         """Push current state onto the undo stack (call BEFORE making a change)"""
@@ -2279,6 +2396,8 @@ class PythonicGUI:
             data['step_rate'] = self.pattern_manager.step_rate
             data['swing'] = self.pattern_manager.swing
             data['fill_rate'] = self.pattern_manager.fill_rate
+            # Add morph data
+            data['morph'] = self.morph_manager.to_dict()
             
             with open(filename, 'w') as f:
                 json.dump(data, f, indent=2)
@@ -2415,6 +2534,19 @@ class PythonicGUI:
                             else:
                                 btn.config(bg=self.COLORS['bg_light'])
                     
+                    # Initialize morph endpoints from loaded state
+                    # (mtpreset Morph block has Time/AB but we use the loaded
+                    # drum patches as both endpoints since the format doesn't
+                    # store full A/B parameter snapshots)
+                    self.morph_manager._init_endpoints()
+                    # Set morph position from mtpreset if available
+                    morph_pos = preset_data.get('morph_position')
+                    if morph_pos is not None:
+                        self.morph_slider.set(int(float(morph_pos) * 100))
+                    else:
+                        self.morph_slider.set(50)  # Center morph after loading
+                    self._update_morph_ui()
+                    
                     self._update_ui_from_channel()
                     self.preferences_manager.add_recent_file(filename)
                     self.preferences_manager.set('last_preset', filename)
@@ -2454,6 +2586,16 @@ class PythonicGUI:
                 
                 if 'fill_rate' in data:
                     self.pattern_manager.set_fill_rate(int(data['fill_rate']))
+                
+                # Load morph data if available
+                if 'morph' in data:
+                    self.morph_manager.from_dict(data['morph'])
+                    self.morph_slider.set(int(self.morph_manager.position * 100))
+                else:
+                    # No morph data - initialize fresh endpoints
+                    self.morph_manager._init_endpoints()
+                    self.morph_slider.set(50)
+                self._update_morph_ui()
                 
                 self._update_ui_from_channel()
                 self.preferences_manager.add_recent_file(filename)
@@ -2943,6 +3085,9 @@ class PythonicGUI:
         
         # Master volume
         self._register_cc_parameter('master_volume', self.master_knob, -60, 10)
+        
+        # Morph slider (global parameter)
+        self._register_cc_parameter('sound_morph', self.morph_slider, 0, 100)
 
     def _update_midi_indicator(self):
         """Update the MIDI activity indicator LED"""
@@ -2973,6 +3118,9 @@ class PythonicGUI:
             """Refresh all UI after import."""
             self._update_ui_from_channel()
             self._update_pattern_editors()
+            # Reset morph slider and update learn buttons after import
+            self.morph_slider.set(0)
+            self._update_morph_ui()
         
         dialog = PO32ImportDialog(
             parent=self.root,
@@ -2980,10 +3128,13 @@ class PythonicGUI:
             pattern_manager=self.pattern_manager,
             on_import_callback=on_import_complete,
         )
+        # Store morph_manager on root so PO32ImportDialog can find it
+        self.root.morph_manager = self.morph_manager
         # Wait for dialog to close, then refresh UI
         self.root.wait_window(dialog.dialog)
         self._update_ui_from_channel()
         self._update_pattern_editors()
+        self._update_morph_ui()
     
     def _get_audio_output_devices(self):
         """Get list of available audio output devices"""

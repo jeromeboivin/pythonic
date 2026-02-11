@@ -865,6 +865,54 @@ class PO32ImportDialog:
                     self.synth.channels[d].set_parameters(patch.synth_params)
                     imported_drums += 1
         
+        # Import morph endpoints if right patches (morph B) are available
+        # Access morph_manager from the main window if available
+        main_window = getattr(self.parent, 'master', None) or self.parent
+        morph_manager = None
+        # Walk up the widget tree to find the PythonicGUI instance
+        if hasattr(main_window, 'morph_manager'):
+            morph_manager = main_window.morph_manager
+        else:
+            # Try to find it via parent's attributes
+            for attr_name in dir(self.parent):
+                obj = getattr(self.parent, attr_name, None)
+                if hasattr(obj, 'morph_manager'):
+                    morph_manager = obj.morph_manager
+                    break
+        
+        if morph_manager is not None:
+            # Set endpoint A from left patches (current state)
+            morph_manager.capture_endpoint_a()
+            
+            # If right patches exist, set them as endpoint B
+            has_right = any(
+                (d + bank_offset) in self.decoded_preset.right_patches 
+                for d in range(8)
+            )
+            if has_right:
+                # Temporarily apply right patches, capture as B, then restore A
+                right_params_applied = False
+                for d in range(8):
+                    drum_idx = d + bank_offset
+                    if drum_idx in self.decoded_preset.right_patches:
+                        patch = self.decoded_preset.right_patches[drum_idx]
+                        if patch.synth_params:
+                            self.synth.channels[d].set_parameters(patch.synth_params)
+                            right_params_applied = True
+                
+                if right_params_applied:
+                    morph_manager.capture_endpoint_b()
+                    # Restore left patches (endpoint A)
+                    for d in range(8):
+                        drum_idx = d + bank_offset
+                        if drum_idx in self.decoded_preset.left_patches:
+                            patch = self.decoded_preset.left_patches[drum_idx]
+                            if patch.synth_params:
+                                self.synth.channels[d].set_parameters(patch.synth_params)
+            else:
+                # No right patches - both endpoints are the same
+                morph_manager.capture_endpoint_b()
+        
         # Import all selected patterns to their assigned destinations
         # First, clear ALL 12 Pythonic patterns so non-imported ones are empty
         letters = self.pattern_manager.PATTERN_NAMES

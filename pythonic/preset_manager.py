@@ -318,7 +318,13 @@ class PythonicPresetParser:
             'drums': [],
             'mutes': preset_data.get('Mutes', [False] * 8),
             'patterns': None,
+            'morph_position': None,
         }
+        
+        # Parse Morph block if present
+        if 'Morph' in preset_data:
+            morph_block = preset_data['Morph']
+            result['morph_position'] = self._to_float(morph_block.get('Time', 0.5))
         if 'DrumPatches' in preset_data:
             for i in range(1, 9):
                 key = str(i)
