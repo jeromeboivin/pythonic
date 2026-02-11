@@ -11,6 +11,7 @@ import json
 import os
 import time
 import random
+import copy
 from collections import deque
 
 # Import our synthesizer
@@ -73,8 +74,8 @@ class PythonicGUI:
         self.root.title("Pythonic Drum Synthesizer")
         self.root.configure(bg=self.COLORS['bg_dark'])
         self.root.resizable(True, True)
-        self.root.minsize(900, 700)  # Minimum window size
-        self.root.geometry("1000x780")  # Default window size
+        self.root.minsize(800, 480)  # Compact minimum window size
+        self.root.geometry("960x600")  # Compact default window size
         
         # Initialize synthesizer
         self.sample_rate = 44100
@@ -109,6 +110,12 @@ class PythonicGUI:
         self.selected_channel = 0
         self.updating_ui = False  # Prevent feedback loops
         self.edit_all_mode = False  # When True, knob changes affect all unmuted channels
+        
+        # Undo/redo state management
+        self._undo_stack = []  # List of (synth_data, pattern_data) snapshots
+        self._redo_stack = []
+        self._max_undo = 50  # Maximum undo levels
+        self._undo_pending = False  # Debounce flag for coalescing rapid changes
         
         # Parameter registry for MIDI CC mapping
         # Maps parameter_name -> (widget, min_val, max_val, setter_function)
@@ -150,8 +157,13 @@ class PythonicGUI:
         # Register parameters for MIDI CC control
         self._register_cc_parameters()
         
+        # Register undo/redo on all knobs and sliders
+        self._register_undo_on_widgets()
+        
         # Bind keyboard events
         self.root.bind('<Key>', self._on_key_press)
+        self.root.bind('<Control-z>', lambda e: self._on_undo())
+        self.root.bind('<Control-y>', lambda e: self._on_redo())
         
         # Start audio if available
         if AUDIO_AVAILABLE:
@@ -182,9 +194,37 @@ class PythonicGUI:
         4. Pattern Section (pattern buttons A-L, step editor, play controls)
         5. Global Section (transport, swing, fill rate, master volume)
         """
-        # Main container - fill entire window
-        main_frame = tk.Frame(self.root, bg=self.COLORS['bg_dark'])
-        main_frame.pack(fill='both', expand=True, padx=10, pady=10)
+        # Scrollable main container
+        outer_frame = tk.Frame(self.root, bg=self.COLORS['bg_dark'])
+        outer_frame.pack(fill='both', expand=True)
+        
+        self._canvas = tk.Canvas(outer_frame, bg=self.COLORS['bg_dark'],
+                                 highlightthickness=0)
+        self._vscrollbar = tk.Scrollbar(outer_frame, orient='vertical',
+                                        command=self._canvas.yview)
+        self._canvas.configure(yscrollcommand=self._vscrollbar.set)
+        
+        self._vscrollbar.pack(side='right', fill='y')
+        self._canvas.pack(side='left', fill='both', expand=True)
+        
+        main_frame = tk.Frame(self._canvas, bg=self.COLORS['bg_dark'])
+        self._canvas_window = self._canvas.create_window((0, 0), window=main_frame,
+                                                          anchor='nw')
+        
+        # Resize canvas scroll region when content changes
+        def _on_frame_configure(event):
+            self._canvas.configure(scrollregion=self._canvas.bbox('all'))
+        main_frame.bind('<Configure>', _on_frame_configure)
+        
+        # Make canvas width follow window width
+        def _on_canvas_configure(event):
+            self._canvas.itemconfig(self._canvas_window, width=event.width)
+        self._canvas.bind('<Configure>', _on_canvas_configure)
+        
+        # Bind mouse wheel to scroll
+        def _on_mousewheel(event):
+            self._canvas.yview_scroll(int(-1 * (event.delta / 120)), 'units')
+        self._canvas.bind_all('<MouseWheel>', _on_mousewheel)
         
         # Toolbar (top bar with program selector, morph slider)
         self._build_toolbar(main_frame)
@@ -209,13 +249,13 @@ class PythonicGUI:
         - Center: Sound Morph slider
         - Right: Undo/Redo, option buttons, master volume
         """
-        toolbar = tk.Frame(parent, bg=self.COLORS['bg_medium'], height=45)
-        toolbar.pack(fill='x', pady=(0, 5))
+        toolbar = tk.Frame(parent, bg=self.COLORS['bg_medium'], height=32)
+        toolbar.pack(fill='x', pady=(0, 2))
         toolbar.pack_propagate(False)
         
         # Left side: Program selector
         program_frame = tk.Frame(toolbar, bg=self.COLORS['bg_medium'])
-        program_frame.pack(side='left', padx=5, pady=5)
+        program_frame.pack(side='left', padx=3, pady=2)
         
         tk.Label(program_frame, text="program:", 
                 font=('Segoe UI', 7), fg=self.COLORS['text_dim'],
@@ -230,14 +270,14 @@ class PythonicGUI:
         
         # Center: Sound Morph slider
         morph_frame = tk.Frame(toolbar, bg=self.COLORS['bg_medium'])
-        morph_frame.pack(side='left', padx=20, pady=5, expand=True)
+        morph_frame.pack(side='left', padx=10, pady=2, expand=True)
         
         tk.Label(morph_frame, text="sound morph:", 
                 font=('Segoe UI', 7), fg=self.COLORS['text_dim'],
                 bg=self.COLORS['bg_medium']).pack(side='left', padx=(0, 5))
         
         self.morph_slider = tk.Scale(morph_frame, from_=0, to=100, 
-                                    orient='horizontal', length=150,
+                                    orient='horizontal', length=120,
                                     bg=self.COLORS['bg_medium'], 
                                     fg=self.COLORS['text'],
                                     highlightthickness=0,
@@ -247,13 +287,14 @@ class PythonicGUI:
         
         # Right side: Undo/Redo, options, master volume
         right_frame = tk.Frame(toolbar, bg=self.COLORS['bg_medium'])
-        right_frame.pack(side='right', padx=5, pady=5)
+        right_frame.pack(side='right', padx=3, pady=2)
         
         # Undo/Redo buttons
         self.undo_btn = tk.Button(right_frame, text="↶", width=2, height=1,
                                  font=('Segoe UI', 10),
                                  bg=self.COLORS['bg_light'],
                                  fg=self.COLORS['text'],
+                                 state='disabled',
                                  command=self._on_undo)
         self.undo_btn.pack(side='left', padx=1)
         
@@ -261,6 +302,7 @@ class PythonicGUI:
                                  font=('Segoe UI', 10),
                                  bg=self.COLORS['bg_light'],
                                  fg=self.COLORS['text'],
+                                 state='disabled',
                                  command=self._on_redo)
         self.redo_btn.pack(side='left', padx=1)
         
@@ -272,7 +314,7 @@ class PythonicGUI:
                 font=('Segoe UI', 7), fg=self.COLORS['text_dim'],
                 bg=self.COLORS['bg_medium']).pack(side='left', padx=(5, 2))
         
-        self.master_knob = RotaryKnob(right_frame, size=35, 
+        self.master_knob = RotaryKnob(right_frame, size=28, 
                                       min_val=-60, max_val=10, default=0,
                                       command=self._on_master_volume_change)
         self.master_knob.pack(side='left')
@@ -302,14 +344,14 @@ class PythonicGUI:
         - Right: Channel buttons 1-8 in SINGLE row with small mute buttons, patch name below
         """
         preset_section = tk.Frame(parent, bg=self.COLORS['bg_medium'])
-        preset_section.pack(fill='x', pady=(0, 5))
+        preset_section.pack(fill='x', pady=(0, 2))
         
         # Left: Logo/Title
         logo_frame = tk.Frame(preset_section, bg=self.COLORS['bg_medium'])
-        logo_frame.pack(side='left', padx=10, pady=5)
+        logo_frame.pack(side='left', padx=5, pady=2)
         
         tk.Label(logo_frame, text="PYTHONIC", 
-                font=('Segoe UI', 14, 'bold'), fg=self.COLORS['accent_light'],
+                font=('Segoe UI', 11, 'bold'), fg=self.COLORS['accent_light'],
                 bg=self.COLORS['bg_medium']).pack()
         
         # PO-32 Transfer button
@@ -325,7 +367,7 @@ class PythonicGUI:
         
         # Center-left: Preset name display with navigation
         preset_nav_frame = tk.Frame(preset_section, bg=self.COLORS['bg_medium'])
-        preset_nav_frame.pack(side='left', padx=10, pady=5)
+        preset_nav_frame.pack(side='left', padx=5, pady=2)
         
         tk.Button(preset_nav_frame, text="◀", width=2, height=1,
                  font=('Segoe UI', 8),
@@ -353,17 +395,17 @@ class PythonicGUI:
         
         # Right side: Channel buttons 1-8 in SINGLE ROW
         channels_container = tk.Frame(preset_section, bg=self.COLORS['bg_medium'])
-        channels_container.pack(side='right', padx=10, pady=5)
+        channels_container.pack(side='right', padx=5, pady=2)
         
         # Patch name display ABOVE channels
         self.patch_name_label = tk.Label(channels_container,
                                          text="SC BD Schmack",
-                                         font=('Segoe UI', 9),
+                                         font=('Segoe UI', 8),
                                          fg=self.COLORS['text'],
                                          bg=self.COLORS['bg_dark'],
-                                         width=20, anchor='center',
-                                         relief='sunken', padx=5)
-        self.patch_name_label.pack(pady=(0, 3))
+                                         width=18, anchor='center',
+                                         relief='sunken', padx=3)
+        self.patch_name_label.pack(pady=(0, 1))
         
         # Single row of channels 1-8 with number, button, mute
         channels_row = tk.Frame(channels_container, bg=self.COLORS['bg_medium'])
@@ -385,13 +427,13 @@ class PythonicGUI:
             btn_row = tk.Frame(ch_frame, bg=self.COLORS['bg_medium'])
             btn_row.pack()
             
-            btn = ChannelButton(btn_row, i, size=28,
+            btn = ChannelButton(btn_row, i, size=24,
                                command=self._on_channel_select)
             btn.pack(side='left')
             self.channel_buttons.append(btn)
             
             # Small mute button
-            mute_btn = ToggleButton(btn_row, text="m", width=16, height=16,
+            mute_btn = ToggleButton(btn_row, text="m", width=14, height=14,
                                    command=lambda en, ch=i: self._on_mute_toggle(ch, en))
             mute_btn.pack(side='left', padx=1)
             self.mute_buttons.append(mute_btn)
@@ -404,15 +446,15 @@ class PythonicGUI:
         Right side: Pattern editor (trig/acc/fill/len lanes)
         """
         pattern_frame = tk.LabelFrame(parent, text="pattern", 
-                                     font=('Segoe UI', 8),
+                                     font=('Segoe UI', 7),
                                      fg=self.COLORS['text_dim'],
                                      bg=self.COLORS['bg_medium'],
                                      labelanchor='nw')
-        pattern_frame.pack(fill='x', pady=(0, 5))
+        pattern_frame.pack(fill='x', pady=(0, 2))
         
         # Main horizontal layout: controls on left, editor on right
         main_row = tk.Frame(pattern_frame, bg=self.COLORS['bg_medium'])
-        main_row.pack(fill='both', expand=True, padx=5, pady=5)
+        main_row.pack(fill='both', expand=True, padx=3, pady=2)
         
         # LEFT SIDE: Pattern controls
         left_panel = tk.Frame(main_row, bg=self.COLORS['bg_medium'])
@@ -551,26 +593,27 @@ class PythonicGUI:
     def _build_drum_patch_section(self, parent):
         """Build the main drum patch editing section"""
         patch_frame = tk.Frame(parent, bg=self.COLORS['bg_medium'])
-        patch_frame.pack(fill='x', expand=True, pady=(0, 5))
+        patch_frame.pack(fill='x', expand=True, pady=(0, 2))
         
-        # Four main subsections
+        # Five main subsections
         self._build_mixing_section(patch_frame)
         self._build_oscillator_section(patch_frame)
         self._build_noise_section(patch_frame)
+        self._build_fx_section(patch_frame)
         self._build_velocity_section(patch_frame)
     
     def _build_mixing_section(self, parent):
         """Build the mixing controls section"""
         section = tk.LabelFrame(parent, text="mixing", 
-                               font=('Segoe UI', 8),
+                               font=('Segoe UI', 7),
                                fg=self.COLORS['text_dim'],
                                bg=self.COLORS['bg_medium'],
                                labelanchor='n')
-        section.pack(side='left', padx=5, pady=5, fill='both', expand=True)
+        section.pack(side='left', padx=2, pady=2, fill='both', expand=True)
         
         # Row 1: osc/noise HORIZONTAL mix slider
         mix_row = tk.Frame(section, bg=self.COLORS['bg_medium'])
-        mix_row.pack(pady=5, fill='x')
+        mix_row.pack(pady=2, fill='x')
         
         tk.Label(mix_row, text="osc", font=('Segoe UI', 7),
                 fg=self.COLORS['text_dim'],
@@ -578,7 +621,7 @@ class PythonicGUI:
         
         # Horizontal mix slider
         self.mix_slider = tk.Scale(mix_row, from_=0, to=100, 
-                                  orient='horizontal', length=80,
+                                  orient='horizontal', length=60,
                                   showvalue=False,
                                   bg=self.COLORS['bg_medium'], 
                                   fg=self.COLORS['text'],
@@ -594,149 +637,84 @@ class PythonicGUI:
         
         # Row 2: EQ Freq knob with frequency labels
         freq_row = tk.Frame(section, bg=self.COLORS['bg_medium'])
-        freq_row.pack(pady=3)
+        freq_row.pack(pady=1)
         
         tk.Label(freq_row, text="20Hz", font=('Segoe UI', 6),
                 fg=self.COLORS['text_dim'],
                 bg=self.COLORS['bg_medium']).pack(side='left')
         
-        self.eq_freq_knob = RotaryKnob(freq_row, size=45,
+        self.eq_freq_knob = RotaryKnob(freq_row, size=35,
                                        min_val=20, max_val=20000, default=632,
                                        label="eq freq",
                                        logarithmic=True,
                                        command=self._on_eq_freq_change)
-        self.eq_freq_knob.pack(side='left', padx=3)
+        self.eq_freq_knob.pack(side='left', padx=2)
         
         tk.Label(freq_row, text="20kHz", font=('Segoe UI', 6),
                 fg=self.COLORS['text_dim'],
                 bg=self.COLORS['bg_medium']).pack(side='left')
         
         # Edit All button
-        self.edit_all_btn = ToggleButton(section, text="edit all", width=50, height=18,
+        self.edit_all_btn = ToggleButton(section, text="edit all", width=45, height=16,
                                         command=self._on_edit_all_toggle)
-        self.edit_all_btn.pack(pady=3)
+        self.edit_all_btn.pack(pady=1)
         
         # Row 3: Distortion and EQ Gain
         row3 = tk.Frame(section, bg=self.COLORS['bg_medium'])
-        row3.pack(pady=3)
+        row3.pack(pady=1)
         
-        self.distort_knob = RotaryKnob(row3, size=42,
+        self.distort_knob = RotaryKnob(row3, size=32,
                                        min_val=0, max_val=100, default=0,
                                        label="distort",
                                        command=self._on_distort_change)
-        self.distort_knob.pack(side='left', padx=3)
+        self.distort_knob.pack(side='left', padx=2)
         
-        self.eq_gain_knob = RotaryKnob(row3, size=42,
+        self.eq_gain_knob = RotaryKnob(row3, size=32,
                                        min_val=-40, max_val=40, default=0,
                                        label="eq gain",
                                        command=self._on_eq_gain_change)
-        self.eq_gain_knob.pack(side='left', padx=3)
-        
-        # Row 3b: Vintage (analog simulation)
-        row3b = tk.Frame(section, bg=self.COLORS['bg_medium'])
-        row3b.pack(pady=3)
-        
-        self.vintage_knob = RotaryKnob(row3b, size=42,
-                                       min_val=0, max_val=100, default=0,
-                                       label="vintage",
-                                       command=self._on_vintage_change)
-        self.vintage_knob.pack(side='left', padx=3)
-        
-        # Row 3c: Reverb controls (per-channel stereo reverb/decay effect)
-        reverb_row = tk.Frame(section, bg=self.COLORS['bg_medium'])
-        reverb_row.pack(pady=3)
-        
-        self.reverb_decay_knob = RotaryKnob(reverb_row, size=38,
-                                            min_val=0, max_val=100, default=0,
-                                            label="rvb time",
-                                            command=self._on_reverb_decay_change)
-        self.reverb_decay_knob.pack(side='left', padx=2)
-        
-        self.reverb_mix_knob = RotaryKnob(reverb_row, size=38,
-                                          min_val=0, max_val=100, default=0,
-                                          label="rvb mix",
-                                          command=self._on_reverb_mix_change)
-        self.reverb_mix_knob.pack(side='left', padx=2)
-        
-        self.reverb_width_knob = RotaryKnob(reverb_row, size=38,
-                                            min_val=0, max_val=200, default=100,
-                                            label="rvb wide",
-                                            command=self._on_reverb_width_change)
-        self.reverb_width_knob.pack(side='left', padx=2)
-        
-        # Row 3d: Delay/Echo controls (tempo-synced)
-        delay_row = tk.Frame(section, bg=self.COLORS['bg_medium'])
-        delay_row.pack(pady=3)
-        
-        # Delay time selector (musical divisions)
-        self.delay_time_options = ['1/4', '1/8', '1/16', '1/8T', '1/4.']
-        self.delay_time_indices = [2, 3, 4, 8, 11]  # Map to DelayTime enum values
-        self.delay_time_selector = ModeSelector(delay_row, 
-                                                options=self.delay_time_options,
-                                                width=120,
-                                                command=self._on_delay_time_change)
-        self.delay_time_selector.pack(side='left', padx=2)
-        
-        delay_knobs_row = tk.Frame(section, bg=self.COLORS['bg_medium'])
-        delay_knobs_row.pack(pady=2)
-        
-        self.delay_feedback_knob = RotaryKnob(delay_knobs_row, size=36,
-                                              min_val=0, max_val=95, default=30,
-                                              label="dly fdbk",
-                                              command=self._on_delay_feedback_change)
-        self.delay_feedback_knob.pack(side='left', padx=2)
-        
-        self.delay_mix_knob = RotaryKnob(delay_knobs_row, size=36,
-                                         min_val=0, max_val=100, default=0,
-                                         label="dly mix",
-                                         command=self._on_delay_mix_change)
-        self.delay_mix_knob.pack(side='left', padx=2)
-        
-        self.delay_pingpong_btn = ToggleButton(delay_knobs_row, text="P.P", 
-                                               width=32, height=20,
-                                               command=self._on_delay_pingpong_toggle)
-        self.delay_pingpong_btn.pack(side='left', padx=2)
+        self.eq_gain_knob.pack(side='left', padx=2)
         
         # Row 4: Level and Pan
         row4 = tk.Frame(section, bg=self.COLORS['bg_medium'])
-        row4.pack(pady=3)
+        row4.pack(pady=1)
         
-        self.level_knob = RotaryKnob(row4, size=42,
+        self.level_knob = RotaryKnob(row4, size=32,
                                      min_val=-60, max_val=10, default=0,
                                      label="level",
                                      command=self._on_level_change)
-        self.level_knob.pack(side='left', padx=3)
+        self.level_knob.pack(side='left', padx=2)
         
-        self.pan_knob = RotaryKnob(row4, size=42,
+        self.pan_knob = RotaryKnob(row4, size=32,
                                    min_val=-100, max_val=100, default=0,
                                    label="pan",
                                    command=self._on_pan_change)
-        self.pan_knob.pack(side='left', padx=3)
+        self.pan_knob.pack(side='left', padx=2)
         
         # Row 5: Choke and Output A/B
         row5 = tk.Frame(section, bg=self.COLORS['bg_medium'])
-        row5.pack(pady=3)
+        row5.pack(pady=1)
         
-        self.choke_btn = ToggleButton(row5, text="choke", width=45, height=20,
+        self.choke_btn = ToggleButton(row5, text="choke", width=40, height=16,
                                      command=self._on_choke_toggle)
-        self.choke_btn.pack(side='left', padx=3)
+        self.choke_btn.pack(side='left', padx=2)
         
-        self.output_selector = ModeSelector(row5, options=['A', 'B'], width=50,
+        self.output_selector = ModeSelector(row5, options=['A', 'B'], width=45,
                                            command=self._on_output_change)
-        self.output_selector.pack(side='left', padx=3)
+        self.output_selector.pack(side='left', padx=2)
     
     def _build_oscillator_section(self, parent):
         """Build the oscillator controls section"""
         section = tk.LabelFrame(parent, text="oscillator",
-                               font=('Segoe UI', 8),
+                               font=('Segoe UI', 7),
                                fg=self.COLORS['text_dim'],
                                bg=self.COLORS['bg_medium'],
                                labelanchor='n')
-        section.pack(side='left', padx=5, pady=5, fill='both', expand=True)
+        section.pack(side='left', padx=2, pady=2, fill='both', expand=True)
         
         # Waveform selector with label
         waveform_frame = tk.Frame(section, bg=self.COLORS['bg_medium'])
-        waveform_frame.pack(pady=3)
+        waveform_frame.pack(pady=1)
         
         tk.Label(waveform_frame, text="waveform", font=('Segoe UI', 7),
                 fg=self.COLORS['text_dim'],
@@ -748,18 +726,18 @@ class PythonicGUI:
         
         # Oscillator Frequency with labels
         freq_frame = tk.Frame(section, bg=self.COLORS['bg_medium'])
-        freq_frame.pack(pady=3)
+        freq_frame.pack(pady=1)
         
         tk.Label(freq_frame, text="20Hz", font=('Segoe UI', 6),
                 fg=self.COLORS['text_dim'],
                 bg=self.COLORS['bg_medium']).pack(side='left')
         
-        self.osc_freq_knob = RotaryKnob(freq_frame, size=50,
+        self.osc_freq_knob = RotaryKnob(freq_frame, size=38,
                                         min_val=20, max_val=20000, default=440,
                                         label="osc freq",
                                         logarithmic=True,
                                         command=self._on_osc_freq_change)
-        self.osc_freq_knob.pack(side='left', padx=3)
+        self.osc_freq_knob.pack(side='left', padx=2)
         
         tk.Label(freq_frame, text="20kHz", font=('Segoe UI', 6),
                 fg=self.COLORS['text_dim'],
@@ -767,7 +745,7 @@ class PythonicGUI:
         
         # Pitch modulation mode
         pitch_mod_frame = tk.Frame(section, bg=self.COLORS['bg_medium'])
-        pitch_mod_frame.pack(pady=3)
+        pitch_mod_frame.pack(pady=1)
         
         tk.Label(pitch_mod_frame, text="pitch mod", font=('Segoe UI', 7),
                 fg=self.COLORS['text_dim'],
@@ -780,51 +758,51 @@ class PythonicGUI:
         
         # Pitch mod amount and rate
         pitch_knobs_frame = tk.Frame(section, bg=self.COLORS['bg_medium'])
-        pitch_knobs_frame.pack(pady=3)
+        pitch_knobs_frame.pack(pady=1)
         
-        self.pitch_amount_knob = RotaryKnob(pitch_knobs_frame, size=42,
+        self.pitch_amount_knob = RotaryKnob(pitch_knobs_frame, size=32,
                                             min_val=-120, max_val=120, default=0,
                                             label="amount",
                                             command=self._on_pitch_amount_change)
-        self.pitch_amount_knob.pack(side='left', padx=3)
+        self.pitch_amount_knob.pack(side='left', padx=2)
         
-        self.pitch_rate_knob = RotaryKnob(pitch_knobs_frame, size=42,
+        self.pitch_rate_knob = RotaryKnob(pitch_knobs_frame, size=32,
                                           min_val=1, max_val=2000, default=100,
                                           label="rate",
                                           logarithmic=True,
                                           command=self._on_pitch_rate_change)
-        self.pitch_rate_knob.pack(side='left', padx=3)
+        self.pitch_rate_knob.pack(side='left', padx=2)
         
         # Attack and Decay knobs
         env_frame = tk.Frame(section, bg=self.COLORS['bg_medium'])
-        env_frame.pack(pady=3)
+        env_frame.pack(pady=1)
         
-        self.osc_attack_knob = RotaryKnob(env_frame, size=42,
+        self.osc_attack_knob = RotaryKnob(env_frame, size=32,
                                           min_val=0, max_val=10000, default=0,
                                           label="attack",
                                           logarithmic=True,
                                           command=self._on_osc_attack_change)
-        self.osc_attack_knob.pack(side='left', padx=3)
+        self.osc_attack_knob.pack(side='left', padx=2)
         
-        self.osc_decay_knob = RotaryKnob(env_frame, size=42,
+        self.osc_decay_knob = RotaryKnob(env_frame, size=32,
                                          min_val=10, max_val=10000, default=316,
                                          label="decay",
                                          logarithmic=True,
                                          command=self._on_osc_decay_change)
-        self.osc_decay_knob.pack(side='left', padx=3)
+        self.osc_decay_knob.pack(side='left', padx=2)
     
     def _build_noise_section(self, parent):
         """Build the noise generator controls section"""
         section = tk.LabelFrame(parent, text="noise",
-                               font=('Segoe UI', 8),
+                               font=('Segoe UI', 7),
                                fg=self.COLORS['text_dim'],
                                bg=self.COLORS['bg_medium'],
                                labelanchor='n')
-        section.pack(side='left', padx=5, pady=5, fill='both', expand=True)
+        section.pack(side='left', padx=2, pady=2, fill='both', expand=True)
         
         # Filter mode selector (LP/BP/HP)
         filter_mode_frame = tk.Frame(section, bg=self.COLORS['bg_medium'])
-        filter_mode_frame.pack(pady=3)
+        filter_mode_frame.pack(pady=1)
         
         tk.Label(filter_mode_frame, text="filter mode", font=('Segoe UI', 7),
                 fg=self.COLORS['text_dim'],
@@ -837,18 +815,18 @@ class PythonicGUI:
         
         # Filter freq with frequency labels
         freq_frame = tk.Frame(section, bg=self.COLORS['bg_medium'])
-        freq_frame.pack(pady=3)
+        freq_frame.pack(pady=1)
         
         tk.Label(freq_frame, text="20Hz", font=('Segoe UI', 6),
                 fg=self.COLORS['text_dim'],
                 bg=self.COLORS['bg_medium']).pack(side='left')
         
-        self.noise_freq_knob = RotaryKnob(freq_frame, size=50,
+        self.noise_freq_knob = RotaryKnob(freq_frame, size=38,
                                           min_val=20, max_val=20000, default=20000,
                                           label="filter freq",
                                           logarithmic=True,
                                           command=self._on_noise_freq_change)
-        self.noise_freq_knob.pack(side='left', padx=3)
+        self.noise_freq_knob.pack(side='left', padx=2)
         
         tk.Label(freq_frame, text="20kHz", font=('Segoe UI', 6),
                 fg=self.COLORS['text_dim'],
@@ -856,23 +834,23 @@ class PythonicGUI:
         
         # Filter Q knob
         q_frame = tk.Frame(section, bg=self.COLORS['bg_medium'])
-        q_frame.pack(pady=3)
+        q_frame.pack(pady=1)
         
-        self.noise_q_knob = RotaryKnob(q_frame, size=42,
+        self.noise_q_knob = RotaryKnob(q_frame, size=32,
                                        min_val=0.5, max_val=20.0, default=0.707,
                                        label="filter q",
                                        logarithmic=True,
                                        command=self._on_noise_q_change)
-        self.noise_q_knob.pack(side='left', padx=3)
+        self.noise_q_knob.pack(side='left', padx=2)
         
         # Stereo toggle button
-        self.stereo_btn = ToggleButton(q_frame, text="stereo", width=45, height=20,
+        self.stereo_btn = ToggleButton(q_frame, text="stereo", width=40, height=16,
                                       command=self._on_stereo_toggle)
-        self.stereo_btn.pack(side='left', padx=3)
+        self.stereo_btn.pack(side='left', padx=2)
         
         # Envelope mode selector
         env_mode_frame = tk.Frame(section, bg=self.COLORS['bg_medium'])
-        env_mode_frame.pack(pady=3)
+        env_mode_frame.pack(pady=1)
         
         tk.Label(env_mode_frame, text="envelope", font=('Segoe UI', 7),
                 fg=self.COLORS['text_dim'],
@@ -885,58 +863,121 @@ class PythonicGUI:
         
         # Attack and Decay as VERTICAL SLIDERS
         env_sliders_frame = tk.Frame(section, bg=self.COLORS['bg_medium'])
-        env_sliders_frame.pack(pady=3)
+        env_sliders_frame.pack(pady=1)
         
-        self.noise_attack_slider = VerticalSlider(env_sliders_frame, width=25, height=70,
+        self.noise_attack_slider = VerticalSlider(env_sliders_frame, width=22, height=55,
                                                  min_val=0, max_val=10000, default=0,
                                                  label="attack",
                                                  logarithmic=True,
                                                  command=self._on_noise_attack_change)
-        self.noise_attack_slider.pack(side='left', padx=5)
+        self.noise_attack_slider.pack(side='left', padx=3)
         
-        self.noise_decay_slider = VerticalSlider(env_sliders_frame, width=25, height=70,
+        self.noise_decay_slider = VerticalSlider(env_sliders_frame, width=22, height=55,
                                                 min_val=10, max_val=10000, default=316,
                                                 label="decay",
                                                 logarithmic=True,
                                                 command=self._on_noise_decay_change)
-        self.noise_decay_slider.pack(side='left', padx=5)
+        self.noise_decay_slider.pack(side='left', padx=3)
     
     def _build_velocity_section(self, parent):
         """Build the velocity sensitivity section"""
         section = tk.LabelFrame(parent, text="vel",
-                               font=('Segoe UI', 8),
+                               font=('Segoe UI', 7),
                                fg=self.COLORS['text_dim'],
                                bg=self.COLORS['bg_medium'],
                                labelanchor='n')
-        section.pack(side='left', padx=5, pady=5, fill='both', expand=True)
+        section.pack(side='left', padx=2, pady=2, fill='both', expand=True)
         
         # Oscillator velocity
-        self.osc_vel_slider = VerticalSlider(section, width=25, height=80,
+        self.osc_vel_slider = VerticalSlider(section, width=22, height=55,
                                             min_val=0, max_val=200, default=0,
                                             label="osc",
                                             command=self._on_osc_vel_change)
-        self.osc_vel_slider.pack(pady=5)
+        self.osc_vel_slider.pack(pady=2)
         
         # Noise velocity
-        self.noise_vel_slider = VerticalSlider(section, width=25, height=80,
+        self.noise_vel_slider = VerticalSlider(section, width=22, height=55,
                                               min_val=0, max_val=200, default=0,
                                               label="noise",
                                               command=self._on_noise_vel_change)
-        self.noise_vel_slider.pack(pady=5)
+        self.noise_vel_slider.pack(pady=2)
         
         # Mod velocity
-        self.mod_vel_slider = VerticalSlider(section, width=25, height=80,
+        self.mod_vel_slider = VerticalSlider(section, width=22, height=55,
                                             min_val=0, max_val=200, default=0,
                                             label="mod",
                                             command=self._on_mod_vel_change)
-        self.mod_vel_slider.pack(pady=5)
+        self.mod_vel_slider.pack(pady=2)
         
-        # Probability (0-100%, controls chance of triggering during pattern playback)
-        self.prob_slider = VerticalSlider(section, width=25, height=80,
-                                         min_val=0, max_val=100, default=100,
-                                         label="prob",
-                                         command=self._on_probability_change)
-        self.prob_slider.pack(pady=5)
+    def _build_fx_section(self, parent):
+        """Build the effects section (reverb, delay, vintage)"""
+        section = tk.LabelFrame(parent, text="fx",
+                               font=('Segoe UI', 7),
+                               fg=self.COLORS['text_dim'],
+                               bg=self.COLORS['bg_medium'],
+                               labelanchor='n')
+        section.pack(side='left', padx=2, pady=2, fill='both', expand=True)
+        
+        # Vintage (analog simulation)
+        self.vintage_knob = RotaryKnob(section, size=30,
+                                       min_val=0, max_val=100, default=0,
+                                       label="vintage",
+                                       command=self._on_vintage_change)
+        self.vintage_knob.pack(pady=1)
+        
+        # Reverb controls
+        reverb_row = tk.Frame(section, bg=self.COLORS['bg_medium'])
+        reverb_row.pack(pady=1)
+        
+        self.reverb_decay_knob = RotaryKnob(reverb_row, size=30,
+                                            min_val=0, max_val=100, default=0,
+                                            label="rvb time",
+                                            command=self._on_reverb_decay_change)
+        self.reverb_decay_knob.pack(side='left', padx=1)
+        
+        self.reverb_mix_knob = RotaryKnob(reverb_row, size=30,
+                                          min_val=0, max_val=100, default=0,
+                                          label="rvb mix",
+                                          command=self._on_reverb_mix_change)
+        self.reverb_mix_knob.pack(side='left', padx=1)
+        
+        self.reverb_width_knob = RotaryKnob(reverb_row, size=30,
+                                            min_val=0, max_val=200, default=100,
+                                            label="rvb wide",
+                                            command=self._on_reverb_width_change)
+        self.reverb_width_knob.pack(side='left', padx=1)
+        
+        # Delay time selector (musical divisions)
+        delay_row = tk.Frame(section, bg=self.COLORS['bg_medium'])
+        delay_row.pack(pady=1)
+        
+        self.delay_time_options = ['1/4', '1/8', '1/16', '1/8T', '1/4.']
+        self.delay_time_indices = [2, 3, 4, 8, 11]  # Map to DelayTime enum values
+        self.delay_time_selector = ModeSelector(delay_row,
+                                                options=self.delay_time_options,
+                                                width=100,
+                                                command=self._on_delay_time_change)
+        self.delay_time_selector.pack(side='left', padx=1)
+        
+        delay_knobs_row = tk.Frame(section, bg=self.COLORS['bg_medium'])
+        delay_knobs_row.pack(pady=1)
+        
+        self.delay_feedback_knob = RotaryKnob(delay_knobs_row, size=30,
+                                              min_val=0, max_val=95, default=30,
+                                              label="dly fdbk",
+                                              command=self._on_delay_feedback_change)
+        self.delay_feedback_knob.pack(side='left', padx=1)
+        
+        self.delay_mix_knob = RotaryKnob(delay_knobs_row, size=30,
+                                         min_val=0, max_val=100, default=0,
+                                         label="dly mix",
+                                         command=self._on_delay_mix_change)
+        self.delay_mix_knob.pack(side='left', padx=1)
+        
+        self.delay_pingpong_btn = ToggleButton(delay_knobs_row, text="P.P",
+                                               width=28, height=16,
+                                               command=self._on_delay_pingpong_toggle)
+        self.delay_pingpong_btn.pack(side='left', padx=1)
     
     def _build_global_section(self, parent):
         """Build the global controls section (bottom bar)
@@ -988,7 +1029,7 @@ class PythonicGUI:
         
         # Step rate buttons (1/8 to 1/32 selector)
         rate_frame = tk.Frame(global_frame, bg=self.COLORS['bg_medium'])
-        rate_frame.pack(side='left', padx=15, pady=8)
+        rate_frame.pack(side='left', padx=8, pady=4)
         
         self.step_rate_buttons = []
         for rate in ['1/8', '1/8T', '1/16', '1/16T', '1/32']:
@@ -1003,14 +1044,14 @@ class PythonicGUI:
         
         # Swing slider (center)
         swing_frame = tk.Frame(global_frame, bg=self.COLORS['bg_medium'])
-        swing_frame.pack(side='left', padx=15, pady=8)
+        swing_frame.pack(side='left', padx=8, pady=4)
         
         tk.Label(swing_frame, text="0%", 
                 font=('Segoe UI', 7), fg=self.COLORS['text_dim'],
                 bg=self.COLORS['bg_medium']).pack(side='left')
         
         self.global_swing_slider = tk.Scale(swing_frame, from_=0, to=100, 
-                                           orient='horizontal', length=100,
+                                           orient='horizontal', length=80,
                                            showvalue=False,
                                            bg=self.COLORS['bg_medium'], 
                                            fg=self.COLORS['text'],
@@ -1029,7 +1070,7 @@ class PythonicGUI:
         
         # Fill rate (center-right)
         fill_frame = tk.Frame(global_frame, bg=self.COLORS['bg_medium'])
-        fill_frame.pack(side='left', padx=15, pady=8)
+        fill_frame.pack(side='left', padx=8, pady=4)
         
         tk.Label(fill_frame, text="fill rate", 
                 font=('Segoe UI', 7), fg=self.COLORS['text_dim'],
@@ -1049,7 +1090,7 @@ class PythonicGUI:
         
         # Right: Keyboard hint and trigger info
         info_frame = tk.Frame(global_frame, bg=self.COLORS['bg_medium'])
-        info_frame.pack(side='right', padx=10, pady=8)
+        info_frame.pack(side='right', padx=5, pady=4)
         
         tk.Label(info_frame, 
                 text="Keys 1-8: Trigger channels",
@@ -1120,15 +1161,81 @@ class PythonicGUI:
         # For now, this is a placeholder
         pass
     
+    def _get_full_state_snapshot(self):
+        """Capture a deep copy of all synth + pattern state for undo/redo"""
+        synth_data = copy.deepcopy(self.synth.get_preset_data())
+        pattern_data = copy.deepcopy(self.pattern_manager.to_dict())
+        return (synth_data, pattern_data)
+
+    def _restore_state_snapshot(self, snapshot):
+        """Restore synth + pattern state from a snapshot"""
+        synth_data, pattern_data = snapshot
+        self.synth.load_preset_data(copy.deepcopy(synth_data))
+        self.pattern_manager.from_dict(copy.deepcopy(pattern_data))
+        self._update_ui_from_channel()
+        self._update_pattern_editors()
+        self._update_matrix_editor()
+        self._update_undo_redo_buttons()
+
+    def _push_undo_state(self):
+        """Push current state onto the undo stack (call BEFORE making a change)"""
+        snapshot = self._get_full_state_snapshot()
+        self._undo_stack.append(snapshot)
+        if len(self._undo_stack) > self._max_undo:
+            self._undo_stack.pop(0)
+        # Any new action clears the redo stack
+        self._redo_stack.clear()
+        self._update_undo_redo_buttons()
+
+    def _push_undo_state_deferred(self, phase=None):
+        """Push undo state — used as command_end callback on knobs/sliders.
+        Called with 'start' when drag begins and 'end' when drag ends."""
+        if phase == 'start':
+            # Capture state before changes begin
+            self._pre_drag_snapshot = self._get_full_state_snapshot()
+        elif phase == 'end':
+            # Commit the pre-drag snapshot to undo stack
+            if hasattr(self, '_pre_drag_snapshot') and self._pre_drag_snapshot is not None:
+                self._undo_stack.append(self._pre_drag_snapshot)
+                if len(self._undo_stack) > self._max_undo:
+                    self._undo_stack.pop(0)
+                self._redo_stack.clear()
+                self._pre_drag_snapshot = None
+                self._update_undo_redo_buttons()
+
+    def _push_undo_state_now(self):
+        """Actually push the undo state (for discrete actions like pattern edits)"""
+        self._undo_pending = False
+        self._push_undo_state()
+
+    def _update_undo_redo_buttons(self):
+        """Update undo/redo button enabled state"""
+        if hasattr(self, 'undo_btn'):
+            state = 'normal' if self._undo_stack else 'disabled'
+            self.undo_btn.config(state=state)
+        if hasattr(self, 'redo_btn'):
+            state = 'normal' if self._redo_stack else 'disabled'
+            self.redo_btn.config(state=state)
+
     def _on_undo(self):
         """Handle undo button click"""
-        # Future: implement undo stack
-        print("Undo clicked")
-    
+        if not self._undo_stack:
+            return
+        # Save current state to redo stack
+        self._redo_stack.append(self._get_full_state_snapshot())
+        # Pop and restore previous state
+        snapshot = self._undo_stack.pop()
+        self._restore_state_snapshot(snapshot)
+
     def _on_redo(self):
         """Handle redo button click"""
-        # Future: implement redo stack
-        print("Redo clicked")
+        if not self._redo_stack:
+            return
+        # Save current state to undo stack
+        self._undo_stack.append(self._get_full_state_snapshot())
+        # Pop and restore next state
+        snapshot = self._redo_stack.pop()
+        self._restore_state_snapshot(snapshot)
     
     def _on_preset_prev(self):
         """Navigate to previous preset in the list"""
@@ -1349,6 +1456,7 @@ class PythonicGUI:
         Sets the tempo-synced delay time (1/4, 1/8, 1/16, triplets, dotted).
         """
         if not self.updating_ui:
+            self._push_undo_state()
             from pythonic.delay import DelayTime
             delay_time_value = self.delay_time_indices[index]
             if self.edit_all_mode:
@@ -1395,6 +1503,7 @@ class PythonicGUI:
         When enabled, echoes alternate between left and right channels.
         """
         if not self.updating_ui:
+            self._push_undo_state()
             if self.edit_all_mode:
                 for ch in self.synth.channels:
                     if not ch.muted:
@@ -1422,18 +1531,21 @@ class PythonicGUI:
     def _on_choke_toggle(self, enabled):
         """Handle choke toggle"""
         if not self.updating_ui:
+            self._push_undo_state()
             channel = self.synth.get_selected_channel()
             channel.choke_enabled = enabled
     
     def _on_output_change(self, value):
         """Handle output selector change"""
         if not self.updating_ui:
+            self._push_undo_state()
             channel = self.synth.get_selected_channel()
             channel.output_pair = 'A' if value == 0 else 'B'
     
     def _on_waveform_change(self, value):
         """Handle waveform change"""
         if not self.updating_ui:
+            self._push_undo_state()
             channel = self.synth.get_selected_channel()
             channel.set_osc_waveform(WaveformType(value))
     
@@ -1446,6 +1558,7 @@ class PythonicGUI:
     def _on_pitch_mod_mode_change(self, value):
         """Handle pitch mod mode change"""
         if not self.updating_ui:
+            self._push_undo_state()
             channel = self.synth.get_selected_channel()
             channel.set_pitch_mod_mode(PitchModMode(value))
     
@@ -1476,6 +1589,7 @@ class PythonicGUI:
     def _on_noise_filter_mode_change(self, value):
         """Handle noise filter mode change"""
         if not self.updating_ui:
+            self._push_undo_state()
             channel = self.synth.get_selected_channel()
             channel.set_noise_filter_mode(NoiseFilterMode(value))
     
@@ -1494,12 +1608,14 @@ class PythonicGUI:
     def _on_stereo_toggle(self, enabled):
         """Handle stereo toggle"""
         if not self.updating_ui:
+            self._push_undo_state()
             channel = self.synth.get_selected_channel()
             channel.set_noise_stereo(enabled)
     
     def _on_noise_env_mode_change(self, value):
         """Handle noise envelope mode change"""
         if not self.updating_ui:
+            self._push_undo_state()
             channel = self.synth.get_selected_channel()
             channel.set_noise_envelope_mode(NoiseEnvelopeMode(value))
     
@@ -1532,12 +1648,6 @@ class PythonicGUI:
         if not self.updating_ui:
             channel = self.synth.get_selected_channel()
             channel.mod_vel_sensitivity = value / 100.0
-    
-    def _on_probability_change(self, value):
-        """Handle probability change (0-100%)"""
-        if not self.updating_ui:
-            channel = self.synth.get_selected_channel()
-            channel.probability = int(value)
     
     # ============ Pattern Callbacks ============
     
@@ -1572,6 +1682,7 @@ class PythonicGUI:
     
     def _on_pattern_edit(self, channel_id, step, lane_type, value):
         """Handle pattern editor edits"""
+        self._push_undo_state()
         pattern = self.pattern_manager.get_selected_pattern()
         channel = pattern.get_channel(channel_id)
         
@@ -1604,6 +1715,7 @@ class PythonicGUI:
     
     def _on_pattern_edit_all(self, step, lane_type, value, muted_channels):
         """Handle pattern edit applied to all unmuted channels (Shift+Click)"""
+        self._push_undo_state()
         pattern = self.pattern_manager.get_selected_pattern()
         
         for ch_idx in range(8):
@@ -2025,6 +2137,7 @@ class PythonicGUI:
     
     def _on_matrix_edit(self, channel_id, step, value):
         """Handle matrix editor edits"""
+        self._push_undo_state()
         pattern = self.pattern_manager.get_selected_pattern()
         channel = pattern.get_channel(channel_id)
         channel.set_trigger(step, value)
@@ -2143,7 +2256,6 @@ class PythonicGUI:
         self.osc_vel_slider.set_value(channel.osc_vel_sensitivity * 100)
         self.noise_vel_slider.set_value(channel.noise_vel_sensitivity * 100)
         self.mod_vel_slider.set_value(channel.mod_vel_sensitivity * 100)
-        self.prob_slider.set_value(channel.probability)
         
         self.updating_ui = False
     
@@ -2270,6 +2382,7 @@ class PythonicGUI:
     
     def _load_preset_file(self, filename, show_message=True):
         """Load a preset file (internal helper)"""
+        self._push_undo_state()
         try:
             if filename.lower().endswith('.mtpreset'):
                 # Load native Pythonic preset format
@@ -2768,6 +2881,26 @@ class PythonicGUI:
         """Get list of available parameters for CC mapping"""
         return sorted(self._cc_parameter_registry.keys())
     
+    def _register_undo_on_widgets(self):
+        """Register undo/redo callbacks on all knobs and sliders"""
+        undo_cb = self._push_undo_state_deferred
+        widgets = [
+            self.eq_freq_knob, self.distort_knob, self.eq_gain_knob,
+            self.level_knob, self.pan_knob,
+            self.osc_freq_knob, self.pitch_amount_knob, self.pitch_rate_knob,
+            self.osc_attack_knob, self.osc_decay_knob,
+            self.noise_freq_knob, self.noise_q_knob,
+            self.noise_attack_slider, self.noise_decay_slider,
+            self.osc_vel_slider, self.noise_vel_slider, self.mod_vel_slider,
+            self.vintage_knob,
+            self.reverb_decay_knob, self.reverb_mix_knob, self.reverb_width_knob,
+            self.delay_feedback_knob, self.delay_mix_knob,
+        ]
+        for w in widgets:
+            w.command_end = undo_cb
+        # Initial snapshot so the first undo has a baseline
+        self._push_undo_state()
+
     def _register_cc_parameters(self):
         """Register all knobs and sliders for MIDI CC control"""
         # Mixing section
@@ -2804,7 +2937,6 @@ class PythonicGUI:
         self._register_cc_parameter('osc_vel', self.osc_vel_slider, 0, 100)
         self._register_cc_parameter('noise_vel', self.noise_vel_slider, 0, 100)
         self._register_cc_parameter('mod_vel', self.mod_vel_slider, 0, 100)
-        self._register_cc_parameter('probability', self.prob_slider, 0, 100)
         
         # Mix slider
         self._register_cc_parameter('osc_noise_mix', self.mix_slider, 0, 100)
@@ -2870,6 +3002,7 @@ class PythonicGUI:
         dialog = tk.Toplevel(self.root)
         dialog.title("Audio Settings")
         dialog.geometry("450x250")
+        dialog.resizable(True, True)
         dialog.transient(self.root)
         dialog.grab_set()
         dialog.configure(bg=self.COLORS['bg_dark'])
@@ -3011,6 +3144,7 @@ class PythonicGUI:
         dialog = tk.Toplevel(self.root)
         dialog.title("Synthesis Settings")
         dialog.geometry("400x200")
+        dialog.resizable(True, True)
         dialog.transient(self.root)
         dialog.grab_set()
         dialog.configure(bg=self.COLORS['bg_dark'])
@@ -3112,6 +3246,7 @@ class PythonicGUI:
         dialog = tk.Toplevel(self.root)
         dialog.title("MIDI Settings")
         dialog.geometry("400x420")
+        dialog.resizable(True, True)
         dialog.transient(self.root)
         dialog.grab_set()
         dialog.configure(bg=self.COLORS['bg_dark'])
@@ -3330,6 +3465,7 @@ class PythonicGUI:
         dialog = tk.Toplevel(self.root)
         dialog.title("MIDI CC Mappings")
         dialog.geometry("500x450")
+        dialog.resizable(True, True)
         dialog.transient(self.root)
         dialog.grab_set()
         dialog.configure(bg=self.COLORS['bg_dark'])
@@ -3787,16 +3923,12 @@ class PythonicGUI:
                 step = channel.get_step(step_index)
                 
                 if step.trigger:
-                    # Calculate effective probability: step_prob * channel_prob / 100
-                    # Both are 0-100, so combined prob = (step * channel) / 100
                     drum_channel = self.synth.channels[channel_id]
                     step_prob = step.probability  # Per-step probability (0-100)
-                    channel_prob = drum_channel.probability  # Per-channel "master" probability (0-100)
-                    effective_prob = (step_prob * channel_prob) // 100
                     
                     # Check probability (0-100, true random)
-                    if effective_prob < 100:
-                        if random.randint(1, 100) > effective_prob:
+                    if step_prob < 100:
+                        if random.randint(1, 100) > step_prob:
                             continue  # Skip this trigger
                     
                     # Calculate velocity based on accent

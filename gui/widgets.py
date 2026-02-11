@@ -81,7 +81,7 @@ class RotaryKnob(tk.Canvas):
     LOG_Q = 'q'                  # For filter Q (0.5-20)
     
     def __init__(self, parent, size=50, min_val=0, max_val=100, default=50,
-                 label="", unit="", logarithmic=False, command=None, **kwargs):
+                 label="", unit="", logarithmic=False, command=None, command_end=None, **kwargs):
         super().__init__(parent, width=size, height=size + 20,
                         bg='#3a3a4a', highlightthickness=0, **kwargs)
         
@@ -93,6 +93,7 @@ class RotaryKnob(tk.Canvas):
         self.unit = unit  # Unit string for display (Hz, dB, %, etc.)
         self.logarithmic = logarithmic  # Can be True, False, or a LOG_* type string
         self.command = command
+        self.command_end = command_end  # Called on mouse release after drag
         
         # Initialize value (convert default if logarithmic)
         self.value = default
@@ -259,6 +260,10 @@ class RotaryKnob(tk.Canvas):
         self.drag_start_x = event.x
         self.drag_start_value = self.value
         
+        # Capture pre-drag state for undo
+        if self.command_end:
+            self.command_end('start')
+        
         # Show hint window
         self._show_hint()
     
@@ -312,6 +317,7 @@ class RotaryKnob(tk.Canvas):
     
     def _on_release(self, event):
         """Stop dragging"""
+        was_dragging = self.dragging
         self.dragging = False
         # Hide hint window
         try:
@@ -319,6 +325,9 @@ class RotaryKnob(tk.Canvas):
             hint.hide()
         except:
             pass
+        # Notify end of interaction — commit undo snapshot
+        if was_dragging and self.command_end:
+            self.command_end('end')
     
     def _show_hint(self):
         """Show the hint window with parameter name and value"""
@@ -378,7 +387,7 @@ class VerticalSlider(tk.Canvas):
     """
     
     def __init__(self, parent, width=30, height=100, min_val=0, max_val=100,
-                 default=50, label="", unit="", logarithmic=False, command=None, **kwargs):
+                 default=50, label="", unit="", logarithmic=False, command=None, command_end=None, **kwargs):
         super().__init__(parent, width=width, height=height + 20,
                         bg='#3a3a4a', highlightthickness=0, **kwargs)
         
@@ -392,6 +401,7 @@ class VerticalSlider(tk.Canvas):
         self.unit = unit
         self.logarithmic = logarithmic  # Support logarithmic scaling
         self.command = command
+        self.command_end = command_end  # Called on mouse release after drag
         
         # Track dimensions
         self.track_x = width // 2
@@ -517,6 +527,9 @@ class VerticalSlider(tk.Canvas):
         self.dragging = True
         self.drag_start_y = event.y
         self.drag_start_value = self.value
+        # Capture pre-drag state for undo
+        if self.command_end:
+            self.command_end('start')
         self._show_hint()
     
     def _on_ctrl_click(self, event):
@@ -550,13 +563,17 @@ class VerticalSlider(tk.Canvas):
     
     def _on_release(self, event):
         """Handle release"""
+        was_dragging = self.dragging
         self.dragging = False
         try:
             hint = HintWindow.get_instance(self.winfo_toplevel())
             hint.hide()
         except:
             pass
-    
+        # Notify end of interaction — commit undo snapshot
+        if was_dragging and self.command_end:
+            self.command_end('end')
+
     def _show_hint(self):
         """Show hint window with current value"""
         try:
@@ -748,7 +765,7 @@ class WaveformSelector(tk.Canvas):
     """
     
     def __init__(self, parent, command=None, **kwargs):
-        super().__init__(parent, width=90, height=40,
+        super().__init__(parent, width=80, height=30,
                         bg='#3a3a4a', highlightthickness=0, **kwargs)
         
         self.selected = 0  # 0=sine, 1=triangle, 2=sawtooth
@@ -766,38 +783,38 @@ class WaveformSelector(tk.Canvas):
         icons = ['sine', 'triangle', 'sawtooth']
         
         for i, waveform in enumerate(icons):
-            x = 15 + i * 30
-            y = 20
+            x = 13 + i * 26
+            y = 15
             
             # Selection highlight
             if i == self.selected:
-                self.create_rectangle(x - 12, y - 15, x + 12, y + 15,
+                self.create_rectangle(x - 10, y - 12, x + 10, y + 12,
                                      fill='#5566aa', outline='')
             
             # Draw waveform icon
             if waveform == 'sine':
                 # Sine wave
                 points = []
-                for j in range(20):
-                    px = x - 8 + j * 0.8
-                    py = y - 8 * math.sin(j * math.pi / 10)
+                for j in range(16):
+                    px = x - 7 + j * 0.9
+                    py = y - 6 * math.sin(j * math.pi / 8)
                     points.extend([px, py])
                 self.create_line(points, fill='#aaccff', width=2, smooth=True)
                 
             elif waveform == 'triangle':
                 # Triangle wave
-                self.create_line(x - 8, y, x - 2, y - 10, x + 4, y + 10, x + 8, y,
+                self.create_line(x - 7, y, x - 2, y - 8, x + 3, y + 8, x + 7, y,
                                fill='#aaccff', width=2)
                 
             elif waveform == 'sawtooth':
                 # Sawtooth wave
-                self.create_line(x - 8, y + 8, x, y - 8, x, y + 8, x + 8, y - 8,
+                self.create_line(x - 7, y + 6, x, y - 6, x, y + 6, x + 7, y - 6,
                                fill='#aaccff', width=2)
     
     def _on_click(self, event):
         """Handle click"""
         # Determine which waveform was clicked
-        idx = (event.x - 3) // 30
+        idx = (event.x - 3) // 26
         idx = max(0, min(2, idx))
         
         self.selected = idx
@@ -822,7 +839,7 @@ class ModeSelector(tk.Canvas):
     """
     
     def __init__(self, parent, options=None, command=None, width=90, **kwargs):
-        super().__init__(parent, width=width, height=30,
+        super().__init__(parent, width=width, height=22,
                         bg='#3a3a4a', highlightthickness=0, **kwargs)
         
         self.options = options or ['A', 'B', 'C']
@@ -844,16 +861,16 @@ class ModeSelector(tk.Canvas):
             
             # Background
             if i == self.selected:
-                self.create_rectangle(x1 + 2, 2, x2 - 2, 28,
+                self.create_rectangle(x1 + 1, 1, x2 - 1, 20,
                                      fill='#5566aa', outline='#7788cc')
             else:
-                self.create_rectangle(x1 + 2, 2, x2 - 2, 28,
+                self.create_rectangle(x1 + 1, 1, x2 - 1, 20,
                                      fill='#4a4a5a', outline='#666688')
             
             # Label
-            self.create_text((x1 + x2) // 2, 15,
+            self.create_text((x1 + x2) // 2, 11,
                            text=opt, fill='#ccccee',
-                           font=('Segoe UI', 8))
+                           font=('Segoe UI', 7))
     
     def _on_click(self, event):
         """Handle click"""
@@ -956,13 +973,13 @@ class PatternEditor(tk.Canvas):
             all_channels_command: Callback for multi-channel operations (step_index, lane_type, value, muted_channels)
             length_change_callback: Callback when pattern length is changed (new_length)
         """
-        # Calculate dimensions - wider steps for better usability
-        step_width = 45  # Wider steps for better click targets
-        lane_height = 18  # Taller lanes for better visibility
+        # Calculate dimensions - compact steps for better fit
+        step_width = 32  # Compact steps
+        lane_height = 14  # Compact lanes
         num_lanes = 6  # triggers, accents, fills, substeps, length display, step numbers
         
-        width = num_steps * step_width + 50  # 50px for lane labels
-        height = num_lanes * lane_height + 15
+        width = num_steps * step_width + 40  # 40px for lane labels
+        height = num_lanes * lane_height + 10
         
         super().__init__(parent, width=width, height=height,
                         bg='#2a2a3a', highlightthickness=1,
@@ -1274,16 +1291,16 @@ class PatternEditor(tk.Canvas):
             y = 5 + i * self.lane_height + self.lane_height // 2
             # Highlight "trig" label in probability mode
             label_color = '#66ddaa' if (self.probability_mode and i == 0) else '#8888aa'
-            self.create_text(25, y, text=lane_name, fill=label_color,
-                           font=('Segoe UI', 8), anchor='center')
+            self.create_text(20, y, text=lane_name, fill=label_color,
+                           font=('Segoe UI', 6), anchor='center')
         
         # Draw length indicator lane label
         y = 5 + 4 * self.lane_height + self.lane_height // 2
-        self.create_text(25, y, text='len', fill='#8888aa',
-                       font=('Segoe UI', 8), anchor='center')
+        self.create_text(20, y, text='len', fill='#8888aa',
+                       font=('Segoe UI', 6), anchor='center')
         
         # Draw steps for each lane
-        x_start = 50
+        x_start = 40
         
         # Draw trigger lane (with probability visualization)
         self._draw_trigger_lane_with_prob()
@@ -1323,7 +1340,7 @@ class PatternEditor(tk.Canvas):
     def _draw_trigger_lane_with_prob(self):
         """Draw trigger lane with probability visualization"""
         lane_index = 0
-        x_start = 50
+        x_start = 40
         y_base = 5 + lane_index * self.lane_height
         
         for step in range(len(self.triggers)):
@@ -1369,7 +1386,7 @@ class PatternEditor(tk.Canvas):
     
     def _draw_lane(self, lane_index, data, color_on, color_off):
         """Draw a single lane of steps"""
-        x_start = 50
+        x_start = 40
         y_base = 5 + lane_index * self.lane_height
         
         for step, is_on in enumerate(data):
@@ -1416,7 +1433,7 @@ class PatternEditor(tk.Canvas):
     def _draw_length_lane(self):
         """Draw the pattern length indicator"""
         lane_index = 4
-        x_start = 50
+        x_start = 40
         y_base = 5 + lane_index * self.lane_height
         
         # Show steps 0 to pattern_length
@@ -1441,7 +1458,7 @@ class PatternEditor(tk.Canvas):
     def _draw_step_numbers(self):
         """Draw the step numbers row (1-16)"""
         lane_index = 5
-        x_start = 50
+        x_start = 40
         y_base = 5 + lane_index * self.lane_height
         
         for step in range(self.num_steps):
@@ -1449,7 +1466,7 @@ class PatternEditor(tk.Canvas):
             y = y_base + self.lane_height // 2
             step_num = step + 1
             self.create_text(x, y, text=str(step_num),
-                           fill='#8888aa', font=('Segoe UI', 7))
+                           fill='#8888aa', font=('Segoe UI', 6))
     
     def get_triggers(self):
         """Get current triggers"""
@@ -1474,7 +1491,7 @@ class PatternEditor(tk.Canvas):
     def _draw_substeps_lane(self):
         """Draw the substeps lane showing substep patterns"""
         lane_index = 3
-        x_start = 50
+        x_start = 40
         y_base = 5 + lane_index * self.lane_height
         
         for step in range(self.num_steps):
@@ -1546,11 +1563,11 @@ class MatrixEditor(tk.Canvas):
             num_steps: Number of pattern steps
             command: Callback when pattern changes (channel_id, step_index, value)
         """
-        step_width = 25
-        channel_height = 20
+        step_width = 20
+        channel_height = 16
         
-        width = num_steps * step_width + 40
-        height = num_channels * channel_height + 10
+        width = num_steps * step_width + 35
+        height = num_channels * channel_height + 8
         
         super().__init__(parent, width=width, height=height,
                         bg='#2a2a3a', highlightthickness=1,
@@ -1602,7 +1619,7 @@ class MatrixEditor(tk.Canvas):
     
     def _get_step_at_x(self, x):
         """Determine which step was clicked"""
-        relative_x = x - 40
+        relative_x = x - 35
         if relative_x < 0:
             return None
         step = int(relative_x / self.step_width)
@@ -1651,11 +1668,11 @@ class MatrixEditor(tk.Canvas):
         # Draw channel labels on left
         for ch in range(self.num_channels):
             y = 5 + ch * self.channel_height + self.channel_height // 2
-            self.create_text(15, y, text=f"ch{ch+1}", fill='#8888aa',
-                           font=('Segoe UI', 7), anchor='center')
+            self.create_text(14, y, text=f"ch{ch+1}", fill='#8888aa',
+                           font=('Segoe UI', 6), anchor='center')
         
         # Draw step numbers on top
-        x_start = 40
+        x_start = 35
         for step in range(self.num_steps):
             if (step + 1) % 4 == 1:  # Every 4 steps
                 x = x_start + step * self.step_width + self.step_width // 2

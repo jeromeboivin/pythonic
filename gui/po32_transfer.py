@@ -378,8 +378,9 @@ class PO32TransferDialog:
         self.dialog = tk.Toplevel(self.parent)
         self.dialog.title("PO-32 Tonic Transfer")
         self.dialog.configure(bg=self.COLORS['bg'])
-        self.dialog.geometry("420x600")
-        self.dialog.resizable(False, False)
+        self.dialog.geometry("420x550")
+        self.dialog.resizable(True, True)
+        self.dialog.minsize(380, 400)
         self.dialog.transient(self.parent)
         
         # Make modal

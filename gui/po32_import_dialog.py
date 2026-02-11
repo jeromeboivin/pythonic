@@ -85,8 +85,9 @@ class PO32ImportDialog:
         self.dialog = tk.Toplevel(parent)
         self.dialog.title("Import from PO-32")
         self.dialog.configure(bg=self.COLORS['bg_dark'])
-        self.dialog.geometry("720x700")
-        self.dialog.minsize(650, 580)
+        self.dialog.geometry("720x600")
+        self.dialog.minsize(600, 400)
+        self.dialog.resizable(True, True)
         self.dialog.transient(parent)
         self.dialog.grab_set()
         
@@ -94,8 +95,30 @@ class PO32ImportDialog:
     
     def _build_ui(self):
         """Build the import dialog UI."""
-        main = tk.Frame(self.dialog, bg=self.COLORS['bg_dark'])
-        main.pack(fill='both', expand=True, padx=10, pady=10)
+        # Scrollable container
+        outer = tk.Frame(self.dialog, bg=self.COLORS['bg_dark'])
+        outer.pack(fill='both', expand=True)
+        
+        canvas = tk.Canvas(outer, bg=self.COLORS['bg_dark'], highlightthickness=0)
+        vscroll = tk.Scrollbar(outer, orient='vertical', command=canvas.yview)
+        canvas.configure(yscrollcommand=vscroll.set)
+        vscroll.pack(side='right', fill='y')
+        canvas.pack(side='left', fill='both', expand=True)
+        
+        main = tk.Frame(canvas, bg=self.COLORS['bg_dark'])
+        canvas_win = canvas.create_window((0, 0), window=main, anchor='nw')
+        
+        def _on_frame_cfg(e):
+            canvas.configure(scrollregion=canvas.bbox('all'))
+        main.bind('<Configure>', _on_frame_cfg)
+        
+        def _on_canvas_cfg(e):
+            canvas.itemconfig(canvas_win, width=e.width)
+        canvas.bind('<Configure>', _on_canvas_cfg)
+        
+        def _on_mousewheel(e):
+            canvas.yview_scroll(int(-1 * (e.delta / 120)), 'units')
+        canvas.bind_all('<MouseWheel>', _on_mousewheel)
         
         # === Source section (top) ===
         source_frame = tk.LabelFrame(main, text="Source", font=('Segoe UI', 9),
