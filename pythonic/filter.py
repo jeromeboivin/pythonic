@@ -291,18 +291,18 @@ class EQFilter:
     def process(self, x_array: np.ndarray) -> np.ndarray:
         """Process array of samples through biquad (vectorized)"""
         if abs(self.gain_db) < 0.01:
-            return x_array.copy()
+            return x_array
         
-        # Use scipy.signal.lfilter for C-optimized filtering
-        b = np.array([self.b0, self.b1, self.b2], dtype=np.float64)
-        a = np.array([1.0, self.a1, self.a2], dtype=np.float64)
-        
-        # Reset state if coefficients changed
-        if self._last_b is None or self._last_a is None or \
-           not np.array_equal(b, self._last_b) or not np.array_equal(a, self._last_a):
+        # Use cached coefficient arrays to avoid allocation every call
+        if self._last_b is None or \
+           self._last_b[0] != self.b0 or self._last_b[1] != self.b1 or self._last_b[2] != self.b2 or \
+           self._last_a[1] != self.a1 or self._last_a[2] != self.a2:
+            self._last_b = np.array([self.b0, self.b1, self.b2], dtype=np.float64)
+            self._last_a = np.array([1.0, self.a1, self.a2], dtype=np.float64)
             self._zi = None
-            self._last_b = b.copy()
-            self._last_a = a.copy()
+        
+        b = self._last_b
+        a = self._last_a
         
         # Initialize state if needed
         if self._zi is None:

@@ -120,9 +120,25 @@ class PythonicPresetParser:
         if self.content[self.pos] == '}':
             self.pos += 1
             return {}
+        
+        # Peek ahead to determine if this is a block (key: value) or a list
         first_token_start = self.pos
-        while self.pos < len(self.content) and (self.content[self.pos].isalnum() or self.content[self.pos] in '_-'):
+        
+        if self.content[self.pos] == '"':
+            # Quoted token — skip the quoted string to peek at what follows
             self.pos += 1
+            while self.pos < len(self.content) and self.content[self.pos] != '"':
+                if self.content[self.pos] == '\\':
+                    self.pos += 2
+                else:
+                    self.pos += 1
+            if self.pos < len(self.content):
+                self.pos += 1  # skip closing quote
+        else:
+            # Unquoted token
+            while self.pos < len(self.content) and (self.content[self.pos].isalnum() or self.content[self.pos] in '_-'):
+                self.pos += 1
+        
         self._skip_whitespace()
         next_char = self.content[self.pos] if self.pos < len(self.content) else ''
         self.pos = saved_pos
@@ -152,6 +168,9 @@ class PythonicPresetParser:
 
     def _parse_key(self) -> str:
         self._skip_whitespace()
+        if self.pos < len(self.content) and self.content[self.pos] == '"':
+            # Quoted key (e.g., "1", "2", etc.)
+            return self._parse_string()
         start = self.pos
         while self.pos < len(self.content) and (self.content[self.pos].isalnum() or self.content[self.pos] in '_-'):
             self.pos += 1
@@ -317,33 +336,59 @@ class PythonicPresetParser:
         return result
 
     def _convert_drum_patch(self, patch: Dict) -> Dict:
+        # Handle Mix value: can be a float (first part of "X / Y"), a string "X / Y", or already numeric
+        mix_raw = patch.get('Mix', 50.0)
+        if isinstance(mix_raw, str) and '/' in mix_raw:
+            try:
+                mix_raw = float(mix_raw.split('/')[0].strip())
+            except ValueError:
+                mix_raw = 50.0
+        elif isinstance(mix_raw, str):
+            try:
+                mix_raw = float(mix_raw)
+            except ValueError:
+                mix_raw = 50.0
+        
         return {
             'name': patch.get('Name', 'Untitled'),
-            'osc_frequency': patch.get('OscFreq', 440.0),
+            'osc_frequency': self._to_float(patch.get('OscFreq', 440.0)),
             'osc_waveform': self.WAVEFORM_MAP.get(patch.get('OscWave', 'Sine'), 0),
-            'osc_attack': patch.get('OscAtk', 0.0),
-            'osc_decay': patch.get('OscDcy', 316.0),
+            'osc_attack': self._to_float(patch.get('OscAtk', 0.0)),
+            'osc_decay': self._to_float(patch.get('OscDcy', 316.0)),
             'pitch_mod_mode': self.PITCH_MOD_MAP.get(patch.get('ModMode', 'Decay'), 0),
-            'pitch_mod_amount': patch.get('ModAmt', 0.0),
-            'pitch_mod_rate': patch.get('ModRate', 100.0),
+            'pitch_mod_amount': self._to_float(patch.get('ModAmt', 0.0)),
+            'pitch_mod_rate': self._to_float(patch.get('ModRate', 100.0)),
             'noise_filter_mode': self.FILTER_MODE_MAP.get(patch.get('NFilMod', 'LP'), 0),
-            'noise_filter_freq': patch.get('NFilFrq', 20000.0),
-            'noise_filter_q': patch.get('NFilQ', 0.707),
+            'noise_filter_freq': self._to_float(patch.get('NFilFrq', 20000.0)),
+            'noise_filter_q': self._to_float(patch.get('NFilQ', 0.707)),
             'noise_stereo': patch.get('NStereo', False),
             'noise_envelope_mode': self.ENV_MODE_MAP.get(patch.get('NEnvMod', 'Exp'), 0),
-            'noise_attack': patch.get('NEnvAtk', 0.0),
-            'noise_decay': patch.get('NEnvDcy', 316.0),
-            'osc_noise_mix': patch.get('Mix', 50.0) / 100.0,
-            'distortion': patch.get('DistAmt', 0.0) / 100.0,
-            'eq_frequency': patch.get('EQFreq', 1000.0),
-            'eq_gain_db': patch.get('EQGain', 0.0),
-            'level_db': patch.get('Level', 0.0),
-            'pan': patch.get('Pan', 0.0),
+            'noise_attack': self._to_float(patch.get('NEnvAtk', 0.0)),
+            'noise_decay': self._to_float(patch.get('NEnvDcy', 316.0)),
+            'osc_noise_mix': float(mix_raw) / 100.0,
+            'distortion': self._to_float(patch.get('DistAmt', 0.0)) / 100.0,
+            'eq_frequency': self._to_float(patch.get('EQFreq', 1000.0)),
+            'eq_gain_db': self._to_float(patch.get('EQGain', 0.0)),
+            'level_db': self._to_float(patch.get('Level', 0.0)),
+            'pan': self._to_float(patch.get('Pan', 0.0)),
             'output_pair': patch.get('Output', 'A'),
-            'osc_vel_sensitivity': patch.get('OscVel', 0.0) / 100.0,
-            'noise_vel_sensitivity': patch.get('NVel', 0.0) / 100.0,
-            'mod_vel_sensitivity': patch.get('ModVel', 0.0) / 100.0,
+            'osc_vel_sensitivity': self._to_float(patch.get('OscVel', 0.0)) / 100.0,
+            'noise_vel_sensitivity': self._to_float(patch.get('NVel', 0.0)) / 100.0,
+            'mod_vel_sensitivity': self._to_float(patch.get('ModVel', 0.0)) / 100.0,
         }
+
+    @staticmethod
+    def _to_float(val, default=0.0) -> float:
+        """Safely convert a value to float, handling string representations."""
+        if isinstance(val, (int, float)):
+            return float(val)
+        if isinstance(val, str):
+            # Strip unit suffixes (Hz, ms, dB, sm, %, x, bpm)
+            import re
+            match = re.match(r'^([+-]?\d*\.?\d+)', val.strip())
+            if match:
+                return float(match.group(1))
+        return float(default)
 
     def _default_channel(self) -> Dict:
         return {

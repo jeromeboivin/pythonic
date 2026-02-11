@@ -232,10 +232,13 @@ class DrumChannel:
         smoothed_distortion = self._smoothed_distortion.get_next_value()
         smoothed_mix = self._smoothed_mix.get_next_value()
         
-        # Apply smoothed values to components
-        self.oscillator.set_frequency(smoothed_osc_freq)
-        self.noise_gen.set_filter_frequency(smoothed_noise_freq)
-        self.noise_gen.set_filter_q(smoothed_noise_q)
+        # Apply smoothed values to components only when changed
+        # (avoids expensive filter coefficient recomputation every block)
+        if not self._smoothed_osc_freq.is_settled():
+            self.oscillator.set_frequency(smoothed_osc_freq)
+        if not self._smoothed_noise_freq.is_settled() or not self._smoothed_noise_q.is_settled():
+            self.noise_gen.set_filter_frequency(smoothed_noise_freq)
+            self.noise_gen.set_filter_q(smoothed_noise_q)
         
         # Apply vintage pitch drift if enabled
         if self.vintage_amount > 0.001:
@@ -292,10 +295,10 @@ class DrumChannel:
         
         # Apply EQ with smoothed frequency (process left and right separately)
         if abs(self.eq_gain_db) > 0.1:
-            self.eq_filter_l.set_frequency(smoothed_eq_freq)
-            self.eq_filter_l.set_gain(self.eq_gain_db)
-            self.eq_filter_r.set_frequency(smoothed_eq_freq)
-            self.eq_filter_r.set_gain(self.eq_gain_db)
+            # Only update EQ params when smoothed frequency is still changing
+            if not self._smoothed_eq_freq.is_settled():
+                self.eq_filter_l.set_frequency(smoothed_eq_freq)
+                self.eq_filter_r.set_frequency(smoothed_eq_freq)
             
             # Process left channel
             mixed[:, 0] = self.eq_filter_l.process(mixed[:, 0])

@@ -82,13 +82,21 @@ class NoiseGenerator:
         # Q=0.5: gentle rolloff, Q=15: moderate resonance, Q=60: high resonance
         effective_q = max(0.5, self.filter_q)
         
-        self.filter_left.set_frequency(self.filter_frequency)
-        self.filter_left.set_q(effective_q)
-        self.filter_left.set_mode(filter_mode)
+        # Batch-update filter parameters to avoid redundant coefficient recomputations.
+        # Set internal state first, then update coefficients once via set_mode (which triggers
+        # _update_coefficients). set_frequency and set_q only mark dirty + recompute,
+        # so we set them directly and let a single _update_coefficients call handle it.
+        self.filter_left.frequency = np.clip(self.filter_frequency, 20.0, self.filter_left.sr * 0.49)
+        self.filter_left.q = effective_q
+        self.filter_left.mode = filter_mode
+        self.filter_left._coeffs_dirty = True
+        self.filter_left._update_coefficients()
         
-        self.filter_right.set_frequency(self.filter_frequency)
-        self.filter_right.set_q(effective_q)
-        self.filter_right.set_mode(filter_mode)
+        self.filter_right.frequency = np.clip(self.filter_frequency, 20.0, self.filter_right.sr * 0.49)
+        self.filter_right.q = effective_q
+        self.filter_right.mode = filter_mode
+        self.filter_right._coeffs_dirty = True
+        self.filter_right._update_coefficients()
     
     def _update_envelope(self):
         """Update envelope settings"""
@@ -205,12 +213,13 @@ class NoiseGenerator:
         effective_q = max(0.5, self.filter_q)
         
         # Normalization to maintain consistent output level
+        # Clamped to prevent extreme amplification with high Q values
         if self.filter_mode == NoiseFilterMode.LOW_PASS:
-            norm_factor = np.sqrt(effective_q)
+            norm_factor = min(np.sqrt(effective_q), 10.0)
         elif self.filter_mode == NoiseFilterMode.HIGH_PASS:
-            norm_factor = 0.5 * np.sqrt(effective_q)
+            norm_factor = min(0.5 * np.sqrt(effective_q), 5.0)
         else:  # BAND_PASS
-            norm_factor = 0.7 * effective_q
+            norm_factor = min(0.7 * np.sqrt(effective_q), 10.0)
         
         # Apply normalization in-place
         filtered_left *= norm_factor
@@ -222,6 +231,7 @@ class NoiseGenerator:
             self.is_active = self.mod_envelope.is_active
         elif self.envelope_mode == NoiseEnvelopeMode.LINEAR:
             env = self._linear_envelope(num_samples)
+            self.is_active = self.envelope.is_active
         else:  # EXPONENTIAL
             env = self.envelope.process(num_samples)
             self.is_active = self.envelope.is_active
