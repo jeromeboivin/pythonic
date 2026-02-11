@@ -617,6 +617,9 @@ class PresetManager:
         # Set name
         channel.name = data.get('name', 'Untitled')
         
+        # Pitch offset (semitones) — not present in PO-32 or mtpreset, default 0
+        channel.pitch_semitones = data.get('pitch_semitones', 0.0)
+        
         # Oscillator parameters
         channel.oscillator.frequency = data.get('osc_frequency', 440.0)
         

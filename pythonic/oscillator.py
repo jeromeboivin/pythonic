@@ -51,6 +51,10 @@ class Oscillator:
         # Pitch drift (from vintage analog simulation)
         self.pitch_drift_multiplier = 1.0  # Frequency multiplier for analog drift
         
+        # Modulation time scaling (for pitch-dependent envelope speed)
+        # >1.0 = faster modulation (higher pitch), <1.0 = slower (lower pitch)
+        self.mod_time_scale = 1.0
+        
         # State
         self.phase = 0.0
         self.mod_time = 0.0  # Time since trigger (seconds)
@@ -142,7 +146,8 @@ class Oscillator:
             numpy array of audio samples
         """
         # Time array for this block - start from 0 for first sample
-        time_array = self.mod_time + np.arange(num_samples, dtype=np.float32) / self.sr
+        # mod_time_scale accelerates/decelerates modulation for pitch shifting
+        time_array = self.mod_time + np.arange(num_samples, dtype=np.float32) * self.mod_time_scale / self.sr
         
         # Calculate instantaneous frequency based on modulation mode
         freq_array = self._calculate_frequency(time_array, num_samples)
@@ -167,7 +172,7 @@ class Oscillator:
         
         # Update state for next block
         self.phase = np.mod(self.phase + cumulative[-1], 2.0 * np.pi) if num_samples > 0 else self.phase
-        self.mod_time += num_samples / self.sr
+        self.mod_time += num_samples * self.mod_time_scale / self.sr
         
         # Generate waveform
         output = self._generate_waveform(phases)

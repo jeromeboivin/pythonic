@@ -717,6 +717,9 @@ def normalized_to_synth_params(norm: Dict[str, float]) -> Dict[str, Any]:
     params['noise_vel_sensitivity'] = norm.get('NVel', 0.0)
     params['mod_vel_sensitivity'] = norm.get('ModVel', 0.0)
 
+    # PO-32 protocol has no pitch offset — reset to zero on import
+    params['pitch_semitones'] = 0.0
+
     return params
 
 

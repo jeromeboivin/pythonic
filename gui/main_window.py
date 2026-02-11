@@ -768,6 +768,16 @@ class PythonicGUI:
                 fg=self.COLORS['text_dim'],
                 bg=self.COLORS['bg_medium']).pack(side='left')
         
+        # Pitch (tune) offset in semitones
+        pitch_frame = tk.Frame(section, bg=self.COLORS['bg_medium'])
+        pitch_frame.pack(pady=1)
+        
+        self.pitch_knob = RotaryKnob(pitch_frame, size=35,
+                                     min_val=-24, max_val=24, default=0,
+                                     label="pitch", unit="st",
+                                     command=self._on_pitch_change)
+        self.pitch_knob.pack(side='left', padx=2)
+        
         # Pitch modulation mode
         pitch_mod_frame = tk.Frame(section, bg=self.COLORS['bg_medium'])
         pitch_mod_frame.pack(pady=1)
@@ -1666,6 +1676,17 @@ class PythonicGUI:
             channel = self.synth.get_selected_channel()
             channel.set_osc_waveform(WaveformType(value))
     
+    def _on_pitch_change(self, value):
+        """Handle pitch (tune) offset change in semitones"""
+        if not self.updating_ui:
+            if self.edit_all_mode:
+                for ch in self.synth.channels:
+                    if not ch.muted:
+                        ch.set_pitch_semitones(value)
+            else:
+                channel = self.synth.get_selected_channel()
+                channel.set_pitch_semitones(value)
+    
     def _on_osc_freq_change(self, value):
         """Handle oscillator frequency change"""
         if not self.updating_ui:
@@ -2354,6 +2375,7 @@ class PythonicGUI:
         # Oscillator section
         self.waveform_selector.set_value(channel.oscillator.waveform.value)
         self.osc_freq_knob.set_value(channel.oscillator.frequency)
+        self.pitch_knob.set_value(channel.pitch_semitones)
         self.pitch_mod_mode.set_value(channel.oscillator.pitch_mod_mode.value)
         self.pitch_amount_knob.set_value(channel.oscillator.pitch_mod_amount)
         self.pitch_rate_knob.set_value(channel.oscillator.pitch_mod_rate)
@@ -2643,8 +2665,8 @@ class PythonicGUI:
         self.midi_manager.set_clock_sync_enabled(clock_sync_enabled)
         self.midi_manager.set_cc_mappings(cc_mappings)
         
-        # Load pitch bend target (default to osc_freq)
-        pitchbend_target = self.preferences_manager.get('midi_pitchbend_target', 'osc_freq')
+        # Load pitch bend target (default to pitch knob)
+        pitchbend_target = self.preferences_manager.get('midi_pitchbend_target', 'pitch')
         self.midi_manager.set_pitchbend_target(pitchbend_target)
         
         # Set up callbacks
@@ -3029,7 +3051,7 @@ class PythonicGUI:
         widgets = [
             self.eq_freq_knob, self.distort_knob, self.eq_gain_knob,
             self.level_knob, self.pan_knob,
-            self.osc_freq_knob, self.pitch_amount_knob, self.pitch_rate_knob,
+            self.osc_freq_knob, self.pitch_knob, self.pitch_amount_knob, self.pitch_rate_knob,
             self.osc_attack_knob, self.osc_decay_knob,
             self.noise_freq_knob, self.noise_q_knob,
             self.noise_attack_slider, self.noise_decay_slider,
@@ -3064,6 +3086,7 @@ class PythonicGUI:
         
         # Oscillator section
         self._register_cc_parameter('osc_freq', self.osc_freq_knob, 20, 2000)
+        self._register_cc_parameter('pitch', self.pitch_knob, -24, 24)
         self._register_cc_parameter('pitch_amount', self.pitch_amount_knob, 0, 96)
         self._register_cc_parameter('pitch_rate', self.pitch_rate_knob, 0, 500)
         self._register_cc_parameter('osc_attack', self.osc_attack_knob, 0, 1000)

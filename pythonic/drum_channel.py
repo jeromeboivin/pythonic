@@ -119,6 +119,9 @@ class DrumChannel:
         self.noise_vel_sensitivity = 0.0
         self.mod_vel_sensitivity = 0.0
         
+        # Pitch offset in semitones (-24 to +24, applied to oscillator frequency)
+        self.pitch_semitones = 0.0
+        
         # Probability (0-100, chance of triggering during pattern playback)
         self.probability = 100
         
@@ -234,11 +237,26 @@ class DrumChannel:
         
         # Apply smoothed values to components only when changed
         # (avoids expensive filter coefficient recomputation every block)
-        if not self._smoothed_osc_freq.is_settled():
-            self.oscillator.set_frequency(smoothed_osc_freq)
-        if not self._smoothed_noise_freq.is_settled() or not self._smoothed_noise_q.is_settled():
-            self.noise_gen.set_filter_frequency(smoothed_noise_freq)
+        # Apply pitch offset (semitones) as a frequency multiplier
+        # Shifts both oscillator and noise filter frequency so the entire
+        # drum character moves (important for noise-heavy sounds like snares)
+        if self.pitch_semitones != 0.0:
+            pitch_ratio = 2.0 ** (self.pitch_semitones / 12.0)
+            effective_osc_freq = smoothed_osc_freq * pitch_ratio
+            effective_noise_freq = np.clip(smoothed_noise_freq * pitch_ratio, 20.0, 20000.0)
+        else:
+            pitch_ratio = 1.0
+            effective_osc_freq = smoothed_osc_freq
+            effective_noise_freq = smoothed_noise_freq
+        if not self._smoothed_osc_freq.is_settled() or pitch_ratio != 1.0:
+            self.oscillator.set_frequency(effective_osc_freq)
+        if not self._smoothed_noise_freq.is_settled() or not self._smoothed_noise_q.is_settled() or pitch_ratio != 1.0:
+            self.noise_gen.set_filter_frequency(effective_noise_freq)
             self.noise_gen.set_filter_q(smoothed_noise_q)
+        
+        # Scale pitch modulation time with pitch ratio so higher-pitched
+        # drums have faster pitch sweeps (natural drum behavior)
+        self.oscillator.mod_time_scale = pitch_ratio
         
         # Apply vintage pitch drift if enabled
         if self.vintage_amount > 0.001:
@@ -467,6 +485,14 @@ class DrumChannel:
         return self._smoothing_ms
     
     # Parameter setters for GUI binding
+    def set_pitch_semitones(self, semitones: float):
+        """Set pitch offset in semitones (-24 to +24)
+        
+        Applies a musical pitch shift to the oscillator frequency.
+        Does not affect the noise generator.
+        """
+        self.pitch_semitones = np.clip(semitones, -24.0, 24.0)
+    
     def set_osc_frequency(self, freq: float):
         """Set oscillator frequency (smoothed)"""
         self._smoothed_osc_freq.set_target(freq)
@@ -590,6 +616,7 @@ class DrumChannel:
         """Get all parameters as a dictionary"""
         return {
             'name': self.name,
+            'pitch_semitones': self.pitch_semitones,
             'osc_frequency': self.oscillator.frequency,
             'osc_waveform': self.oscillator.waveform.value,
             'pitch_mod_mode': self.oscillator.pitch_mod_mode.value,
@@ -634,6 +661,8 @@ class DrumChannel:
         """
         if 'name' in params:
             self.name = params['name']
+        if 'pitch_semitones' in params:
+            self.set_pitch_semitones(params['pitch_semitones'])
         if 'osc_frequency' in params:
             if immediate:
                 self.set_osc_frequency_immediate(params['osc_frequency'])
