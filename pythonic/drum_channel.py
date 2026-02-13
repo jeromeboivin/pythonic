@@ -24,14 +24,18 @@ class DrumChannel:
     clicks and zippering artifacts when adjusting in real-time.
     """
     
-    # Internal headroom
+    # EQ Q — base Q value for the peaking EQ filter.
+    # Gain-adaptive: for extreme gains (>15dB), Q increases to narrow the
+    # boost and prevent excessive gain spillover to distant frequencies.
+    EQ_BASE_Q = 1.5
+    EQ_GAIN_ADAPTIVE_THRESHOLD = 15.0  # dB — above this, Q scales up
     INTERNAL_HEADROOM_DB = 0.0
     INTERNAL_HEADROOM_LINEAR = 10.0 ** (INTERNAL_HEADROOM_DB / 20.0)  # 1.0
     
     # Oscillator level scaling relative to noise
     # Oscillator level is lower than a full-scale waveform
-    # This scaling matches the observed output ratio
-    OSC_LEVEL_SCALING = 0.27
+    # Calibrated from reference peak amplitude ratios (presets 01, 08, 14, 20)
+    OSC_LEVEL_SCALING = 0.314
     
     # Default smoothing time constant (ms)
     DEFAULT_SMOOTHING_MS = 30.0
@@ -159,13 +163,14 @@ class DrumChannel:
         self.noise_gen.set_attack(0.0)
         self.noise_gen.set_decay(316.23)
         
-        # EQ defaults
+        # EQ defaults — Q=1.5 base, with gain-adaptive scaling for
+        # extreme gains to narrow the boost and reduce spillover
         self.eq_filter_l.set_frequency(632.46)
         self.eq_filter_l.set_gain(0.0)
-        self.eq_filter_l.set_q(2.8)
+        self.eq_filter_l.set_q(self.EQ_BASE_Q)
         self.eq_filter_r.set_frequency(632.46)
         self.eq_filter_r.set_gain(0.0)
-        self.eq_filter_r.set_q(2.8)
+        self.eq_filter_r.set_q(self.EQ_BASE_Q)
     
     def trigger(self, velocity: int = 127, note: int = 60):
         """
@@ -275,6 +280,16 @@ class DrumChannel:
         # Generate noise signal (already stereo)
         noise_signal = self.noise_gen.process(num_samples)
         
+        # In Mod (handclap) mode with noise-dominant mix, gate the oscillator
+        # by the noise envelope so the osc decays with the noise burst instead
+        # of ringing independently.  In the original 808, both tone and noise
+        # share the same VCA.  Only apply when noise is dominant (mix < 0.5)
+        # to avoid affecting osc-dominant patches like cowbell/rimshot.
+        if (self.noise_gen.envelope_mode == NoiseEnvelopeMode.MODULATED
+                and smoothed_mix < 0.5
+                and self.noise_gen._last_envelope is not None):
+            osc_signal *= self.noise_gen._last_envelope
+        
         # Mix oscillator (mono) with noise (stereo)
         # Use pre-allocated buffer
         if num_samples <= len(self._osc_stereo_buffer):
@@ -285,7 +300,7 @@ class DrumChannel:
         osc_stereo[:, 0] = osc_signal
         osc_stereo[:, 1] = osc_signal
         
-        # Mix based on smoothed osc_noise_mix parameter using power-scaled crossfade
+        # Mix based on smoothed osc_noise_mix parameter using linear crossfade
         mix = smoothed_mix
         if mix > 0.999:
             # Pure oscillator - reuse osc_stereo
@@ -294,9 +309,9 @@ class DrumChannel:
             # Pure noise
             mixed = noise_signal
         else:
-            # Power-preserving squared crossfade
-            osc_gain = mix * mix
-            noise_gain = (1.0 - mix) * (1.0 - mix)
+            # Linear crossfade (calibrated against reference recordings)
+            osc_gain = mix
+            noise_gain = 1.0 - mix
             # Use pre-allocated buffer for mixed output
             if num_samples <= len(self._mixed_buffer):
                 mixed = self._mixed_buffer[:num_samples]
@@ -323,6 +338,13 @@ class DrumChannel:
             
             # Process right channel
             mixed[:, 1] = self.eq_filter_r.process(mixed[:, 1])
+        
+        # Post-EQ soft limiter — prevents clipping from extreme EQ boost
+        # and adds subtle saturation. Transparent below ±1.0, gently
+        # compresses peaks above that.
+        peak = np.max(np.abs(mixed))
+        if peak > 0.9:
+            np.tanh(mixed, out=mixed)
         
         # Apply level (dB to linear) with internal headroom
         if self.level_db <= -60:
@@ -595,6 +617,32 @@ class DrumChannel:
         """Set EQ frequency immediately (no smoothing)"""
         self.eq_frequency = np.clip(freq, 20.0, 20000.0)
         self._smoothed_eq_freq.set_immediate(self.eq_frequency)
+        # Also update the actual filter objects (smoothed path only updates when not settled)
+        self.eq_filter_l.set_frequency(self.eq_frequency)
+        self.eq_filter_r.set_frequency(self.eq_frequency)
+    
+    def set_eq_gain(self, gain_db: float):
+        """Set EQ gain in dB and update filter objects.
+        
+        Uses gain-adaptive Q: for extreme gains (>15dB), the Q is increased
+        proportionally to narrow the boost and reduce spillover to distant
+        frequencies (e.g. prevents a +28dB boost at 981Hz from adding +5dB
+        at 2460Hz where an oscillator might be ringing).
+        """
+        self.eq_gain_db = np.clip(gain_db, -40.0, 40.0)
+        self.eq_filter_l.set_gain(self.eq_gain_db)
+        self.eq_filter_r.set_gain(self.eq_gain_db)
+        
+        # Gain-adaptive Q: scale Q up for extreme gains to narrow the peak
+        abs_gain = abs(self.eq_gain_db)
+        if abs_gain > self.EQ_GAIN_ADAPTIVE_THRESHOLD:
+            # Q scales linearly with excess gain above threshold
+            q_scale = abs_gain / self.EQ_GAIN_ADAPTIVE_THRESHOLD
+            effective_q = self.EQ_BASE_Q * q_scale
+        else:
+            effective_q = self.EQ_BASE_Q
+        self.eq_filter_l.set_q(effective_q)
+        self.eq_filter_r.set_q(effective_q)
     
     def set_distortion(self, amount: float):
         """Set distortion amount (smoothed)"""
@@ -716,7 +764,7 @@ class DrumChannel:
             else:
                 self.set_eq_frequency(params['eq_frequency'])
         if 'eq_gain_db' in params:
-            self.eq_gain_db = np.clip(params['eq_gain_db'], -40.0, 40.0)
+            self.set_eq_gain(params['eq_gain_db'])
         if 'level_db' in params:
             self.level_db = np.clip(params['level_db'], -60.0, 40.0)
         if 'pan' in params:

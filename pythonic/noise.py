@@ -21,6 +21,16 @@ class NoiseEnvelopeMode(Enum):
     MODULATED = 2    # Handclap effect
 
 
+# Module-level normalization constants (tuned via grid search)
+NOISE_LP_MULT = 0.50
+NOISE_BP_MULT = 0.55
+NOISE_HP_MULT = 0.25
+NOISE_LP_Q_POWER = 0.25   # LP Q exponent
+NOISE_BP_Q_POWER = 0.30   # BP Q exponent
+NOISE_HP_Q_POWER = 0.10   # HP Q exponent (nearly constant — HP amplitude barely varies with Q)
+NOISE_CLIP_SIGMA = 2.5    # Clip white noise to ±N sigma (models analog DAC headroom)
+
+
 class NoiseGenerator:
     """
     Stereo noise generator with multi-mode filter and envelope
@@ -53,6 +63,9 @@ class NoiseGenerator:
         # State
         self.is_active = False
         self.velocity_gain = 1.0
+        
+        # Store last envelope for external use (e.g. osc gating in handclap mode)
+        self._last_envelope = None
         
         # Random state for reproducible stereo decorrelation
         # Use the new Generator interface which supports out= parameter
@@ -183,6 +196,8 @@ class NoiseGenerator:
             Stereo output array [num_samples, 2]
         """
         if not self.is_active:
+            # Store zero envelope so osc gating silences correctly
+            self._last_envelope = np.zeros(num_samples, dtype=np.float32)
             if num_samples <= len(self._output_buffer):
                 result = self._output_buffer[:num_samples]
                 result.fill(0)
@@ -205,6 +220,14 @@ class NoiseGenerator:
         else:
             noise_right = noise_left
         
+        # Clip extreme peaks to model analog DAC headroom
+        # Reference hardware has crest factor ~2.5 on pure noise,
+        # much lower than Gaussian's theoretical ~4-5
+        if NOISE_CLIP_SIGMA > 0:
+            np.clip(noise_left, -NOISE_CLIP_SIGMA, NOISE_CLIP_SIGMA, out=noise_left)
+            if self.stereo:
+                np.clip(noise_right, -NOISE_CLIP_SIGMA, NOISE_CLIP_SIGMA, out=noise_right)
+        
         # Apply filter
         filtered_left = self.filter_left.process(noise_left)
         filtered_right = self.filter_right.process(noise_right)
@@ -213,13 +236,14 @@ class NoiseGenerator:
         effective_q = max(0.5, self.filter_q)
         
         # Normalization to maintain consistent output level
-        # Clamped to prevent extreme amplification with high Q values
+        # Calibrated via grid search against reference recordings
+        # Each filter mode has its own Q exponent (HP barely varies with Q)
         if self.filter_mode == NoiseFilterMode.LOW_PASS:
-            norm_factor = min(np.sqrt(effective_q), 10.0)
+            norm_factor = min(NOISE_LP_MULT * (effective_q ** NOISE_LP_Q_POWER), 10.0)
         elif self.filter_mode == NoiseFilterMode.HIGH_PASS:
-            norm_factor = min(0.5 * np.sqrt(effective_q), 5.0)
+            norm_factor = min(NOISE_HP_MULT * (effective_q ** NOISE_HP_Q_POWER), 5.0)
         else:  # BAND_PASS
-            norm_factor = min(0.7 * np.sqrt(effective_q), 10.0)
+            norm_factor = min(NOISE_BP_MULT * (effective_q ** NOISE_BP_Q_POWER), 10.0)
         
         # Apply normalization in-place
         filtered_left *= norm_factor
@@ -235,6 +259,9 @@ class NoiseGenerator:
         else:  # EXPONENTIAL
             env = self.envelope.process(num_samples)
             self.is_active = self.envelope.is_active
+        
+        # Store envelope for external access (used by drum_channel for osc gating)
+        self._last_envelope = env.copy()
         
         # Apply envelope and velocity - use pre-allocated buffer
         if num_samples <= len(self._output_buffer):
