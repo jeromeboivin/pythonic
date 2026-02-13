@@ -50,7 +50,7 @@ class DrumChannel:
         # Components
         self.oscillator = Oscillator(sample_rate)
         self.noise_gen = NoiseGenerator(sample_rate)
-        self.osc_envelope = Envelope(sample_rate)
+        self.osc_envelope = Envelope(sample_rate, attack_shape='exponential')
         self.eq_filter_l = EQFilter(sample_rate)
         self.eq_filter_r = EQFilter(sample_rate)
         self.vintage = VintageProcessor(sample_rate)

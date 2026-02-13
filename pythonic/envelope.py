@@ -68,10 +68,10 @@ class Envelope:
         # Exponential decay coefficient
         # Using time constant: level = exp(-K * t / decay_samples)
         # 
-        # K = 3.8 calibrated from reference -20dB timing analysis:
-        # At decay_ms, level = exp(-3.8) = 0.022 = -33dB
-        # This matches measured decay curves from reference recordings.
-        K = 7.0
+        # K = 3*ln(10) ≈ 6.908:
+        # env(t) = 0.001^(t/decayTime) = exp(-3*ln(10) * t/decayTime)
+        # At t=decayTime: level = 0.001 (-60 dB)
+        K = 3.0 * np.log(10.0)  # 6.9078
         
         self._decay_coefficient = np.exp(-K / self._decay_samples)
     
