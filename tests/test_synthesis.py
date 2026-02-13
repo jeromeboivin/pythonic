@@ -729,14 +729,14 @@ class TestVelocitySensitivity:
             f"At vel=127, osc gain should be 1.0, got {ch.oscillator.velocity_gain}"
     
     def test_osc_velocity_sensitivity_at_half_velocity(self):
-        """At half velocity with 100% sensitivity, osc gain should be reduced"""
+        """At half velocity with 100% sensitivity"""
         ch = DrumChannel(0, SAMPLE_RATE)
         ch.osc_vel_sensitivity = 1.0  # 100%
         ch.trigger(velocity=64)
         
-        # With power curve (64/127)^5 ≈ 0.0325
-        expected = (64/127) ** 5.0
-        assert abs(ch.oscillator.velocity_gain - expected) < 0.01, \
+        # invVel=(127-64)/63=1.0, x=max(1-1*1,0)=0, gain=0
+        expected = 0.0
+        assert abs(ch.oscillator.velocity_gain - expected) < 0.001, \
             f"At vel=64 with 100% sens, osc gain should be ~{expected:.4f}, got {ch.oscillator.velocity_gain}"
     
     def test_noise_velocity_sensitivity_at_full_velocity(self):
@@ -749,13 +749,14 @@ class TestVelocitySensitivity:
             f"At vel=127, noise gain should be 1.0, got {ch.noise_gen.velocity_gain}"
     
     def test_noise_velocity_sensitivity_at_half_velocity(self):
-        """At half velocity with 100% sensitivity, noise gain should be reduced"""
+        """At half velocity with 100% sensitivity"""
         ch = DrumChannel(0, SAMPLE_RATE)
         ch.noise_vel_sensitivity = 1.0  # 100%
         ch.trigger(velocity=64)
         
-        expected = (64/127) ** 5.0
-        assert abs(ch.noise_gen.velocity_gain - expected) < 0.01, \
+        # invVel=1.0, x=max(1-1*1,0)=0, gain=0
+        expected = 0.0
+        assert abs(ch.noise_gen.velocity_gain - expected) < 0.001, \
             f"At vel=64 with 100% sens, noise gain should be ~{expected:.4f}, got {ch.noise_gen.velocity_gain}"
     
     def test_mod_velocity_sensitivity_at_full_velocity(self):
@@ -768,13 +769,14 @@ class TestVelocitySensitivity:
             f"At vel=127, mod scale should be 1.0, got {ch.oscillator.velocity_mod_scale}"
     
     def test_mod_velocity_sensitivity_at_half_velocity(self):
-        """At half velocity with 100% sensitivity, mod scale should be reduced"""
+        """At half velocity with 100% sensitivity"""
         ch = DrumChannel(0, SAMPLE_RATE)
         ch.mod_vel_sensitivity = 1.0  # 100%
         ch.trigger(velocity=64)
         
-        expected = (64/127) ** 5.0
-        assert abs(ch.oscillator.velocity_mod_scale - expected) < 0.01, \
+        # invVel=1.0, x=max(1-1*1,0)=0, gain=0
+        expected = 0.0
+        assert abs(ch.oscillator.velocity_mod_scale - expected) < 0.001, \
             f"At vel=64 with 100% sens, mod scale should be ~{expected:.4f}, got {ch.oscillator.velocity_mod_scale}"
     
     def test_mod_velocity_affects_pitch_modulation(self):
@@ -822,8 +824,8 @@ class TestVelocitySensitivity:
         ch.osc_vel_sensitivity = 2.0  # 200%
         ch.trigger(velocity=64)
         
-        # With 200% sensitivity: (64/127)^(2*5) = (64/127)^10 ≈ 0.001
-        expected = (64/127) ** 10.0
+        # invVel=1.0, x=max(1-1*2,0)=0, gain=0
+        expected = 0.0
         assert abs(ch.oscillator.velocity_gain - expected) < 0.001, \
             f"At vel=64 with 200% sens, osc gain should be ~{expected:.6f}, got {ch.oscillator.velocity_gain}"
 

@@ -277,9 +277,46 @@ class NoiseGenerator:
         return output
     
     def _linear_envelope(self, num_samples: int) -> np.ndarray:
-        """Generate linear envelope"""
-        env = self.envelope.process(num_samples)
+        """Generate linear envelope.
         
-        # Convert exponential to linear by taking square root
-        # This approximates a linear decay
-        return np.sqrt(np.maximum(env, 0.0))
+        Linear mode applies 2/3 time scaling to both attack and decay,
+        uses true linear ramps, and hard gates to zero after decay.
+        """
+        env = self.envelope
+        
+        if not env.is_active:
+            return np.zeros(num_samples, dtype=np.float32)
+        
+        # Linear mode scales attack and decay times by 2/3
+        attack_samples = max(0, int(self.attack_ms * 2.0 / 3.0 * self.sr / 1000.0))
+        decay_samples = max(1, int(self.decay_ms * 2.0 / 3.0 * self.sr / 1000.0))
+        total_samples = attack_samples + decay_samples
+        
+        start_pos = env.sample_index
+        output = np.zeros(num_samples, dtype=np.float32)
+        sample_positions = np.arange(num_samples, dtype=np.float32) + start_pos
+        
+        if attack_samples > 0:
+            # Linear attack ramp: 0 to 1
+            attack_mask = sample_positions < attack_samples
+            if np.any(attack_mask):
+                output[attack_mask] = sample_positions[attack_mask] / attack_samples
+        
+        # Linear decay ramp: 1 to 0
+        decay_start = float(attack_samples)
+        decay_end = float(total_samples)
+        decay_mask = (sample_positions >= decay_start) & (sample_positions < decay_end)
+        if np.any(decay_mask):
+            decay_positions = sample_positions[decay_mask] - decay_start
+            output[decay_mask] = 1.0 - decay_positions / decay_samples
+        
+        # After decay: hard gate to 0 (already zeros)
+        
+        # Update envelope state
+        env.sample_index = start_pos + num_samples
+        env.current_level = float(output[-1]) if num_samples > 0 else 0.0
+        if start_pos + num_samples >= total_samples:
+            env.is_active = False
+            env.current_level = 0.0
+        
+        return output

@@ -172,6 +172,27 @@ class DrumChannel:
         self.eq_filter_r.set_gain(0.0)
         self.eq_filter_r.set_q(self.EQ_BASE_Q)
     
+    @staticmethod
+    def _velocity_to_gain(velocity: int, sensitivity: float) -> float:
+        """Velocity-to-gain conversion.
+        
+        Uses compound linear + dB curve with -37dB maximum attenuation.
+        
+        Args:
+            velocity: MIDI velocity (0-127)
+            sensitivity: Velocity sensitivity (0.0-2.0, where 1.0 = 100%)
+        
+        Returns:
+            Gain factor (0.0 to 1.0)
+        """
+        if sensitivity <= 0:
+            return 1.0
+        inv_velocity = (127.0 - velocity) / 63.0
+        x = max(1.0 - inv_velocity * sensitivity, 0.0)
+        if x <= 0:
+            return 0.0
+        return x * (10.0 ** ((37.0 * x - 37.0) / 20.0))
+    
     def trigger(self, velocity: int = 127, note: int = 60):
         """
         Trigger the drum channel
@@ -183,30 +204,14 @@ class DrumChannel:
         self.is_active = True
         self.current_velocity = velocity / 127.0
         
-        # Calculate velocity-modified gains
-        vel_factor = self.current_velocity
-        
-        # Velocity sensitivity power multiplier
-        # Uses an aggressive power curve: gain = vel^(sens * k)
-        # where k ≈ 5 based on reference analysis
-        _VEL_POWER_MULT = 5.0
-        
-        # Oscillator velocity
-        osc_vel_gain = 1.0
-        if self.osc_vel_sensitivity > 0:
-            osc_vel_gain = vel_factor ** (self.osc_vel_sensitivity * _VEL_POWER_MULT)
+        # Velocity gains
+        osc_vel_gain = self._velocity_to_gain(velocity, self.osc_vel_sensitivity)
         self.oscillator.set_velocity_gain(osc_vel_gain)
         
-        # Noise velocity
-        noise_vel_gain = 1.0
-        if self.noise_vel_sensitivity > 0:
-            noise_vel_gain = vel_factor ** (self.noise_vel_sensitivity * _VEL_POWER_MULT)
+        noise_vel_gain = self._velocity_to_gain(velocity, self.noise_vel_sensitivity)
         self.noise_gen.set_velocity_gain(noise_vel_gain)
         
-        # Modulation velocity (affects pitch mod amount)
-        mod_vel_scale = 1.0
-        if self.mod_vel_sensitivity > 0:
-            mod_vel_scale = vel_factor ** (self.mod_vel_sensitivity * _VEL_POWER_MULT)
+        mod_vel_scale = self._velocity_to_gain(velocity, self.mod_vel_sensitivity)
         self.oscillator.set_velocity_mod_scale(mod_vel_scale)
         
         # Reset and trigger components
@@ -300,24 +305,31 @@ class DrumChannel:
         osc_stereo[:, 0] = osc_signal
         osc_stereo[:, 1] = osc_signal
         
-        # Mix based on smoothed osc_noise_mix parameter using linear crossfade
+        # Mix crossfade using mixToGain()
+        # Dominant source at full gain, minority attenuated up to -25 dB
         mix = smoothed_mix
         if mix > 0.999:
-            # Pure oscillator - reuse osc_stereo
+            # Pure oscillator
             mixed = osc_stereo
         elif mix < 0.001:
             # Pure noise
             mixed = noise_signal
         else:
-            # Linear crossfade (calibrated against reference recordings)
-            osc_gain = mix
-            noise_gain = 1.0 - mix
+            current_mix = mix * 2.0 - 1.0  # 0->-1, 0.5->0, 1->+1
+            if current_mix >= 0:
+                # Osc-dominant: osc at full, noise attenuated
+                osc_gain = 1.0
+                noise_gain = (1.0 - current_mix) * (10.0 ** (-25.0 * current_mix / 20.0))
+            else:
+                # Noise-dominant: noise at full, osc attenuated
+                abs_mix = -current_mix
+                osc_gain = (1.0 - abs_mix) * (10.0 ** (-25.0 * abs_mix / 20.0))
+                noise_gain = 1.0
             # Use pre-allocated buffer for mixed output
             if num_samples <= len(self._mixed_buffer):
                 mixed = self._mixed_buffer[:num_samples]
             else:
                 mixed = np.empty((num_samples, 2), dtype=np.float32)
-            # In-place operations
             np.multiply(osc_stereo, osc_gain, out=mixed)
             mixed += noise_signal * noise_gain
         
@@ -386,15 +398,15 @@ class DrumChannel:
     
     def _apply_distortion(self, signal: np.ndarray) -> np.ndarray:
         """
-        Apply distortion using soft clipping
+        Apply polynomial waveshaper distortion.
         
-        Distortion generates strong odd harmonics while maintaining
-        overall signal level. Uses tanh for smooth saturation.
+        Uses cubic drive curve (n = 200 * dist^3) with three regions:
+        - Bypass (n ~ 0): no distortion
+        - Soft (n < 1): polynomial waveshaper with mild compression
+        - Hard (n >= 1): polynomial hard-clip with gain compensation
         
-        Distortion levels:
-        - 0-25%: Low drive (1-3), subtle saturation
-        - 50%+: High drive (50+), approaches hard clipping
-        - Uses exponential drive curve for natural response
+        The odd-symmetry formula (shape(x) - shape(-x)) / 2 removes DC
+        offset and preserves odd harmonics.
         
         Args:
             signal: Input stereo signal
@@ -405,25 +417,33 @@ class DrumChannel:
         if self.distortion < 0.001:
             return signal
         
-        # Exponential drive curve:
-        # Formula: drive = exp(2.5 * distortion) gives:
-        #   0% -> 1.0, 50% -> 3.5, 100% -> 12.2
-        drive = np.exp(2.5 * self.distortion)
+        # Cubic drive curve (n = 200 * dist^3)
+        dist = self.distortion
+        n = 200.0 * dist * dist * dist
         
-        # Pre-gain the signal
-        driven = signal * drive
+        if n < 0.001:
+            return signal
         
-        # Soft clipping using tanh - generates odd harmonics
-        clipped = np.tanh(driven)
+        if n < 1.0:
+            # SOFT distortion region
+            v = 1.0 - n / 30.0
+            p = (1.0 + np.sqrt((n + 3.0) / n)) / 3.0
+            dc = -2.0 * n / 27.0 - 9.0 / 27.0
+            
+            def shape(x):
+                xc = np.clip(x - 1.0 / 3.0, -p, p)
+                return xc * (n * (np.abs(xc) - xc * xc) + 1.0) - dc
+        else:
+            # HARD distortion region (n >= 1)
+            v = 0.2 / (n - 0.95894909 + 0.47619048) + 0.58
+            dc = -11.0 / 27.0
+            
+            def shape(x):
+                xc = np.clip(x * n - 1.0 / 3.0, -1.0, 1.0)
+                return xc * (np.abs(xc) - xc * xc + 1.0) - dc
         
-        # Normalize to maintain consistent output level
-        # tanh(drive) is the max output for a +1 input, use this to scale back
-        normalization = np.tanh(drive)
-        if normalization > 0.1:
-            clipped = clipped / normalization
-        
-        # Full wet at any distortion amount
-        return clipped
+        # Odd-symmetry waveshaper: removes DC, preserves odd harmonics
+        return (shape(signal) - shape(-signal)) * (0.5 * v)
     
     def _apply_pan(self, stereo_signal: np.ndarray) -> np.ndarray:
         """

@@ -123,13 +123,13 @@ class Envelope:
     
     @staticmethod
     def _exponential_attack(t: np.ndarray) -> np.ndarray:
-        """Exponential attack shape: starts slowly, accelerates to peak
+        """Exponential attack: -60dB to 0dB rise.
         
-        Uses formula: (exp(K*t) - 1) / (exp(K) - 1)
-        K controls the curve steepness.
+        Formula: 10^(3 * (t - 1))
+        At t=0: starts at 0.001 (-60dB)
+        At t=1: reaches 1.0 (0dB)
         """
-        K = 7.0  # Steepness factor calibrated against reference
-        return (np.exp(K * t) - 1.0) / (np.exp(K) - 1.0)
+        return np.power(10.0, 3.0 * (t - 1.0))
     
     def _compute_attack(self, normalized_time: np.ndarray) -> np.ndarray:
         """Compute attack envelope values based on attack_shape setting"""
@@ -218,11 +218,15 @@ class Envelope:
             return 0.0
             
         if self.stage == EnvelopeStage.ATTACK:
-            # S-curve attack: smooth start, accelerates, smooth finish
             self.sample_index += 1
-            normalized_time = self.sample_index / self._attack_samples
-            # Smoothstep: 3t² - 2t³
-            self.current_level = 3 * normalized_time * normalized_time - 2 * normalized_time * normalized_time * normalized_time
+            normalized_time = min(self.sample_index / self._attack_samples, 1.0)
+            # Use same attack shape as vectorized path
+            if self.attack_shape == 'exponential':
+                self.current_level = 10.0 ** (3.0 * (normalized_time - 1.0))
+            elif self.attack_shape == 'linear':
+                self.current_level = normalized_time
+            else:  # smoothstep: 3t² - 2t³
+                self.current_level = 3 * normalized_time * normalized_time - 2 * normalized_time * normalized_time * normalized_time
             
             if self.sample_index >= self._attack_samples:
                 self.current_level = 1.0

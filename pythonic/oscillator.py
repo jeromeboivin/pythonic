@@ -127,7 +127,7 @@ class Oscillator:
     def set_pitch_mod_amount(self, amount: float):
         """Set pitch modulation amount in semitones"""
         if self.pitch_mod_mode == PitchModMode.DECAYING:
-            self.pitch_mod_amount = np.clip(amount, -120.0, 120.0)
+            self.pitch_mod_amount = np.clip(amount, -96.0, 96.0)
         elif self.pitch_mod_mode == PitchModMode.SINE:
             self.pitch_mod_amount = np.clip(amount, -48.0, 48.0)
         else:  # RANDOM
@@ -297,13 +297,13 @@ class Oscillator:
             return np.full_like(time_array, base_freq)
         
         # Convert mod_rate (in ms) to decay time constant
+        # pitchEnv = 0.001^(t/T) = exp(-6.908*t/T) where T is decay time
         mod_rate_sec = self.pitch_mod_rate / 1000.0  # Convert ms to seconds
-        tau = mod_rate_sec / 7.09  # Fitted decay constant
+        tau = mod_rate_sec / 6.908  # 6.908 = 3*ln(10), matches 0.001^(t/T)
         
         if tau > 0:
-            # Exponential decay envelope with slight overshoot
-            overshoot = 1.01
-            decay_envelope = overshoot * np.exp(-time_array / tau)
+            # Exponential decay envelope: reaches -60dB at mod_rate time
+            decay_envelope = np.exp(-time_array / tau)
             
             # Current pitch offset in semitones
             current_semitones = effective_mod_amount * decay_envelope
