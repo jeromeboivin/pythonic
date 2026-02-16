@@ -132,3 +132,5 @@ dmypy.json
 # OS files
 .DS_Store
 Thumbs.db
+/samples
+/test_patches

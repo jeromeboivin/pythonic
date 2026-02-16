@@ -4,6 +4,9 @@ CMA-ES based drum patch fitting against a target WAV.
 Simple usage (all optimizations enabled by default):
   python tools/cmaes_fit.py --target path/to/808_kick.wav
 
+With preset library search (recommended for best results):
+  python tools/cmaes_fit.py --target path/to/kick.wav --preset-dir path/to/presets/
+
 Full options:
   python tools/cmaes_fit.py --target path/to/kick.wav --out fitted.mtdrum --name "My Kick"
 
@@ -105,7 +108,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from pythonic.synthesizer import PythonicSynthesizer
-from pythonic.preset_manager import DrumPatchWriter
+from pythonic.preset_manager import DrumPatchWriter, PythonicPresetParser, DrumPatchParser
 
 
 @dataclass
@@ -113,18 +116,23 @@ class ParamSpec:
     name: str
     min_val: float
     max_val: float
-    scale: str = "linear"  # "linear" or "log"
+    scale: str = "linear"  # "linear", "log", or "sinh"
     discrete: Optional[int] = None  # number of discrete values (0..discrete-1)
 
     def clamp(self, value: float) -> float:
         return float(np.clip(value, self.min_val, self.max_val))
 
 
+# Sinh scale steepness for concentrating resolution near 0.
+# With k=2.0, ~50% of unit [0,1] maps to the inner ~30% of the value range.
+_SINH_K = 2.0
+
+
 CORE_PARAMS: List[ParamSpec] = [
     ParamSpec("osc_frequency", 20.0, 2000.0, "log"),
     ParamSpec("osc_waveform", 0, 2, "linear", discrete=3),
     ParamSpec("pitch_mod_mode", 0, 2, "linear", discrete=3),
-    ParamSpec("pitch_mod_amount", -48.0, 48.0, "linear"),
+    ParamSpec("pitch_mod_amount", -48.0, 48.0, "sinh"),
     ParamSpec("pitch_mod_rate", 1.0, 2000.0, "log"),
     ParamSpec("osc_attack", 0.0, 100.0, "linear"),
     ParamSpec("osc_decay", 1.0, 2000.0, "log"),
@@ -156,7 +164,7 @@ MINOR_PARAMS: List[ParamSpec] = [
     ParamSpec("osc_frequency", 20.0, 2000.0, "log"),
     ParamSpec("osc_decay", 1.0, 2000.0, "log"),
     # Pitch modulation
-    ParamSpec("pitch_mod_amount", -48.0, 48.0, "linear"),
+    ParamSpec("pitch_mod_amount", -48.0, 48.0, "sinh"),
     ParamSpec("pitch_mod_rate", 1.0, 2000.0, "log"),
     ParamSpec("osc_attack", 0.0, 100.0, "linear"),
     # Noise parameters
@@ -180,6 +188,17 @@ def _to_unit(value: float, spec: ParamSpec) -> float:
         min_log = math.log(spec.min_val)
         max_log = math.log(spec.max_val)
         return (math.log(value) - min_log) / (max_log - min_log)
+    if spec.scale == "sinh":
+        # Inverse sinh mapping: value in [min, max] -> unit in [0, 1]
+        # v = mid + half_range * sinh(k*(2u-1)) / sinh(k)
+        # => u = 0.5 + 0.5 * arcsinh((v - mid) / half_range * sinh(k)) / k
+        mid = (spec.min_val + spec.max_val) / 2.0
+        half_range = (spec.max_val - spec.min_val) / 2.0
+        sk = math.sinh(_SINH_K)
+        return float(np.clip(
+            0.5 + 0.5 * math.asinh((value - mid) / half_range * sk) / _SINH_K,
+            0.0, 1.0,
+        ))
     return (value - spec.min_val) / (spec.max_val - spec.min_val)
 
 
@@ -192,6 +211,16 @@ def _from_unit(u: float, spec: ParamSpec) -> float:
         min_log = math.log(spec.min_val)
         max_log = math.log(spec.max_val)
         return float(math.exp(min_log + u * (max_log - min_log)))
+    if spec.scale == "sinh":
+        # Sinh mapping: unit in [0, 1] -> value in [min, max]
+        # Concentrates resolution near the midpoint of the range.
+        # v = mid + half_range * sinh(k*(2u-1)) / sinh(k)
+        mid = (spec.min_val + spec.max_val) / 2.0
+        half_range = (spec.max_val - spec.min_val) / 2.0
+        return float(np.clip(
+            mid + half_range * math.sinh(_SINH_K * (2.0 * u - 1.0)) / math.sinh(_SINH_K),
+            spec.min_val, spec.max_val,
+        ))
     return spec.min_val + u * (spec.max_val - spec.min_val)
 
 
@@ -218,6 +247,41 @@ def _resample(audio: np.ndarray, sr: int, target_sr: int) -> np.ndarray:
     return signal.resample_poly(audio, up, down).astype(np.float32)
 
 
+# Cached resampling: pre-compute the polyphase FIR filter once per (sr, target_sr)
+# pair and reuse it via upfirdn, avoiding expensive filter design on every call.
+_resample_filter_cache: Dict[Tuple[int, int], np.ndarray] = {}
+
+
+def _get_resample_filter(sr: int, target_sr: int) -> Optional[np.ndarray]:
+    """Pre-compute and cache the polyphase resampling filter."""
+    if sr == target_sr:
+        return None
+    key = (sr, target_sr)
+    if key not in _resample_filter_cache:
+        gcd_val = math.gcd(sr, target_sr)
+        up = target_sr // gcd_val
+        down = sr // gcd_val
+        max_rate = max(up, down)
+        # Design the low-pass filter (same logic as resample_poly internally)
+        n_taps = 2 * 10 * max_rate + 1  # 10 is the default half_len in resample_poly
+        h = signal.firwin(n_taps, 1.0 / max_rate, window=('kaiser', 5.0), fs=2.0)
+        h *= up  # Scale for upsampling
+        _resample_filter_cache[key] = h.astype(np.float32)
+    return _resample_filter_cache[key]
+
+
+def _resample_cached(audio: np.ndarray, sr: int, target_sr: int, filt: Optional[np.ndarray] = None) -> np.ndarray:
+    """Resample using a pre-computed filter for speed."""
+    if sr == target_sr:
+        return audio
+    gcd_val = math.gcd(sr, target_sr)
+    up = target_sr // gcd_val
+    down = sr // gcd_val
+    if filt is None:
+        filt = _get_resample_filter(sr, target_sr)
+    return signal.upfirdn(filt, audio, up=up, down=down).astype(np.float32)
+
+
 def _trim_onset(audio: np.ndarray, threshold: float = 1e-3) -> np.ndarray:
     idx = np.argmax(np.abs(audio) > threshold)
     if np.abs(audio[idx]) <= threshold:
@@ -225,27 +289,99 @@ def _trim_onset(audio: np.ndarray, threshold: float = 1e-3) -> np.ndarray:
     return audio[idx:]
 
 
+# Cache for mel filterbanks keyed by (n_fft_bins, sr, n_mels)
+_mel_filterbank_cache: Dict[Tuple[int, int, int], np.ndarray] = {}
+
+
+def _get_mel_filterbank(n_fft_bins: int, sr: int, n_mels: int = 48) -> np.ndarray:
+    """Build (or retrieve cached) mel-scale filterbank matrix [n_mels, n_fft_bins]."""
+    key = (n_fft_bins, sr, n_mels)
+    if key in _mel_filterbank_cache:
+        return _mel_filterbank_cache[key]
+
+    def _hz_to_mel(f: float) -> float:
+        return 2595.0 * math.log10(1.0 + f / 700.0)
+
+    def _mel_to_hz(m: float) -> float:
+        return 700.0 * (10.0 ** (m / 2595.0) - 1.0)
+
+    fmin, fmax = 20.0, sr / 2.0
+    mel_min, mel_max = _hz_to_mel(fmin), _hz_to_mel(fmax)
+    mel_points = np.linspace(mel_min, mel_max, n_mels + 2)
+    hz_points = np.array([_mel_to_hz(m) for m in mel_points], dtype=np.float32)
+    bin_points = np.round(hz_points * (n_fft_bins - 1) * 2.0 / sr).astype(int)
+    bin_points = np.clip(bin_points, 0, n_fft_bins - 1)
+
+    fb = np.zeros((n_mels, n_fft_bins), dtype=np.float32)
+    for i in range(n_mels):
+        left, center, right = bin_points[i], bin_points[i + 1], bin_points[i + 2]
+        if center > left:
+            fb[i, left:center] = np.linspace(0.0, 1.0, center - left, endpoint=False, dtype=np.float32)
+        if right > center:
+            fb[i, center:right + 1] = np.linspace(1.0, 0.0, right - center + 1, dtype=np.float32)
+
+    _mel_filterbank_cache[key] = fb
+    return fb
+
+
 def _compute_features_cpu(audio: np.ndarray, sr: int, nperseg: int, hop: int) -> Dict[str, np.ndarray]:
-    """CPU-based feature extraction using scipy."""
+    """CPU-based feature extraction using scipy.
+
+    Returns mel-weighted log-magnitude spectrogram, spectral centroid,
+    amplitude envelope, and per-frame energy (used for centroid masking).
+    """
     if len(audio) < nperseg:
         pad = nperseg - len(audio)
         audio = np.pad(audio, (0, pad))
 
     _, _, zxx = signal.stft(audio, fs=sr, nperseg=nperseg, noverlap=nperseg - hop, boundary=None)
     mag = np.abs(zxx)
-    log_mag = np.log1p(mag)
 
+    # --- Mel-scale spectrogram (perceptual frequency weighting) ---
+    n_mels = min(48, mag.shape[0])  # don't exceed available bins
+    mel_fb = _get_mel_filterbank(mag.shape[0], sr, n_mels)  # [n_mels, freq_bins]
+    mel_mag = mel_fb @ mag  # [n_mels, time_frames]
+    log_mag = np.log1p(mel_mag)
+
+    # --- Temporal weight mask (exponential attack emphasis) ---
+    n_frames = log_mag.shape[1]
+    # alpha chosen so weight decays to ~0.05 at the last frame
+    alpha = 3.0 / max(n_frames, 1)
+    time_weight = np.exp(-alpha * np.arange(n_frames, dtype=np.float32))  # [T]
+    # Apply to spectrogram: broadcast [1, T] over [F, T]
+    log_mag = log_mag * time_weight[np.newaxis, :]
+
+    # --- Spectral centroid ---
     freqs = np.linspace(0.0, sr / 2.0, mag.shape[0], dtype=np.float32)
     mag_sum = np.maximum(np.sum(mag, axis=0), 1e-8)
     centroid = np.sum(mag * freqs[:, None], axis=0) / mag_sum
+    # Per-frame energy for centroid masking in the loss function
+    frame_energy = mag_sum
 
+    # --- O(n) amplitude envelope via cumulative sum ---
     env_win = max(8, int(0.005 * sr))
-    env_kernel = np.ones(env_win, dtype=np.float32) / env_win
-    env = np.sqrt(np.convolve(audio * audio, env_kernel, mode="same"))
+    sq = (audio * audio).astype(np.float64)
+    cs = np.cumsum(sq)
+    # Compute windowed mean energy using prefix sums (O(n))
+    env = np.empty_like(sq)
+    half_w = env_win // 2
+    # Centre-aligned: env[i] = mean(sq[i-half_w : i-half_w+env_win])
+    # Use np.pad to handle boundaries
+    cs_pad = np.concatenate(([0.0], cs))
+    starts = np.clip(np.arange(len(sq)) - half_w, 0, len(sq))
+    ends = np.clip(np.arange(len(sq)) - half_w + env_win, 0, len(sq))
+    counts = (ends - starts).astype(np.float64)
+    counts = np.maximum(counts, 1.0)
+    env = np.sqrt((cs_pad[ends] - cs_pad[starts]) / counts).astype(np.float32)
+
+    # Apply temporal weighting to envelope as well
+    env_time_weight = np.exp(-alpha * np.arange(len(env), dtype=np.float32) * (n_frames / max(len(env), 1)))
+    env = env * env_time_weight
 
     return {
         "log_mag": log_mag.astype(np.float32),
         "centroid": centroid.astype(np.float32),
+        "frame_energy": frame_energy.astype(np.float32),
         "env": env.astype(np.float32),
     }
 
@@ -262,22 +398,38 @@ def _compute_features_gpu(audio: np.ndarray, sr: int, nperseg: int, hop: int) ->
     # STFT on GPU
     _, _, zxx = cp_signal.stft(audio_gpu, fs=sr, nperseg=nperseg, noverlap=nperseg - hop, boundary=None)
     mag = cp.abs(zxx)
-    log_mag = cp.log1p(mag)
+
+    # --- Mel-scale spectrogram ---
+    n_mels = min(48, mag.shape[0])
+    mel_fb_np = _get_mel_filterbank(mag.shape[0], sr, n_mels)
+    mel_fb_gpu = cp.asarray(mel_fb_np)
+    mel_mag = mel_fb_gpu @ mag
+    log_mag = cp.log1p(mel_mag)
+
+    # --- Temporal weight mask ---
+    n_frames = int(log_mag.shape[1])
+    alpha = 3.0 / max(n_frames, 1)
+    time_weight = cp.exp(-alpha * cp.arange(n_frames, dtype=cp.float32))
+    log_mag = log_mag * time_weight[cp.newaxis, :]
 
     # Spectral centroid on GPU
     freqs = cp.linspace(0.0, sr / 2.0, mag.shape[0], dtype=cp.float32)
     mag_sum = cp.maximum(cp.sum(mag, axis=0), 1e-8)
     centroid = cp.sum(mag * freqs[:, None], axis=0) / mag_sum
+    frame_energy = mag_sum
 
-    # Envelope on GPU
+    # Envelope on GPU (keep convolution – GPU handles it efficiently)
     env_win = max(8, int(0.005 * sr))
     env_kernel = cp.ones(env_win, dtype=cp.float32) / env_win
     env = cp.sqrt(cp.convolve(audio_gpu * audio_gpu, env_kernel, mode="same"))
+    env_time = cp.exp(-alpha * cp.arange(env.shape[0], dtype=cp.float32) * (n_frames / max(env.shape[0], 1)))
+    env = env * env_time
 
     # Transfer back to CPU
     return {
         "log_mag": _to_cpu(log_mag).astype(np.float32),
         "centroid": _to_cpu(centroid).astype(np.float32),
+        "frame_energy": _to_cpu(frame_energy).astype(np.float32),
         "env": _to_cpu(env).astype(np.float32),
     }
 
@@ -312,15 +464,26 @@ def _feature_loss(features: Dict[str, np.ndarray], target: Dict[str, np.ndarray]
             diff = a[:, :min_len] - b[:, :min_len]
             mse = np.mean(diff * diff)
         
-        # Normalize centroid loss to be comparable with other features
-        # Centroid is in Hz, so we normalize by converting to relative difference
-        # This makes a 10% frequency difference have similar weight as 10% amplitude difference
+        # Centroid: mask out low-energy frames to avoid noise dominating
         if key == "centroid":
-            # Use relative MSE: (diff / target)^2
-            # Add small epsilon to avoid division by zero
             target_vals = b[:min_len]
-            rel_diff = diff / (np.abs(target_vals) + 1e-6)
-            mse = np.mean(rel_diff * rel_diff)
+            # Use frame_energy from target features to mask low-energy frames
+            target_energy = target.get("frame_energy")
+            if target_energy is not None:
+                fe_len = min(len(target_energy), min_len)
+                energy_threshold = np.max(target_energy[:fe_len]) * 0.01
+                mask = target_energy[:fe_len] > energy_threshold
+                if np.sum(mask) > 0:
+                    masked_diff = diff[:fe_len][mask]
+                    masked_target = target_vals[:fe_len][mask]
+                    rel_diff = masked_diff / (np.abs(masked_target) + 1e-6)
+                    mse = np.mean(rel_diff * rel_diff)
+                else:
+                    mse = 0.0
+            else:
+                # Fallback: use old approach with simple masking
+                rel_diff = diff / (np.abs(target_vals) + 1e-6)
+                mse = np.mean(rel_diff * rel_diff)
         
         if np.isfinite(mse):
             loss += weight * float(mse)
@@ -755,6 +918,206 @@ def _analyze_target_wav(audio: np.ndarray, sr: int) -> Dict[str, float]:
     return estimated
 
 
+# ---------------------------------------------------------------------------
+# Preset library scanning and matching
+# ---------------------------------------------------------------------------
+
+def _scan_preset_library(root_dir: str) -> List[Tuple[str, Dict[str, float]]]:
+    """
+    Recursively scan a directory for .mtpreset and .mtdrum files.
+    Returns a list of (source_label, params_dict) tuples where params_dict
+    is compatible with DrumChannel.set_parameters().
+    """
+    patches: List[Tuple[str, Dict[str, float]]] = []
+    preset_parser = PythonicPresetParser()
+    drum_parser = DrumPatchParser()
+
+    for dirpath, _dirnames, filenames in os.walk(root_dir):
+        for fname in filenames:
+            fpath = os.path.join(dirpath, fname)
+            ext = fname.lower().rsplit(".", 1)[-1] if "." in fname else ""
+            try:
+                if ext == "mtpreset":
+                    raw = preset_parser.parse_file(fpath)
+                    preset = preset_parser.convert_to_synth_format(raw)
+                    for ch_idx, drum in enumerate(preset.get("drums", [])):
+                        # Skip empty/default channels with no meaningful content
+                        if drum.get("osc_frequency", 440.0) == 440.0 and drum.get("osc_decay", 316.0) == 316.0:
+                            continue
+                        label = f"{fpath}:ch{ch_idx + 1}"
+                        patches.append((label, dict(drum)))
+                elif ext == "mtdrum":
+                    raw = drum_parser.parse_file(fpath)
+                    # Convert using same logic as PythonicPresetParser._convert_drum_patch
+                    params = _convert_raw_drum_patch(raw, drum_parser)
+                    patches.append((fpath, params))
+            except Exception as e:
+                print(f"  [Preset scan] Skipping {fpath}: {e}")
+                continue
+
+    return patches
+
+
+def _convert_raw_drum_patch(raw: Dict, parser: "DrumPatchParser") -> Dict[str, float]:
+    """Convert raw DrumPatchParser output to set_parameters()-compatible dict."""
+    # Handle Mix field (can be tuple or float)
+    mix_raw = raw.get("Mix", 50.0)
+    if isinstance(mix_raw, tuple):
+        osc_mix = mix_raw[0] / 100.0
+    elif isinstance(mix_raw, str) and "/" in mix_raw:
+        parts = mix_raw.split("/")
+        osc_mix = float(parts[0].strip()) / 100.0
+    else:
+        osc_mix = float(mix_raw) / 100.0
+
+    def _f(key, default=0.0):
+        v = raw.get(key, default)
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return default
+
+    return {
+        "name": raw.get("Name", "Untitled"),
+        "osc_frequency": _f("OscFreq", 440.0),
+        "osc_waveform": parser.WAVEFORM_MAP.get(raw.get("OscWave", "Sine"), 0),
+        "osc_attack": _f("OscAtk", 0.0),
+        "osc_decay": _f("OscDcy", 316.0),
+        "pitch_mod_mode": parser.PITCH_MOD_MAP.get(raw.get("ModMode", "Decay"), 0),
+        "pitch_mod_amount": _f("ModAmt", 0.0),
+        "pitch_mod_rate": _f("ModRate", 100.0),
+        "noise_filter_mode": parser.FILTER_MODE_MAP.get(raw.get("NFilMod", "LP"), 0),
+        "noise_filter_freq": _f("NFilFrq", 20000.0),
+        "noise_filter_q": _f("NFilQ", 0.707),
+        "noise_envelope_mode": parser.ENV_MODE_MAP.get(raw.get("NEnvMod", "Exp"), 0),
+        "noise_attack": _f("NEnvAtk", 0.0),
+        "noise_decay": _f("NEnvDcy", 316.0),
+        "osc_noise_mix": osc_mix,
+        "distortion": _f("DistAmt", 0.0) / 100.0,
+        "eq_frequency": _f("EQFreq", 1000.0),
+        "eq_gain_db": _f("EQGain", 0.0),
+        "level_db": _f("Level", 0.0),
+        "pan": _f("Pan", 0.0),
+        "osc_vel_sensitivity": _f("OscVel", 0.0) / 100.0,
+        "noise_vel_sensitivity": _f("NVel", 0.0) / 100.0,
+        "mod_vel_sensitivity": _f("ModVel", 0.0) / 100.0,
+    }
+
+
+def _find_best_preset_match(
+    patches: List[Tuple[str, Dict[str, float]]],
+    target_audio: np.ndarray,
+    target_sr: int,
+    synth_sr: int,
+    channel_index: int = 0,
+    velocity: int = 127,
+    num_workers: int = 1,
+) -> Tuple[Optional[str], Optional[Dict[str, float]], float]:
+    """
+    Evaluate each preset patch against the target audio and return the best match.
+    Uses a cheap coarse comparison (8kHz, small STFT) for speed.
+
+    Returns (best_label, best_params, best_loss) or (None, None, inf) if no patches.
+    """
+    if not patches:
+        return None, None, float("inf")
+
+    # Coarse comparison settings
+    compare_sr = 8000
+    compare_nperseg = 256
+    compare_hop = 64
+    compare_weights = {"log_mag": 1.0, "env": 1.0, "centroid": 0.3, "rms": 0.2}
+
+    # Prepare target features at comparison resolution
+    target_rs = _resample(target_audio, target_sr, compare_sr)
+    target_rs = target_rs / (np.max(np.abs(target_rs)) + 1e-8)
+    target_features = _compute_features(target_rs, compare_sr, compare_nperseg, compare_hop)
+    target_rms = float(np.sqrt(np.mean(target_rs * target_rs)))
+    target_len = len(target_audio)
+
+    # Pre-compute resampling filter
+    resample_filt = _get_resample_filter(synth_sr, compare_sr)
+
+    def _eval_patch(label_and_params: Tuple[str, Dict[str, float]]) -> Tuple[str, float]:
+        label, patch_params = label_and_params
+        try:
+            s = PythonicSynthesizer(sample_rate=synth_sr)
+            ch = s.channels[channel_index]
+
+            # Merge with base fixed params
+            full_params = _prepare_base_params()
+            full_params.update(patch_params)
+            ch.set_parameters(full_params)
+            ch.trigger(velocity)
+            audio_stereo = ch.process(target_len)
+            audio = np.mean(audio_stereo, axis=1)
+
+            peak = np.max(np.abs(audio))
+            if peak < 1e-10 or not np.isfinite(peak):
+                return label, 1e6
+
+            audio_rs = _resample_cached(audio, synth_sr, compare_sr, resample_filt)
+            # Trim or pad to match target length
+            target_rs_len = len(target_rs)
+            if len(audio_rs) < target_rs_len:
+                audio_rs = np.pad(audio_rs, (0, target_rs_len - len(audio_rs)))
+            elif len(audio_rs) > target_rs_len:
+                audio_rs = audio_rs[:target_rs_len]
+
+            max_abs = np.max(np.abs(audio_rs))
+            if max_abs < 1e-10:
+                return label, 1e6
+            audio_rs = audio_rs / (max_abs + 1e-8)
+
+            features = _compute_features(audio_rs, compare_sr, compare_nperseg, compare_hop)
+            loss = _feature_loss(features, target_features, {
+                "log_mag": compare_weights["log_mag"],
+                "env": compare_weights["env"],
+                "centroid": compare_weights["centroid"],
+            })
+            rms = float(np.sqrt(np.mean(audio_rs * audio_rs)))
+            if np.isfinite(rms) and np.isfinite(target_rms):
+                loss += compare_weights["rms"] * float((rms - target_rms) ** 2)
+            if not np.isfinite(loss):
+                loss = 1e6
+            return label, loss
+        except Exception as e:
+            return label, 1e6
+
+    print(f"[Preset search] Evaluating {len(patches)} patches against target...")
+
+    # Evaluate patches in parallel
+    effective_workers = min(num_workers, len(patches), os.cpu_count() or 4)
+    if effective_workers > 1:
+        with ThreadPoolExecutor(max_workers=effective_workers) as executor:
+            results = list(executor.map(_eval_patch, patches))
+    else:
+        results = [_eval_patch(p) for p in patches]
+
+    # Find best
+    best_label = None
+    best_params = None
+    best_loss = float("inf")
+    for (label, loss), (_, patch_params) in zip(results, patches):
+        if loss < best_loss:
+            best_loss = loss
+            best_label = label
+            best_params = patch_params
+
+    if best_label is not None:
+        # Show top 5 results
+        ranked = sorted(zip(results, patches), key=lambda x: x[0][1])
+        print(f"[Preset search] Top matches:")
+        for i, ((label, loss), _) in enumerate(ranked[:5]):
+            marker = " <-- BEST" if i == 0 else ""
+            name = os.path.basename(label.split(":ch")[0]) if ":ch" in label else os.path.basename(label)
+            ch_info = label.split(":ch")[-1] if ":ch" in label else ""
+            ch_str = f" ch{ch_info}" if ch_info else ""
+            print(f"  {i + 1}. {name}{ch_str}  loss={loss:.6f}{marker}")
+
+    return best_label, best_params, best_loss
+
+
 def _prepare_base_params() -> Dict[str, float]:
     """Return fixed parameters that are not optimized (pan, effects, etc.)."""
     return {
@@ -813,8 +1176,9 @@ def _grid_search_discrete(
     base_params: Dict[str, float],
     evaluate_fn,
     continuous_params: List[ParamSpec],
+    evaluate_batch_fn=None,
 ) -> Tuple[Dict[str, float], float]:
-    """Grid search over all discrete parameter combinations."""
+    """Grid search over all discrete parameter combinations (parallelized)."""
     if not discrete_params:
         return base_params, float("inf")
     
@@ -829,23 +1193,47 @@ def _grid_search_discrete(
     combinations = list(itertools.product(*discrete_ranges))
     print(f"  [Grid] Searching {len(combinations)} discrete combinations...")
     
+    # Build all test param dicts and unit vectors
+    all_test_params = []
+    all_unit_vecs = []
     for combo in combinations:
         test_params = dict(base_params)
         for val, spec in zip(combo, discrete_params):
             test_params[spec.name] = float(val)
-        
-        # Build unit vector for continuous params only (use midpoint)
         unit_vec = np.array([
             _to_unit(test_params.get(p.name, (p.min_val + p.max_val) / 2), p)
             for p in continuous_params
         ], dtype=np.float32)
+        all_test_params.append(test_params)
+        all_unit_vecs.append(unit_vec)
+    
+    # Evaluate in parallel batches if batch evaluator is available
+    if evaluate_batch_fn is not None and len(combinations) > 1:
+        # Evaluate all combos in parallel using worker pool
+        losses = []
+        batch_size = max(1, len(combinations))
+        for i in range(0, len(combinations), batch_size):
+            batch_vecs = all_unit_vecs[i:i + batch_size]
+            batch_params = all_test_params[i:i + batch_size]
+            # evaluate_batch_fn expects single override_params; use per-item evaluation
+            with ThreadPoolExecutor(max_workers=min(len(batch_vecs), os.cpu_count() or 4)) as executor:
+                futures = [
+                    executor.submit(evaluate_fn, vec, params_dict, False)
+                    for vec, params_dict in zip(batch_vecs, batch_params)
+                ]
+                losses.extend([f.result() for f in futures])
         
-        # Temporarily set discrete params and evaluate
-        loss = evaluate_fn(unit_vec, test_params, use_main_synth=True)
-        
-        if loss < best_loss:
-            best_loss = loss
-            best_params = dict(test_params)
+        for idx, loss in enumerate(losses):
+            if loss < best_loss:
+                best_loss = loss
+                best_params = dict(all_test_params[idx])
+    else:
+        # Serial fallback
+        for test_params, unit_vec in zip(all_test_params, all_unit_vecs):
+            loss = evaluate_fn(unit_vec, test_params, use_main_synth=True)
+            if loss < best_loss:
+                best_loss = loss
+                best_params = dict(test_params)
     
     print(f"  [Grid] Best discrete combo loss: {best_loss:.6f}")
     return best_params, best_loss
@@ -889,6 +1277,7 @@ def main() -> None:
     parser.add_argument("--gpu", action="store_true", help="Enable GPU acceleration (auto-detect)")
     parser.add_argument("--no-gpu", action="store_true", help="Force CPU-only mode")
     parser.add_argument("--no-grid-search", action="store_true", help="Disable grid search for discrete params")
+    parser.add_argument("--preset-dir", default="", help="Root folder of .mtpreset/.mtdrum files to search for best starting point")
     parser.add_argument("--restarts", type=int, default=0, help="Number of random restarts (0=use stage default)")
     parser.add_argument("--popsize-multiplier", type=float, default=1.5, help="Multiply default popsize (default 1.5x)")
     parser.add_argument("--no-analyze", action="store_true", help="Skip initial waveform analysis for parameter estimation")
@@ -1030,7 +1419,36 @@ def main() -> None:
     elif not args.no_analyze:
         print("[Init] Starting from analyzed parameters")
 
-    unit_init = np.array([_to_unit(base_params.get(p.name, p.min_val), p) for p in params], dtype=np.float32)
+    # Preset library search: find the best matching preset to use as starting point
+    if args.preset_dir:
+        if not os.path.isdir(args.preset_dir):
+            print(f"[Preset search] Warning: directory not found: {args.preset_dir}")
+        else:
+            print(f"[Preset search] Scanning {args.preset_dir} ...")
+            library_patches = _scan_preset_library(args.preset_dir)
+            print(f"[Preset search] Found {len(library_patches)} drum patches")
+            if library_patches:
+                # Determine worker count for parallel evaluation
+                preset_workers = min(os.cpu_count() or 4, 8)
+                best_label, best_preset_params, preset_loss = _find_best_preset_match(
+                    library_patches,
+                    target_audio,
+                    target_sr,
+                    synth_sr,
+                    channel_index=args.channel,
+                    velocity=args.velocity,
+                    num_workers=preset_workers,
+                )
+                if best_preset_params is not None:
+                    # Only update optimizable params from the preset, keep fixed params intact
+                    optimizable_keys = {p.name for p in CORE_PARAMS}
+                    for key in optimizable_keys:
+                        if key in best_preset_params:
+                            base_params[key] = best_preset_params[key]
+                    print(f"[Preset search] Using best preset as starting point (loss={preset_loss:.6f})")
+                    print(f"[Preset search] Source: {best_label}")
+                else:
+                    print("[Preset search] No valid preset found, using analysis/defaults")
 
     weights = {
         "log_mag": 1.0,
@@ -1127,14 +1545,23 @@ def main() -> None:
 
     stages = load_stages()
 
-    best_u = unit_init.copy()
     best_loss = float("inf")
+
+    # Covariance warm-starting: carry learned covariance between stages
+    # Maps param name -> (param_name_list, covariance_matrix) from previous stage
+    prev_stage_cov: Optional[Tuple[List[str], np.ndarray]] = None
+    prev_stage_sigma: float = 0.25
 
     # Determine worker count
     if args.workers == 0:
         num_workers = min(os.cpu_count() or 4, 8)
     else:
         num_workers = max(1, args.workers)
+
+    # Persistent thread pool (avoid per-batch creation overhead)
+    _pool: Optional[ThreadPoolExecutor] = None
+    if num_workers > 1:
+        _pool = ThreadPoolExecutor(max_workers=num_workers)
 
     # Worker-local synthesizer storage for thread pool
     _worker_synths: Dict[int, PythonicSynthesizer] = {}
@@ -1187,6 +1614,22 @@ def main() -> None:
         target_audio_rs = target_audio_rs / (np.max(np.abs(target_audio_rs)) + 1e-8)
         target_features = _compute_features(target_audio_rs, feature_sr, nperseg, hop)
         target_rms = float(np.sqrt(np.mean(target_audio_rs * target_audio_rs)))
+
+        # Pre-compute resampling filter for this stage (optimization: avoid
+        # re-designing the FIR filter on every evaluate() call)
+        resample_filt = _get_resample_filter(synth_sr, feature_sr)
+
+        # Adaptive feature weights per stage (optimization: coarse stages
+        # emphasize envelope to nail gross shape, fine stages emphasize
+        # spectral detail for precision)
+        stage_weights = dict(weights)
+        if not args.weights:  # Only apply adaptive weights if user didn't override
+            if stage_name == "coarse":
+                stage_weights = {"log_mag": 0.5, "env": 1.5, "centroid": 0.3, "rms": 0.2}
+            elif stage_name == "mid":
+                stage_weights = {"log_mag": 1.0, "env": 0.8, "centroid": 0.2, "rms": 0.1}
+            elif stage_name == "fine":
+                stage_weights = {"log_mag": 1.5, "env": 0.3, "centroid": 0.2, "rms": 0.05}
 
         # Pre-allocate buffers for evaluation to reduce allocations
         target_len = len(target_audio)
@@ -1261,7 +1704,17 @@ def main() -> None:
             if args.align:
                 audio = _trim_onset(audio)
 
-            audio_rs = _resample(audio, synth_sr, feature_sr)
+            # Early rejection: check if audio is silent or wildly off before
+            # expensive resampling + feature extraction (optimization #3)
+            peak = np.max(np.abs(audio))
+            if peak < 1e-10 or not np.isfinite(peak):
+                loss = 1e6
+                with cache_lock:
+                    cache[key] = loss
+                return loss
+
+            # Use cached resampling filter (optimization #1)
+            audio_rs = _resample_cached(audio, synth_sr, feature_sr, resample_filt)
             # Copy into pre-allocated buffer with proper length handling
             if len(audio_rs) < target_rs_len:
                 bufs.audio_rs_buf[:len(audio_rs)] = audio_rs
@@ -1286,14 +1739,14 @@ def main() -> None:
             
             features = _compute_features(bufs.audio_norm_buf, feature_sr, nperseg, hop)
             loss = _feature_loss(features, target_features, {
-                "log_mag": weights["log_mag"],
-                "env": weights["env"],
-                "centroid": weights["centroid"],
+                "log_mag": stage_weights["log_mag"],
+                "env": stage_weights["env"],
+                "centroid": stage_weights["centroid"],
             })
 
             rms = float(np.sqrt(np.mean(audio_rs * audio_rs)))
             if np.isfinite(rms) and np.isfinite(target_rms):
-                loss += weights["rms"] * float((rms - target_rms) ** 2)
+                loss += stage_weights["rms"] * float((rms - target_rms) ** 2)
 
             # Final NaN check - return high penalty if loss is invalid
             if not np.isfinite(loss):
@@ -1308,12 +1761,11 @@ def main() -> None:
             if num_workers == 1:
                 return [evaluate(np.array(x, dtype=np.float32), override_params, use_main_synth=True) for x in solutions]
             
-            with ThreadPoolExecutor(max_workers=num_workers) as executor:
-                futures = [
-                    executor.submit(evaluate, np.array(x, dtype=np.float32), override_params, False)
-                    for x in solutions
-                ]
-                return [f.result() for f in futures]
+            futures = [
+                _pool.submit(evaluate, np.array(x, dtype=np.float32), override_params, False)
+                for x in solutions
+            ]
+            return [f.result() for f in futures]
 
         # Grid search for discrete params (enabled by default)
         do_grid_search = stage.get("grid_search_discrete", True) and not args.no_grid_search
@@ -1325,6 +1777,7 @@ def main() -> None:
                 base_params,
                 evaluate,
                 continuous_stage_params,
+                evaluate_batch_fn=evaluate_batch,
             )
             # Update base_params with best discrete values
             for p in discrete_stage_params:
@@ -1333,9 +1786,21 @@ def main() -> None:
         # Determine number of restarts
         num_restarts = args.restarts if args.restarts > 0 else int(stage.get("restarts", 1))
         
-        # Determine population size
-        base_popsize = args.popsize if args.popsize > 0 else 0
+        # Use continuous params for CMA-ES when grid search is used
+        if do_grid_search and discrete_stage_params:
+            cma_params = continuous_stage_params
+        else:
+            cma_params = stage_params
+        
+        # Compute default popsize analytically to avoid creating a throwaway
+        # CMAEvolutionStrategy instance (optimization #9: fix double init)
+        n_dim = len(cma_params)
+        default_popsize = 4 + int(3 * math.log(max(n_dim, 1)))
         popsize_mult = args.popsize_multiplier
+        if args.popsize > 0:
+            effective_popsize = int(args.popsize * popsize_mult)
+        else:
+            effective_popsize = max(4, int(default_popsize * popsize_mult))
         
         cma_opts_base = {
             "seed": args.seed,
@@ -1345,56 +1810,101 @@ def main() -> None:
             "tolstagnation": args.tolstagnation,
             "tolfunhist": args.tolfunhist,
             "tolflatfitness": args.tolflatfitness,
+            "popsize": effective_popsize,
         }
-        
-        # Use continuous params for CMA-ES when grid search is used
-        if do_grid_search and discrete_stage_params:
-            cma_params = continuous_stage_params
-        else:
-            cma_params = stage_params
         
         stage_best = None
         stage_best_loss = float("inf")
         total_evals = 0
         
-        print(f"[{stage_name}] Starting with {num_workers} worker(s), {num_restarts} restart(s)")
+        # Adaptive sigma: scale based on previous stage's best loss
+        # (optimization #7: if previous stage converged well, use smaller sigma)
+        if best_loss < float("inf") and best_loss > 0:
+            adaptive_sigma = min(sigma, max(0.05, 2.0 * math.sqrt(best_loss)))
+        else:
+            adaptive_sigma = sigma
+        
+        print(f"[{stage_name}] Starting with {num_workers} worker(s), {num_restarts} restart(s), sigma={adaptive_sigma:.3f}")
+        
+        # --- Covariance warm-starting ---
+        # If a previous stage learned a covariance, project it into this
+        # stage's (possibly larger) parameter space.
+        warm_cov = None
+        if prev_stage_cov is not None:
+            prev_names, prev_C = prev_stage_cov
+            cma_names = [p.name for p in cma_params]
+            # Build mapping: index in prev_C -> index in current cma_params
+            name_to_prev_idx = {n: i for i, n in enumerate(prev_names)}
+            shared_names = [n for n in cma_names if n in name_to_prev_idx]
+            if len(shared_names) >= 2:
+                # Start from identity * sigma^2, then overwrite shared block
+                warm_cov = np.eye(n_dim, dtype=np.float64) * (adaptive_sigma ** 2)
+                for i, ni in enumerate(cma_names):
+                    if ni not in name_to_prev_idx:
+                        continue
+                    pi = name_to_prev_idx[ni]
+                    for j, nj in enumerate(cma_names):
+                        if nj not in name_to_prev_idx:
+                            continue
+                        pj = name_to_prev_idx[nj]
+                        warm_cov[i, j] = prev_C[pi, pj]
+                print(f"  [Warm-start] Injected covariance for {len(shared_names)}/{n_dim} params from previous stage")
+        
+        # Track the best CMA-ES instance for extracting covariance
+        stage_best_es: Optional[cma.CMAEvolutionStrategy] = None
         
         for restart_idx in range(num_restarts):
-            # Initialize: first restart uses current best, others use random
+            # --- BIPOP strategy ---
+            # Alternate between large-population (exploration) and small-population
+            # (exploitation) restarts instead of always doubling.
+            # Restart 0: default popsize (exploitation from analyzed start)
+            # Odd restarts: small popsize, start from perturbed best (exploitation)
+            # Even restarts (2+): large popsize, random start (exploration)
             if restart_idx == 0:
-                if stage_params is not params:
-                    init_vec = np.array([
-                        _to_unit(base_params.get(p.name, (p.min_val + p.max_val) / 2), p) 
-                        for p in cma_params
-                    ], dtype=np.float32)
-                else:
-                    init_vec = np.array([
-                        _to_unit(base_params.get(p.name, (p.min_val + p.max_val) / 2), p) 
-                        for p in cma_params
-                    ], dtype=np.float32)
+                restart_popsize = effective_popsize
+            elif restart_idx % 2 == 1:
+                # Small population: exploitation near best
+                restart_popsize = max(4, effective_popsize // 2)
             else:
-                # Random initialization for restarts
+                # Large population: exploration from random
+                restart_popsize = effective_popsize * (2 ** (restart_idx // 2))
+            
+            # Smart restart seeding (optimization #6):
+            # - Restart 0: use current best (from analysis/previous stage)
+            # - Odd restarts: perturb best solution with gaussian noise
+            # - Even restarts (2+): random initialization for diversity
+            if restart_idx == 0:
+                init_vec = np.array([
+                    _to_unit(base_params.get(p.name, (p.min_val + p.max_val) / 2), p) 
+                    for p in cma_params
+                ], dtype=np.float32)
+                restart_sigma = adaptive_sigma
+                init_type = "analyzed"
+            elif restart_idx % 2 == 1 and stage_best is not None:
+                # Perturb best solution found so far
+                init_vec = np.clip(
+                    stage_best + np.random.normal(0, 0.3, len(cma_params)).astype(np.float32),
+                    0.01, 0.99
+                )
+                restart_sigma = adaptive_sigma * 0.7  # Smaller sigma near known good region
+                init_type = "perturbed best"
+            else:
+                # Random initialization for diversity
                 init_vec = np.random.uniform(0.1, 0.9, len(cma_params)).astype(np.float32)
+                restart_sigma = sigma  # Full sigma for exploration
+                init_type = "random"
             
             cma_opts = dict(cma_opts_base)
             cma_opts["seed"] = args.seed + restart_idx * 1000
-            if base_popsize > 0:
-                cma_opts["popsize"] = int(base_popsize * popsize_mult)
-            elif popsize_mult != 1.0:
-                # Will be set after es is created
-                pass
+            cma_opts["popsize"] = restart_popsize
             
-            es = cma.CMAEvolutionStrategy(init_vec, sigma, cma_opts)
+            # Inject warm-started covariance on first restart if available
+            if restart_idx == 0 and warm_cov is not None:
+                cma_opts["CMA_stds"] = np.sqrt(np.diag(warm_cov))
             
-            # Apply popsize multiplier if needed
-            if popsize_mult != 1.0 and base_popsize == 0:
-                new_popsize = max(4, int(es.popsize * popsize_mult))
-                es = cma.CMAEvolutionStrategy(init_vec, sigma, {**cma_opts, "popsize": new_popsize})
+            es = cma.CMAEvolutionStrategy(init_vec, restart_sigma, cma_opts)
             
-            if restart_idx == 0:
-                print(f"  [Restart {restart_idx+1}/{num_restarts}] popsize={es.popsize}, sigma={sigma:.3f}")
-            else:
-                print(f"  [Restart {restart_idx+1}/{num_restarts}] popsize={es.popsize}, sigma={sigma:.3f} (random init)")
+            print(f"  [Restart {restart_idx+1}/{num_restarts}] popsize={es.popsize}, sigma={restart_sigma:.3f} ({init_type})")
             
             restart_best = init_vec.copy()
             restart_best_loss = evaluate(init_vec, stage_base_params if do_grid_search else None, use_main_synth=True)
@@ -1436,14 +1946,14 @@ def main() -> None:
             if restart_best_loss < stage_best_loss:
                 stage_best_loss = restart_best_loss
                 stage_best = restart_best.copy()
+                stage_best_es = es  # Keep reference for covariance extraction
                 
-                # Update base_params with best continuous values
+                # Update base_params with best values (optimization #8: always
+                # update base_params directly, removing buggy best_u tracking)
                 if do_grid_search and discrete_stage_params:
                     for u, spec in zip(stage_best, continuous_stage_params):
                         base_params[spec.name] = _from_unit(u, spec)
                 else:
-                    if stage_params is params:
-                        best_u = stage_best.copy()
                     for u, spec in zip(stage_best, cma_params):
                         base_params[spec.name] = _from_unit(u, spec)
                 
@@ -1471,10 +1981,31 @@ def main() -> None:
                 break
         
         print(f"[{stage_name}] Completed: total_evals={total_evals}, best_loss={stage_best_loss:.6f}")
+        
+        # Save covariance for warm-starting next stage
+        if stage_best_es is not None:
+            try:
+                cma_names = [p.name for p in cma_params]
+                # Extract the full covariance: C * sigma^2
+                C = stage_best_es.sm.C if hasattr(stage_best_es, 'sm') else None
+                if C is None and hasattr(stage_best_es, 'C'):
+                    C = stage_best_es.C
+                if C is not None:
+                    s = stage_best_es.sigma
+                    prev_stage_cov = (cma_names, np.array(C) * s * s)
+                    prev_stage_sigma = s
+                    print(f"  [Cov] Saved {len(cma_names)}x{len(cma_names)} covariance for next stage")
+            except Exception:
+                pass  # Covariance extraction is best-effort
 
+    # Shut down persistent thread pool
+    if _pool is not None:
+        _pool.shutdown(wait=False)
+
+    # Build final params directly from base_params (which has been updated
+    # by each stage with the best values found). This avoids the previous
+    # bug where stale best_u could overwrite good values from earlier stages.
     final_params = dict(base_params)
-    for u, spec in zip(best_u, params):
-        final_params[spec.name] = _from_unit(u, spec)
     final_params["name"] = args.name
 
     channel.set_parameters(final_params)
