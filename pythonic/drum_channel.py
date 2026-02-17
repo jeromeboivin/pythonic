@@ -126,9 +126,6 @@ class DrumChannel:
         # Pitch offset in semitones (-24 to +24, applied to oscillator frequency)
         self.pitch_semitones = 0.0
         
-        # Probability (0-100, chance of triggering during pattern playback)
-        self.probability = 100
-        
         # State
         self.is_active = False
         self.current_velocity = 1.0
@@ -219,6 +216,24 @@ class DrumChannel:
         self.osc_envelope.trigger()
         self.noise_gen.trigger()
         self.vintage.reset()
+        
+        # Snap all smoothed parameters to their target values so the first
+        # sample of every hit uses the exact current settings (no residual
+        # smoothing transition from a previous parameter change)
+        self._smoothed_osc_freq.set_immediate(self._smoothed_osc_freq.get_target())
+        self._smoothed_noise_freq.set_immediate(self._smoothed_noise_freq.get_target())
+        self._smoothed_noise_q.set_immediate(self._smoothed_noise_q.get_target())
+        self._smoothed_eq_freq.set_immediate(self._smoothed_eq_freq.get_target())
+        self._smoothed_distortion.set_immediate(self._smoothed_distortion.get_target())
+        self._smoothed_mix.set_immediate(self._smoothed_mix.get_target())
+        
+        # Reset EQ filters so no state leaks between hits
+        self.eq_filter_l.reset()
+        self.eq_filter_r.reset()
+        
+        # Reset time-based FX so tails from previous hits don't bleed in
+        self.reverb.reset()
+        self.delay.reset()
     
     def process(self, num_samples: int) -> np.ndarray:
         """

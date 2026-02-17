@@ -179,6 +179,10 @@ class NoiseGenerator:
         self.filter_left.reset()
         self.filter_right.reset()
         
+        # Re-seed RNGs so every hit produces the same noise sequence
+        self._rng_left = np.random.default_rng(12345)
+        self._rng_right = np.random.default_rng(67890)
+        
         # Trigger appropriate envelope
         if self.envelope_mode == NoiseEnvelopeMode.MODULATED:
             self.mod_envelope.trigger()

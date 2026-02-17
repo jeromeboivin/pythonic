@@ -65,8 +65,18 @@ class VintageProcessor:
     
     def reset(self):
         """Reset processor state for new note"""
-        # Don't reset drift - it should be continuous
-        pass
+        # Reset filter states so no residual coloring from previous hit
+        self._noise_z1.fill(0)
+        self._hf_z1.fill(0)
+        self._dc_x1.fill(0)
+        self._dc_y1.fill(0)
+        # Re-seed RNG for deterministic vintage processing
+        self._rng = np.random.default_rng(54321)
+        # Reset drift for deterministic pitch behavior per hit
+        self._drift_position = 0.0
+        self._drift_velocity = 0.0
+        self._drift_target = 0.0
+        self._drift_counter = 0
     
     def get_pitch_drift(self) -> float:
         """

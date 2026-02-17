@@ -31,6 +31,8 @@ class PythonicSynthesizer:
         
         # Pre-allocate buffers to avoid allocations in process_audio
         self._output_buffer = np.zeros((4096, 2), dtype=np.float32)
+        self._bus_a_buffer = np.zeros((4096, 2), dtype=np.float32)
+        self._bus_b_buffer = np.zeros((4096, 2), dtype=np.float32)
         
         # Thread pool for parallel channel processing (8 workers for 8 channels)
         self._thread_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="audio_")
@@ -38,6 +40,11 @@ class PythonicSynthesizer:
         
         # Current state
         self.selected_channel = 0
+        
+        # Program bank (16 slots, 1-indexed for display)
+        self.NUM_PROGRAMS = 16
+        self._programs = [None] * self.NUM_PROGRAMS  # None = empty slot
+        self._current_program = 0  # 0-indexed (displayed as 1-16)
         
         # Choke group tracking
         self._choke_group: List[int] = []
@@ -178,7 +185,12 @@ class PythonicSynthesizer:
     
     def process_audio(self, num_samples: int) -> np.ndarray:
         """
-        Generate audio from all channels (optimized sequential)
+        Generate audio from all channels with A/B sub-mix routing.
+        
+        Channels assigned to output 'A' are summed into bus A,
+        channels assigned to 'B' into bus B. Both buses are then
+        combined into the final stereo output before master volume
+        and clipping are applied.
         
         Args:
             num_samples: Number of samples to generate
@@ -186,24 +198,36 @@ class PythonicSynthesizer:
         Returns:
             Stereo audio array [num_samples, 2]
         """
-        # Use pre-allocated buffer or create if needed
+        # Use pre-allocated buffers or create if needed
         if num_samples <= len(self._output_buffer):
             output = self._output_buffer[:num_samples]
-            output.fill(0)  # Clear buffer
+            bus_a = self._bus_a_buffer[:num_samples]
+            bus_b = self._bus_b_buffer[:num_samples]
+            output.fill(0)
+            bus_a.fill(0)
+            bus_b.fill(0)
         else:
             output = np.zeros((num_samples, 2), dtype=np.float32)
+            bus_a = np.zeros((num_samples, 2), dtype=np.float32)
+            bus_b = np.zeros((num_samples, 2), dtype=np.float32)
         
-        # Mix only active unmuted channels (sequential is faster for small ops)
+        # Route active unmuted channels to their assigned sub-mix bus
         active_count = 0
         for channel in self.channels:
             if channel.is_active and not channel.muted:
                 active_count += 1
                 channel_output = channel.process(num_samples)
-                np.add(output, channel_output, out=output)
+                if channel.output_pair == 'B':
+                    np.add(bus_b, channel_output, out=bus_b)
+                else:
+                    np.add(bus_a, channel_output, out=bus_a)
         
         # If no active channels, return early
         if active_count == 0:
             return output
+        
+        # Combine both buses into the final output
+        np.add(bus_a, bus_b, out=output)
         
         # Apply master volume (optimized)
         if self.master_volume_db != 0.0 and self.master_volume_db > -60:
@@ -263,6 +287,62 @@ class PythonicSynthesizer:
         """Unmute all channels"""
         for channel in self.channels:
             channel.muted = False
+    
+    # ============== Program Bank ==============
+    
+    def store_program(self, slot: int):
+        """Store the current synth state into a program slot.
+        
+        Args:
+            slot: 0-indexed program slot (0-15)
+        """
+        if 0 <= slot < self.NUM_PROGRAMS:
+            self._programs[slot] = self.get_preset_data()
+    
+    def recall_program(self, slot: int) -> bool:
+        """Recall a program from a slot, loading its state.
+        
+        Args:
+            slot: 0-indexed program slot (0-15)
+            
+        Returns:
+            True if the slot had data and was loaded, False if empty
+        """
+        if 0 <= slot < self.NUM_PROGRAMS and self._programs[slot] is not None:
+            self.load_preset_data(self._programs[slot])
+            self._current_program = slot
+            return True
+        return False
+    
+    def is_program_occupied(self, slot: int) -> bool:
+        """Check if a program slot contains data."""
+        return 0 <= slot < self.NUM_PROGRAMS and self._programs[slot] is not None
+    
+    def get_current_program(self) -> int:
+        """Return the 0-indexed current program slot."""
+        return self._current_program
+    
+    def get_programs_data(self) -> dict:
+        """Get all program bank data for saving."""
+        return {
+            'current_program': self._current_program,
+            'slots': {
+                str(i): prog for i, prog in enumerate(self._programs)
+                if prog is not None
+            }
+        }
+    
+    def load_programs_data(self, data: dict):
+        """Load program bank data from a dictionary."""
+        self._current_program = data.get('current_program', 0)
+        slots = data.get('slots', {})
+        self._programs = [None] * self.NUM_PROGRAMS
+        for key, prog in slots.items():
+            idx = int(key)
+            if 0 <= idx < self.NUM_PROGRAMS:
+                self._programs[idx] = prog
+    
+    # ============== Preset Data ==============
     
     def get_preset_data(self) -> dict:
         """Get all synthesizer data as a dictionary for saving"""

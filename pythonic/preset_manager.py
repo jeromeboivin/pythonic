@@ -423,7 +423,6 @@ class PythonicPresetParser:
             'osc_vel_sensitivity': 0.0,
             'noise_vel_sensitivity': 0.0,
             'mod_vel_sensitivity': 0.0,
-            'probability': 100,
         }
 
     def _convert_patterns(self, patterns_data: Dict) -> Dict:
@@ -606,7 +605,6 @@ class PresetManager:
             'osc_vel_sensitivity': patch.get('OscVel', 0.0) / 100.0,
             'noise_vel_sensitivity': patch.get('NVel', 0.0) / 100.0,
             'mod_vel_sensitivity': patch.get('ModVel', 0.0) / 100.0,
-            'probability': patch.get('Prob', 100),
         }
 
     def _apply_drum_patch_to_channel(self, channel, data: Dict):
@@ -664,9 +662,6 @@ class PresetManager:
         channel.osc_vel_sensitivity = data.get('osc_vel_sensitivity', 0.0)
         channel.noise_vel_sensitivity = data.get('noise_vel_sensitivity', 0.0)
         channel.mod_vel_sensitivity = data.get('mod_vel_sensitivity', 0.0)
-        
-        # Probability (default 100 if not present)
-        channel.probability = data.get('probability', 100)
         
         # Update filters (EQ)
         channel.eq_filter_l.set_frequency(channel.eq_frequency)
@@ -982,7 +977,6 @@ class DrumPatchWriter:
             'OscVel': channel.osc_vel_sensitivity * 100.0,
             'NVel': channel.noise_vel_sensitivity * 100.0,
             'ModVel': channel.mod_vel_sensitivity * 100.0,
-            'Prob': channel.probability,
         }
         
         # Write to file

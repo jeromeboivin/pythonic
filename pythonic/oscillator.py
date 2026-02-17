@@ -100,6 +100,10 @@ class Oscillator:
         self.mod_time = 0.0
         # Reset decimation filter state on new note
         self._os_zi = None
+        # Reset random modulation state for deterministic playback
+        self._random_state = np.random.RandomState(42)
+        self._noise_buffer = np.zeros(512)
+        self._noise_index = 0
     
     def _ensure_decimation_filter(self):
         """Initialize the anti-aliasing decimation filter for oversampling."""

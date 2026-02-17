@@ -96,6 +96,9 @@ class StateVariableFilter:
         self.ic2eq = 0.0
         self.ic1eq_r = 0.0
         self.ic2eq_r = 0.0
+        # Also clear biquad lfilter state used by vectorized process()
+        self._zi_left = None
+        self._zi_right = None
     
     def process_sample(self, x: float) -> float:
         """

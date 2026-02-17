@@ -1176,12 +1176,32 @@ class PythonicGUI:
     # ============== Event Handlers ==============
     
     def _on_program_select(self, event=None):
-        """Handle program selection (1-16 slots)"""
+        """Handle program selection (1-16 slots)
+        
+        Stores the current synth state into the previously selected slot,
+        then recalls the newly selected slot. If the new slot is empty,
+        the current state is copied into it so every first visit
+        captures a snapshot.
+        """
         try:
             program_num = int(self.program_var.get())
-            # Future: implement program bank switching
-            # For now, just log the selection
-            print(f"Selected program {program_num}")
+            new_slot = program_num - 1  # 0-indexed internally
+            old_slot = self.synth.get_current_program()
+            
+            if new_slot == old_slot:
+                return  # No change
+            
+            # Save current state into the old slot before switching
+            self.synth.store_program(old_slot)
+            
+            # Try to recall the new slot
+            if self.synth.recall_program(new_slot):
+                # Slot had data – UI needs to reflect the loaded state
+                self._update_ui_from_channel()
+            else:
+                # Empty slot – capture current state into it
+                self.synth.store_program(new_slot)
+                self.synth._current_program = new_slot
         except ValueError:
             pass
     
@@ -1499,25 +1519,25 @@ class PythonicGUI:
         """Handle osc/noise mix change (value comes from tk.Scale as string)"""
         if not self.updating_ui:
             channel = self.synth.get_selected_channel()
-            channel.osc_noise_mix = float(value) / 100.0
+            channel.set_osc_noise_mix(float(value) / 100.0)
     
     def _on_eq_freq_change(self, value):
         """Handle EQ frequency change"""
         if not self.updating_ui:
             channel = self.synth.get_selected_channel()
-            channel.eq_frequency = value
+            channel.set_eq_frequency(value)
     
     def _on_eq_gain_change(self, value):
         """Handle EQ gain change"""
         if not self.updating_ui:
             channel = self.synth.get_selected_channel()
-            channel.eq_gain_db = value
+            channel.set_eq_gain(value)
     
     def _on_distort_change(self, value):
         """Handle distortion change"""
         if not self.updating_ui:
             channel = self.synth.get_selected_channel()
-            channel.distortion = value / 100.0
+            channel.set_distortion(value / 100.0)
     
     def _on_vintage_change(self, value):
         """Handle vintage analog simulation change
@@ -2338,7 +2358,13 @@ class PythonicGUI:
     def _update_ui_from_channel(self):
         """Update all UI elements from selected channel's parameters"""
         self.updating_ui = True
-        
+        try:
+            self._do_update_ui_from_channel()
+        finally:
+            self.updating_ui = False
+    
+    def _do_update_ui_from_channel(self):
+        """Internal: perform all widget updates (called inside try/finally guard)"""
         channel = self.synth.get_selected_channel()
         
         # Update patch name - use fallback if empty
@@ -2395,8 +2421,6 @@ class PythonicGUI:
         self.osc_vel_slider.set_value(channel.osc_vel_sensitivity * 100)
         self.noise_vel_slider.set_value(channel.noise_vel_sensitivity * 100)
         self.mod_vel_slider.set_value(channel.mod_vel_sensitivity * 100)
-        
-        self.updating_ui = False
     
     def _save_preset(self):
         """Save current preset to file"""
@@ -2420,6 +2444,8 @@ class PythonicGUI:
             data['fill_rate'] = self.pattern_manager.fill_rate
             # Add morph data
             data['morph'] = self.morph_manager.to_dict()
+            # Add program bank data
+            data['programs'] = self.synth.get_programs_data()
             
             with open(filename, 'w') as f:
                 json.dump(data, f, indent=2)
@@ -2618,6 +2644,17 @@ class PythonicGUI:
                     self.morph_manager._init_endpoints()
                     self.morph_slider.set(50)
                 self._update_morph_ui()
+                
+                # Load program bank if available
+                if 'programs' in data:
+                    self.synth.load_programs_data(data['programs'])
+                    current = self.synth.get_current_program()
+                    self.program_var.set(str(current + 1))
+                else:
+                    # No program data — reset bank
+                    self.synth._programs = [None] * self.synth.NUM_PROGRAMS
+                    self.synth._current_program = 0
+                    self.program_var.set("1")
                 
                 self._update_ui_from_channel()
                 self.preferences_manager.add_recent_file(filename)
