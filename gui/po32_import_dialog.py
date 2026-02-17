@@ -12,6 +12,8 @@ import threading
 import numpy as np
 import time
 import os
+import wave
+from datetime import datetime
 
 try:
     import sounddevice as sd
@@ -53,18 +55,20 @@ class PO32ImportDialog:
         'trigger_off': '#333344',
     }
     
-    def __init__(self, parent, synth, pattern_manager, on_import_callback=None):
+    def __init__(self, parent, synth, pattern_manager, on_import_callback=None, preferences_manager=None):
         """
         Args:
             parent: Parent tk window
             synth: PythonicSynthesizer instance (for preview playback)
             pattern_manager: PatternManager instance (for import target)
             on_import_callback: Called after successful import to refresh UI
+            preferences_manager: PreferencesManager instance (for input device preference)
         """
         self.parent = parent
         self.synth = synth
         self.pattern_manager = pattern_manager
         self.on_import_callback = on_import_callback
+        self.preferences_manager = preferences_manager
         
         # State
         self.decoded_preset = None
@@ -80,13 +84,20 @@ class PO32ImportDialog:
         self.recording = False
         self.recorded_samples = []
         self.record_stream = None
+        self._input_device_ids = []
+        self._vu_level = 0.0  # Current VU meter level (0.0 - 1.0)
+        self._vu_peak = 0.0   # Peak hold level
+        self._vu_peak_decay = 0  # Counter for peak hold decay
+        self._vu_monitoring = False  # Whether VU monitor stream is active
+        self._vu_monitor_stream = None
+        self._debug_save = preferences_manager.get('po32_debug_save_recordings', False) if preferences_manager else False
         
         # Build dialog
         self.dialog = tk.Toplevel(parent)
         self.dialog.title("Import from PO-32")
         self.dialog.configure(bg=self.COLORS['bg_dark'])
-        self.dialog.geometry("720x600")
-        self.dialog.minsize(600, 400)
+        self.dialog.geometry("720x680")
+        self.dialog.minsize(600, 480)
         self.dialog.resizable(True, True)
         self.dialog.transient(parent)
         self.dialog.grab_set()
@@ -127,8 +138,82 @@ class PO32ImportDialog:
                                      labelanchor='nw')
         source_frame.pack(fill='x', pady=(0, 8))
         
+        # Input device selector row
+        if AUDIO_AVAILABLE:
+            device_row = tk.Frame(source_frame, bg=self.COLORS['bg_medium'])
+            device_row.pack(fill='x', padx=8, pady=(8, 4))
+            
+            tk.Label(device_row, text="Input device:",
+                    font=('Segoe UI', 9),
+                    fg=self.COLORS['text'],
+                    bg=self.COLORS['bg_medium']).pack(side='left', padx=(0, 6))
+            
+            self.device_var = tk.StringVar()
+            self.device_combo = ttk.Combobox(device_row, textvariable=self.device_var,
+                                             width=40, state='readonly')
+            self.device_combo.pack(side='left', fill='x', expand=True, padx=(0, 6))
+            self.device_combo.bind('<<ComboboxSelected>>', self._on_device_changed)
+            self._populate_input_devices()
+            
+            self.monitor_btn = tk.Button(device_row, text="🔊 Monitor",
+                                         font=('Segoe UI', 8), width=10,
+                                         bg=self.COLORS['bg_light'],
+                                         fg=self.COLORS['text'],
+                                         command=self._on_toggle_monitor)
+            self.monitor_btn.pack(side='right')
+        
+        # VU meter row
+        if AUDIO_AVAILABLE:
+            vu_frame = tk.Frame(source_frame, bg=self.COLORS['bg_medium'])
+            vu_frame.pack(fill='x', padx=8, pady=(0, 4))
+            
+            tk.Label(vu_frame, text="Level:",
+                    font=('Segoe UI', 8),
+                    fg=self.COLORS['text_dim'],
+                    bg=self.COLORS['bg_medium']).pack(side='left', padx=(0, 4))
+            
+            self.vu_canvas = tk.Canvas(vu_frame, height=18, bg='#1a1a2a',
+                                       highlightthickness=1,
+                                       highlightbackground=self.COLORS['bg_light'])
+            self.vu_canvas.pack(side='left', fill='x', expand=True, padx=(0, 6))
+            
+            self.vu_db_label = tk.Label(vu_frame, text="-∞ dB",
+                                        font=('Segoe UI', 8, 'bold'),
+                                        fg=self.COLORS['text_dim'],
+                                        bg=self.COLORS['bg_medium'],
+                                        width=8, anchor='e')
+            self.vu_db_label.pack(side='right')
+            
+            # Draw initial empty VU meter
+            self.vu_canvas.update_idletasks()
+            self._draw_vu_meter(0.0, 0.0)
+        
+        # Debug save checkbox
+        if AUDIO_AVAILABLE:
+            debug_row = tk.Frame(source_frame, bg=self.COLORS['bg_medium'])
+            debug_row.pack(fill='x', padx=8, pady=(0, 4))
+            
+            self.debug_save_var = tk.BooleanVar(value=self._debug_save)
+            debug_check = tk.Checkbutton(debug_row, text="💾 Save recorded audio to file (debug)",
+                                        variable=self.debug_save_var,
+                                        font=('Segoe UI', 8),
+                                        fg=self.COLORS['text_dim'],
+                                        bg=self.COLORS['bg_medium'],
+                                        selectcolor=self.COLORS['bg_dark'],
+                                        activebackground=self.COLORS['bg_medium'],
+                                        activeforeground=self.COLORS['text'],
+                                        command=self._on_debug_save_changed)
+            debug_check.pack(side='left')
+            
+            tk.Button(debug_row, text="📂 Open Folder",
+                     font=('Segoe UI', 8),
+                     bg=self.COLORS['bg_light'],
+                     fg=self.COLORS['text_dim'],
+                     command=self._open_debug_folder).pack(side='left', padx=(8, 0))
+        
+        # Buttons row
         source_row = tk.Frame(source_frame, bg=self.COLORS['bg_medium'])
-        source_row.pack(fill='x', padx=8, pady=8)
+        source_row.pack(fill='x', padx=8, pady=(0, 8))
         
         tk.Button(source_row, text="Import WAV File...",
                  font=('Segoe UI', 9), width=16,
@@ -328,6 +413,296 @@ class PO32ImportDialog:
                  command=self._on_cancel).pack(side='right')
     
     # ============================================================
+    # Input Device Management
+    # ============================================================
+    
+    def _populate_input_devices(self):
+        """Populate the input device dropdown with available audio input devices."""
+        if not AUDIO_AVAILABLE:
+            self.device_combo['values'] = ["(sounddevice not available)"]
+            self.device_var.set("(sounddevice not available)")
+            return
+        
+        try:
+            devices = sd.query_devices()
+            input_devices = []
+            default_idx = None
+            preferred_idx = None
+            
+            # Get preferred device from preferences
+            preferred_name = None
+            if self.preferences_manager:
+                preferred_name = self.preferences_manager.get('audio_input_device')
+            
+            default_input = sd.query_devices(kind='input')
+            
+            for i, dev in enumerate(devices):
+                if dev['max_input_channels'] > 0:
+                    name = dev['name']
+                    input_devices.append((i, name))
+                    if dev == default_input:
+                        default_idx = len(input_devices) - 1
+                    if preferred_name and name == preferred_name:
+                        preferred_idx = len(input_devices) - 1
+            
+            if input_devices:
+                self._input_device_ids = [d[0] for d in input_devices]
+                names = [d[1] for d in input_devices]
+                self.device_combo['values'] = names
+                # Prefer the saved preference, then default, then first
+                if preferred_idx is not None:
+                    self.device_combo.current(preferred_idx)
+                elif default_idx is not None:
+                    self.device_combo.current(default_idx)
+                else:
+                    self.device_combo.current(0)
+            else:
+                self._input_device_ids = []
+                self.device_combo['values'] = ["(no input devices)"]
+                self.device_var.set("(no input devices)")
+        except Exception:
+            self._input_device_ids = []
+            self.device_combo['values'] = ["(error listing devices)"]
+            self.device_var.set("(error listing devices)")
+    
+    def _get_selected_device_id(self):
+        """Get the sounddevice ID for the selected input device."""
+        idx = self.device_combo.current()
+        if idx >= 0 and idx < len(self._input_device_ids):
+            return self._input_device_ids[idx]
+        return None
+    
+    def _on_device_changed(self, event=None):
+        """Handle input device selection change — restart monitor if active."""
+        if self._vu_monitoring:
+            self._stop_monitor()
+            self._start_monitor()
+    
+    def _on_debug_save_changed(self):
+        """Handle debug save checkbox change."""
+        self._debug_save = self.debug_save_var.get()
+        if self.preferences_manager:
+            self.preferences_manager.set('po32_debug_save_recordings', self._debug_save)
+    
+    def _get_debug_recordings_folder(self):
+        """Get or create the debug recordings folder.
+        
+        Uses the Documents folder to avoid Windows MSIX/Store Python
+        filesystem virtualization that makes AppData writes invisible.
+        """
+        from pathlib import Path
+        documents = os.path.join(Path.home(), 'Documents')
+        debug_folder = os.path.join(documents, 'Pythonic Debug Recordings')
+        os.makedirs(debug_folder, exist_ok=True)
+        return debug_folder
+    
+    def _save_debug_recording(self, samples, sample_rate):
+        """Save recorded audio to a WAV file for debugging."""
+        try:
+            debug_folder = self._get_debug_recordings_folder()
+            print(f"[DEBUG] Debug recordings folder: {debug_folder}", flush=True)
+            print(f"[DEBUG] Folder exists: {os.path.exists(debug_folder)}", flush=True)
+            
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f'po32_recording_{timestamp}.wav'
+            filepath = os.path.join(debug_folder, filename)
+            
+            # Clamp to [-1, 1] then convert to int16 for WAV
+            samples_clamped = np.clip(samples, -1.0, 1.0)
+            samples_int16 = (samples_clamped * 32767).astype(np.int16)
+            frames_data = samples_int16.tobytes()
+            
+            print(f"[DEBUG] Writing {len(samples_int16)} samples ({len(frames_data)} bytes) to: {filepath}", flush=True)
+            
+            wf = wave.open(filepath, 'wb')
+            wf.setnchannels(1)
+            wf.setsampwidth(2)  # 16-bit
+            wf.setframerate(int(sample_rate))
+            wf.writeframes(frames_data)
+            wf.close()
+            
+            # Verify the file actually exists
+            if os.path.exists(filepath):
+                file_size = os.path.getsize(filepath)
+                print(f"[DEBUG] Verified: {filepath} ({file_size} bytes)", flush=True)
+                self._last_debug_filepath = filepath
+                return filepath
+            else:
+                print(f"[DEBUG] ERROR: File was not created at {filepath}", flush=True)
+                return None
+        except Exception as e:
+            import traceback
+            print(f"[DEBUG] Failed to save recording: {e}", flush=True)
+            traceback.print_exc()
+            return None
+    
+    def _open_debug_folder(self):
+        """Open the debug recordings folder in the system file manager."""
+        try:
+            debug_folder = self._get_debug_recordings_folder()
+            if os.name == 'nt':
+                os.startfile(debug_folder)
+            elif os.sys.platform == 'darwin':
+                import subprocess
+                subprocess.Popen(['open', debug_folder])
+            else:
+                import subprocess
+                subprocess.Popen(['xdg-open', debug_folder])
+        except Exception as e:
+            print(f"[DEBUG] Failed to open folder: {e}", flush=True)
+    
+    # ============================================================
+    # VU Meter & Monitoring
+    # ============================================================
+    
+    def _on_toggle_monitor(self):
+        """Toggle live input monitoring (VU meter without recording)."""
+        if self._vu_monitoring:
+            self._stop_monitor()
+        else:
+            self._start_monitor()
+    
+    def _start_monitor(self):
+        """Start monitoring the selected input device (VU meter only, no recording)."""
+        device_id = self._get_selected_device_id()
+        if device_id is None:
+            return
+        
+        self._vu_monitoring = True
+        self.monitor_btn.config(text="■ Stop", bg='#884444')
+        
+        def monitor_callback(indata, frames, time_info, status):
+            # Compute RMS level for VU meter
+            rms = np.sqrt(np.mean(indata[:, 0] ** 2))
+            peak = np.max(np.abs(indata[:, 0]))
+            self._vu_level = float(peak)
+        
+        try:
+            self._vu_monitor_stream = sd.InputStream(
+                samplerate=SAMPLE_RATE,
+                channels=1,
+                dtype='float32',
+                callback=monitor_callback,
+                blocksize=2048,
+                device=device_id,
+            )
+            self._vu_monitor_stream.start()
+            self._schedule_vu_update()
+        except Exception as e:
+            self._vu_monitoring = False
+            self.monitor_btn.config(text="🔊 Monitor", bg=self.COLORS['bg_light'])
+            messagebox.showerror("Monitor Error",
+                               f"Failed to open input device:\n{e}",
+                               parent=self.dialog)
+    
+    def _stop_monitor(self):
+        """Stop input monitoring."""
+        self._vu_monitoring = False
+        self.monitor_btn.config(text="🔊 Monitor", bg=self.COLORS['bg_light'])
+        
+        if self._vu_monitor_stream:
+            try:
+                self._vu_monitor_stream.stop()
+                self._vu_monitor_stream.close()
+            except Exception:
+                pass
+            self._vu_monitor_stream = None
+        
+        self._vu_level = 0.0
+        self._vu_peak = 0.0
+        self._draw_vu_meter(0.0, 0.0)
+        self.vu_db_label.config(text="-∞ dB", fg=self.COLORS['text_dim'])
+    
+    def _schedule_vu_update(self):
+        """Schedule periodic VU meter UI updates."""
+        if self._vu_monitoring or self.recording:
+            self._update_vu_display()
+            self.dialog.after(50, self._schedule_vu_update)  # ~20 fps
+    
+    def _update_vu_display(self):
+        """Update the VU meter canvas and dB label from current levels."""
+        level = self._vu_level
+        
+        # Peak hold with decay
+        if level >= self._vu_peak:
+            self._vu_peak = level
+            self._vu_peak_decay = 15  # Hold for ~750ms at 20fps
+        else:
+            if self._vu_peak_decay > 0:
+                self._vu_peak_decay -= 1
+            else:
+                self._vu_peak *= 0.92  # Slow decay
+        
+        self._draw_vu_meter(level, self._vu_peak)
+        
+        # dB display
+        if level > 1e-6:
+            db = 20 * np.log10(level)
+            db_text = f"{db:+.1f} dB"
+            if level > 0.95:
+                color = '#ff4444'  # Clipping
+            elif level > 0.5:
+                color = '#ffaa44'  # Hot
+            elif level > 0.05:
+                color = '#44ff88'  # Good
+            else:
+                color = self.COLORS['text_dim']  # Low
+            self.vu_db_label.config(text=db_text, fg=color)
+        else:
+            self.vu_db_label.config(text="-∞ dB", fg=self.COLORS['text_dim'])
+    
+    def _draw_vu_meter(self, level, peak):
+        """Draw the VU meter bar on the canvas."""
+        self.vu_canvas.delete('all')
+        w = self.vu_canvas.winfo_width()
+        h = self.vu_canvas.winfo_height()
+        if w < 10:
+            w = 300  # Default before first layout
+        
+        # Background segments for reference
+        green_end = int(w * 0.6)
+        yellow_end = int(w * 0.85)
+        
+        # Draw background gradient segments
+        self.vu_canvas.create_rectangle(0, 0, green_end, h, fill='#0a2a0a', outline='')
+        self.vu_canvas.create_rectangle(green_end, 0, yellow_end, h, fill='#2a2a0a', outline='')
+        self.vu_canvas.create_rectangle(yellow_end, 0, w, h, fill='#2a0a0a', outline='')
+        
+        # Draw level bar
+        bar_w = int(w * min(level, 1.0))
+        if bar_w > 0:
+            # Green portion
+            g_end = min(bar_w, green_end)
+            if g_end > 0:
+                self.vu_canvas.create_rectangle(0, 2, g_end, h - 2, fill='#44ff88', outline='')
+            # Yellow portion
+            if bar_w > green_end:
+                y_end = min(bar_w, yellow_end)
+                self.vu_canvas.create_rectangle(green_end, 2, y_end, h - 2, fill='#ffcc44', outline='')
+            # Red portion
+            if bar_w > yellow_end:
+                self.vu_canvas.create_rectangle(yellow_end, 2, bar_w, h - 2, fill='#ff4444', outline='')
+        
+        # Peak indicator line
+        peak_x = int(w * min(peak, 1.0))
+        if peak_x > 2:
+            if peak > 0.85:
+                peak_color = '#ff4444'
+            elif peak > 0.6:
+                peak_color = '#ffcc44'
+            else:
+                peak_color = '#44ff88'
+            self.vu_canvas.create_line(peak_x, 1, peak_x, h - 1, fill=peak_color, width=2)
+        
+        # Scale markers
+        for db_mark in [-40, -20, -12, -6, -3, 0]:
+            lin = 10 ** (db_mark / 20.0)
+            x = int(w * lin)
+            if 0 < x < w:
+                self.vu_canvas.create_line(x, 0, x, 3, fill='#666688', width=1)
+                self.vu_canvas.create_line(x, h - 3, x, h, fill='#666688', width=1)
+    
+    # ============================================================
     # Source Loading
     # ============================================================
     
@@ -355,7 +730,7 @@ class PO32ImportDialog:
         threading.Thread(target=decode, daemon=True).start()
     
     def _on_toggle_record(self):
-        """Toggle audio recording from default input device."""
+        """Toggle audio recording from selected input device."""
         if not AUDIO_AVAILABLE:
             messagebox.showerror("Error", "Audio recording requires the 'sounddevice' library.",
                                parent=self.dialog)
@@ -367,7 +742,18 @@ class PO32ImportDialog:
             self._start_recording()
     
     def _start_recording(self):
-        """Start recording audio from the default input device."""
+        """Start recording audio from the selected input device."""
+        device_id = self._get_selected_device_id()
+        if device_id is None:
+            messagebox.showwarning("No Device",
+                                   "No input device selected.",
+                                   parent=self.dialog)
+            return
+        
+        # Stop monitoring if active (we'll use the recording stream for VU)
+        if self._vu_monitoring:
+            self._stop_monitor()
+        
         self.recording = True
         self.recorded_samples = []
         self.record_btn.config(text="■ Stop", bg='#884444')
@@ -376,6 +762,9 @@ class PO32ImportDialog:
         def audio_callback(indata, frames, time_info, status):
             if self.recording:
                 self.recorded_samples.append(indata[:, 0].copy())
+                # Update VU meter level
+                peak = float(np.max(np.abs(indata[:, 0])))
+                self._vu_level = peak
         
         try:
             self.record_stream = sd.InputStream(
@@ -384,8 +773,10 @@ class PO32ImportDialog:
                 dtype='float32',
                 callback=audio_callback,
                 blocksize=4096,
+                device=device_id,
             )
             self.record_stream.start()
+            self._schedule_vu_update()
         except Exception as e:
             self.recording = False
             self.record_btn.config(text="● Record", bg=self.COLORS['bg_light'])
@@ -402,6 +793,13 @@ class PO32ImportDialog:
             self.record_stream.close()
             self.record_stream = None
         
+        # Reset VU meter
+        self._vu_level = 0.0
+        self._vu_peak = 0.0
+        if hasattr(self, 'vu_canvas'):
+            self._draw_vu_meter(0.0, 0.0)
+            self.vu_db_label.config(text="-∞ dB", fg=self.COLORS['text_dim'])
+        
         if not self.recorded_samples:
             self.source_label.config(text="No audio recorded")
             return
@@ -409,12 +807,25 @@ class PO32ImportDialog:
         # Concatenate all recorded buffers
         samples = np.concatenate(self.recorded_samples).astype(np.float64)
         duration = len(samples) / SAMPLE_RATE
-        self.source_label.config(text=f"Decoding {duration:.1f}s of recorded audio...")
+        
+        # Save debug recording if enabled
+        saved_path = None
+        if self._debug_save:
+            saved_path = self._save_debug_recording(samples, SAMPLE_RATE)
+            if saved_path:
+                status_msg = f"Saved to {os.path.basename(saved_path)} | Decoding {duration:.1f}s..."
+            else:
+                status_msg = f"Decoding {duration:.1f}s of recorded audio..."
+        else:
+            status_msg = f"Decoding {duration:.1f}s of recorded audio..."
+        
+        self.source_label.config(text=status_msg)
         self.dialog.update()
         
         def decode():
             preset = decode_audio_samples(samples, SAMPLE_RATE)
-            self.dialog.after(0, lambda: self._on_decode_complete(preset, "recorded audio"))
+            source_name = f"recorded audio ({os.path.basename(saved_path)})" if saved_path else "recorded audio"
+            self.dialog.after(0, lambda: self._on_decode_complete(preset, source_name))
         
         threading.Thread(target=decode, daemon=True).start()
     
@@ -957,6 +1368,10 @@ class PO32ImportDialog:
             parent=self.dialog
         )
         
+        # Stop monitoring before closing
+        if self._vu_monitoring:
+            self._stop_monitor()
+        
         self.dialog.destroy()
     
     def _on_cancel(self):
@@ -965,4 +1380,6 @@ class PO32ImportDialog:
             self._stop_preview()
         if self.recording:
             self._stop_recording()
+        if self._vu_monitoring:
+            self._stop_monitor()
         self.dialog.destroy()

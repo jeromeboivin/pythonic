@@ -37,6 +37,8 @@ class PreferencesManager:
         'max_recent_files': 10,
         # Audio settings
         'audio_output_device': None,  # None = system default
+        'audio_input_device': None,   # None = system default
+        'po32_debug_save_recordings': False,  # Save recorded audio for debugging
         # Parameter smoothing settings
         'param_smoothing_ms': 30.0,  # Smoothing time constant (20-50ms recommended)
         # MIDI settings

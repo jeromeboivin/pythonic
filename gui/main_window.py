@@ -3150,6 +3150,7 @@ class PythonicGUI:
             synth=self.synth,
             pattern_manager=self.pattern_manager,
             on_import_callback=on_import_complete,
+            preferences_manager=self.preferences_manager,
         )
         # Store morph_manager on root so PO32ImportDialog can find it
         self.root.morph_manager = self.morph_manager
@@ -3170,19 +3171,31 @@ class PythonicGUI:
         except Exception as e:
             print(f"Error querying audio devices: {e}", flush=True)
         return devices
+
+    def _get_audio_input_devices(self):
+        """Get list of available audio input devices"""
+        devices = []
+        try:
+            all_devices = sd.query_devices()
+            for i, dev in enumerate(all_devices):
+                if dev['max_input_channels'] > 0:
+                    devices.append((i, dev['name']))
+        except Exception as e:
+            print(f"Error querying audio input devices: {e}", flush=True)
+        return devices
     
     def _show_audio_preferences(self):
         """Show audio settings dialog"""
         dialog = tk.Toplevel(self.root)
         dialog.title("Audio Settings")
-        dialog.geometry("450x250")
+        dialog.geometry("450x400")
         dialog.resizable(True, True)
         dialog.transient(self.root)
         dialog.grab_set()
         dialog.configure(bg=self.COLORS['bg_dark'])
         
         # Title
-        tk.Label(dialog, text="Audio Output Settings", 
+        tk.Label(dialog, text="Audio Settings", 
                 font=('Segoe UI', 12, 'bold'),
                 fg=self.COLORS['text'],
                 bg=self.COLORS['bg_dark']).pack(pady=(15, 10))
@@ -3242,6 +3255,41 @@ class PythonicGUI:
                              bg=self.COLORS['bg_dark'])
         note_label.pack(anchor='w', pady=(10, 0))
         
+        # --- Audio Input Device section ---
+        input_frame = tk.Frame(dialog, bg=self.COLORS['bg_dark'])
+        input_frame.pack(fill='x', padx=20, pady=(10, 0))
+        
+        tk.Label(input_frame, text="Audio Input Device (for PO-32 recording):", 
+                font=('Segoe UI', 9),
+                fg=self.COLORS['text'],
+                bg=self.COLORS['bg_dark']).pack(anchor='w')
+        
+        available_input_devices = self._get_audio_input_devices()
+        input_device_names = [name for _, name in available_input_devices]
+        
+        current_input_device = self.preferences_manager.get('audio_input_device')
+        if current_input_device is None:
+            current_input_display = "(System Default)"
+        else:
+            current_input_display = current_input_device if current_input_device in input_device_names else "(System Default)"
+        
+        input_device_var = tk.StringVar(value=current_input_display)
+        input_device_options = ["(System Default)"] + input_device_names
+        input_device_combo = ttk.Combobox(input_frame, textvariable=input_device_var, 
+                                          values=input_device_options, width=50, state='readonly')
+        input_device_combo.pack(fill='x', pady=(2, 0))
+        
+        try:
+            default_input = sd.query_devices(kind='input')
+            input_info_text = f"Default input: {default_input['name']}"
+        except Exception:
+            input_info_text = "No default input device detected"
+        
+        tk.Label(input_frame, text=input_info_text,
+                font=('Segoe UI', 8),
+                fg=self.COLORS['text_dim'],
+                bg=self.COLORS['bg_dark']).pack(anchor='w', pady=(5, 0))
+        
         # Buttons
         button_frame = tk.Frame(dialog, bg=self.COLORS['bg_dark'])
         button_frame.pack(fill='x', padx=20, pady=20)
@@ -3250,6 +3298,9 @@ class PythonicGUI:
             available_devices = self._get_audio_output_devices()
             device_names = [name for _, name in available_devices]
             device_combo['values'] = ["(System Default)"] + device_names
+            available_input = self._get_audio_input_devices()
+            input_names = [name for _, name in available_input]
+            input_device_combo['values'] = ["(System Default)"] + input_names
         
         def save_and_close():
             selected = device_var.get()
@@ -3257,7 +3308,13 @@ class PythonicGUI:
                 self.preferences_manager.set('audio_output_device', None)
             else:
                 self.preferences_manager.set('audio_output_device', selected)
+            selected_input = input_device_var.get()
+            if selected_input == "(System Default)":
+                self.preferences_manager.set('audio_input_device', None)
+            else:
+                self.preferences_manager.set('audio_input_device', selected_input)
             print(f"Audio output device preference saved: {selected}", flush=True)
+            print(f"Audio input device preference saved: {selected_input}", flush=True)
             dialog.destroy()
         
         def apply_now():
@@ -3267,6 +3324,12 @@ class PythonicGUI:
                 self.preferences_manager.set('audio_output_device', None)
             else:
                 self.preferences_manager.set('audio_output_device', selected)
+            
+            selected_input = input_device_var.get()
+            if selected_input == "(System Default)":
+                self.preferences_manager.set('audio_input_device', None)
+            else:
+                self.preferences_manager.set('audio_input_device', selected_input)
             
             # Restart audio stream
             self._stop_audio()
@@ -3286,6 +3349,7 @@ class PythonicGUI:
                 pass
             
             print(f"Audio output device changed to: {selected}", flush=True)
+            print(f"Audio input device changed to: {selected_input}", flush=True)
         
         tk.Button(button_frame, text="Refresh", 
                  command=refresh_devices,

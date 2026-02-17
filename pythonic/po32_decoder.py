@@ -226,12 +226,9 @@ def demodulate_fsk(samples: np.ndarray, sample_rate: int = SAMPLE_RATE,
                    threshold_ratio: float = 0.1) -> Optional[bytes]:
     """Demodulate FSK audio signal back to raw modem bytes.
 
-    Algorithm:
-    1. Detect zero crossings in the audio
-    2. Measure half-period lengths between crossings
-    3. Classify as HIGH (~6 samples) or LOW (~12 samples)
-    4. Count consecutive HIGHs between LOWs → group sizes
-    5. Skip preamble, decode data groups to n-values → bits → bytes
+    Tries the standard zero-crossing method first. If it fails (e.g. due to
+    degraded audio from a small speaker), falls back to a Goertzel filter
+    approach that is more robust to frequency-selective attenuation.
 
     Args:
         samples: Audio samples (float, mono)
@@ -240,6 +237,27 @@ def demodulate_fsk(samples: np.ndarray, sample_rate: int = SAMPLE_RATE,
 
     Returns:
         Raw modem bytes (bit-reversed, before descrambling), or None if decode fails
+    """
+    # Try the standard zero-crossing decoder first
+    result = _demodulate_fsk_zero_crossing(samples, sample_rate, threshold_ratio)
+    if result is not None:
+        return result
+
+    # Fall back to Goertzel filter decoder for degraded audio
+    return _demodulate_fsk_goertzel(samples, sample_rate, threshold_ratio)
+
+
+def _demodulate_fsk_zero_crossing(samples: np.ndarray,
+                                  sample_rate: int = SAMPLE_RATE,
+                                  threshold_ratio: float = 0.1) -> Optional[bytes]:
+    """Standard FSK demodulation using zero-crossing half-period analysis.
+
+    Algorithm:
+    1. Detect zero crossings in the audio
+    2. Measure half-period lengths between crossings
+    3. Classify as HIGH (~6 samples) or LOW (~12 samples)
+    4. Count consecutive HIGHs between LOWs → group sizes
+    5. Skip preamble, decode data groups to n-values → bits → bytes
     """
     if len(samples) == 0:
         return None
@@ -321,6 +339,250 @@ def demodulate_fsk(samples: np.ndarray, sample_rate: int = SAMPLE_RATE,
         return None
 
     return bytes(raw_bytes)
+
+
+def _goertzel_energy(signal: np.ndarray, target_freq: float,
+                     sample_rate: int, window_size: int,
+                     hop: int) -> np.ndarray:
+    """Compute Goertzel filter energy at target_freq for sliding windows.
+
+    The Goertzel algorithm efficiently computes the energy at a single
+    frequency bin, equivalent to a single-bin DFT but much faster.
+
+    Args:
+        signal: Input audio samples
+        target_freq: Frequency to detect (Hz)
+        sample_rate: Audio sample rate
+        window_size: Analysis window size (samples)
+        hop: Hop size between windows (samples)
+
+    Returns:
+        Array of energy values, one per window position
+    """
+    k = round(window_size * target_freq / sample_rate)
+    w = 2 * np.pi * k / window_size
+    coeff = 2 * np.cos(w)
+    n_windows = (len(signal) - window_size) // hop + 1
+    if n_windows <= 0:
+        return np.array([])
+    # Build index array for all windows
+    idx = np.arange(window_size)[None, :] + (np.arange(n_windows) * hop)[:, None]
+    windows = signal[idx]
+    # Goertzel recursion (vectorized across all windows)
+    s0 = np.zeros(n_windows)
+    s1 = np.zeros(n_windows)
+    for j in range(window_size):
+        s2 = windows[:, j] + coeff * s1 - s0
+        s0 = s1
+        s1 = s2
+    return s0 * s0 + s1 * s1 - coeff * s0 * s1
+
+
+def _demodulate_fsk_goertzel(samples: np.ndarray,
+                             sample_rate: int = SAMPLE_RATE,
+                             threshold_ratio: float = 0.1) -> Optional[bytes]:
+    """Robust FSK demodulation using Goertzel frequency-energy analysis.
+
+    This method detects the LOW and HIGH frequencies using Goertzel filters
+    and classifies each analysis window by energy ratio. It is more robust
+    than zero-crossing analysis when the LOW frequency (1837.5 Hz) is
+    attenuated by small speakers (e.g. phone speakers) that have poor
+    bass response.
+
+    The algorithm uses peak prominence filtering on the LOW/HIGH energy
+    ratio to identify true LOW marks (group boundaries) while rejecting
+    spurious detections caused by noise or harmonic interference.
+    """
+    if len(samples) == 0:
+        return None
+
+    if samples.ndim > 1:
+        samples = samples[:, 0]
+
+    peak = np.max(np.abs(samples))
+    if peak < 0.001:
+        return None
+    samples = samples / peak
+
+    envelope = _compute_envelope(samples, window=256)
+    active = envelope > threshold_ratio
+    active_indices = np.where(active)[0]
+    if len(active_indices) < 1000:
+        return None
+    start_idx = max(0, active_indices[0] - 100)
+    end_idx = min(len(samples), active_indices[-1] + 100)
+    segment = samples[start_idx:end_idx]
+
+    # Goertzel parameters: window=36 samples (6 HIGH half-periods),
+    # hop=6 samples (1 HIGH half-period)
+    win_size = 36
+    hop_size = 6
+
+    energy_high = _goertzel_energy(segment, FREQ_HIGH, sample_rate,
+                                   win_size, hop_size)
+    energy_low = _goertzel_energy(segment, FREQ_LOW, sample_rate,
+                                  win_size, hop_size)
+
+    if len(energy_high) < 100:
+        return None
+
+    # LOW/HIGH energy ratio — higher values indicate LOW frequency
+    ratio = energy_low / (energy_high + 1e-8)
+
+    # Try peak prominence filtering first (best for degraded audio),
+    # then fall back to simple threshold if it fails
+    result = _goertzel_decode_peak_prominence(ratio)
+    if result is not None:
+        return result
+
+    # Simple threshold fallback
+    return _goertzel_decode_threshold(ratio)
+
+
+def _goertzel_decode_peak_prominence(ratio: np.ndarray) -> Optional[bytes]:
+    """Decode using peak prominence filtering on the energy ratio.
+
+    Identifies true LOW marks by finding local maxima in the ratio signal
+    with sufficient prominence, sweeping the prominence threshold to find
+    the setting that produces the most valid TLV blocks.
+    """
+    from scipy.signal import find_peaks, peak_prominences
+
+    all_maxima, _ = find_peaks(ratio)
+    if len(all_maxima) < 50:
+        return None
+
+    prominences, _, _ = peak_prominences(ratio, all_maxima)
+
+    best_raw = None
+    best_blocks = 0
+
+    # Sweep prominence threshold to find the best decode
+    for prom_thresh in np.arange(0.0, 1.0, 0.02):
+        selected = all_maxima[prominences > prom_thresh]
+        if len(selected) < 50:
+            break
+
+        # Groups = distances between consecutive peaks minus 1
+        groups = []
+        for i in range(len(selected) - 1):
+            groups.append(selected[i + 1] - selected[i] - 1)
+
+        raw = _groups_to_raw_bytes(groups)
+        if raw is None:
+            continue
+
+        # Quick quality check: count TLV blocks
+        blocks = _count_valid_blocks(raw)
+        if blocks > best_blocks:
+            best_blocks = blocks
+            best_raw = raw
+
+    return best_raw
+
+
+def _goertzel_decode_threshold(ratio: np.ndarray) -> Optional[bytes]:
+    """Decode using simple threshold classification on the energy ratio.
+
+    Falls back to direct threshold when peak prominence doesn't help.
+    Sweeps the threshold to find the best decode.
+    """
+    best_raw = None
+    best_blocks = 0
+
+    for thresh in np.arange(0.2, 3.0, 0.1):
+        cls = ratio > thresh
+        groups = []
+        count = 0
+        for c in cls:
+            if not c:
+                count += 1
+            else:
+                if count > 0:
+                    groups.append(count)
+                count = 0
+        if count > 0:
+            groups.append(count)
+
+        raw = _groups_to_raw_bytes(groups)
+        if raw is None:
+            continue
+
+        blocks = _count_valid_blocks(raw)
+        if blocks > best_blocks:
+            best_blocks = blocks
+            best_raw = raw
+
+    return best_raw
+
+
+def _groups_to_raw_bytes(groups: List[int]) -> Optional[bytes]:
+    """Convert group sizes to raw modem bytes (shared by all demod methods)."""
+    if len(groups) < 50:
+        return None
+
+    data_start = _find_data_start(groups)
+    if data_start is None:
+        return None
+
+    data_groups = groups[data_start:]
+
+    n_values = []
+    for g in data_groups:
+        n = (g - 4) / 6
+        n_rounded = round(n)
+        if n_rounded < 0:
+            n_rounded = 0
+        n_values.append(n_rounded)
+
+    bits = []
+    for n in n_values:
+        bits.extend([1] * n)
+        bits.append(0)
+
+    raw_bytes = _bits_to_bytes(bits)
+    if len(raw_bytes) < 5:
+        return None
+
+    return bytes(raw_bytes)
+
+
+def _count_valid_blocks(raw_bytes: bytes) -> int:
+    """Quick count of valid TLV blocks from raw modem bytes.
+
+    Used internally to compare decode quality across parameter sweeps.
+    """
+    if len(raw_bytes) < 8:
+        return 0
+
+    modem = bytes(reverse_bits(b) for b in raw_bytes)
+
+    hp = None
+    for i in range(min(50, len(modem) - 4)):
+        if modem[i:i + 4] == MODEM_HEADER:
+            hp = i
+            break
+    if hp is None:
+        return 0
+
+    valid_tags = {TAG_PATCH, TAG_PATTERN, TAG_STATE, TAG_TRAILER}
+    desc, _ = descramble(modem[hp + 4:])
+    pos = 0
+    blocks = 0
+    while pos + 5 <= len(desc):
+        tag = desc[pos] | (desc[pos + 1] << 8)
+        flen = desc[pos + 2]
+        if tag not in valid_tags:
+            break
+        if pos + 3 + flen + 2 > len(desc):
+            break
+        if tag == TAG_TRAILER:
+            blocks += 1
+            break
+        pos += 3 + flen + 2
+        blocks += 1
+
+    return blocks
 
 
 def _compute_envelope(samples: np.ndarray, window: int = 256) -> np.ndarray:
