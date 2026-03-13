@@ -1,0 +1,7 @@
+# Optional ML dependencies for the AI Drum Generator.
+# Install with:  pip install -r requirements-ml.txt
+#
+# This installs CPU-only PyTorch by default.
+# For GPU support, follow https://pytorch.org/get-started/locally/
+# and install the appropriate CUDA or ROCm variant *before* running this.
+torch>=2.0.0

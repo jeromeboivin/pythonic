@@ -52,6 +52,8 @@ class PreferencesManager:
             "1": "osc_freq",
             "2": "noise_freq"
         },
+        # Drum generator
+        'drum_generator_model_path': None,  # Path to CVAE checkpoint (.pt)
     }
     
     def __init__(self):

@@ -157,6 +157,7 @@ pythonic/
 ├── pythonic/              # Core synthesis engine
 │   ├── synthesizer.py        # Main 8-channel synthesizer
 │   ├── drum_channel.py       # Individual drum channel
+│   ├── drum_generator.py     # AI drum generation (CVAE inference)
 │   ├── oscillator.py         # Waveform generation
 │   ├── noise.py              # Noise generator  
 │   ├── envelope.py           # ADSR envelope generators
@@ -171,6 +172,7 @@ pythonic/
 │   └── smoothed_parameter.py # Parameter smoothing
 ├── gui/                   # User interface (Tkinter)
 │   ├── main_window.py        # Main application window
+│   ├── drum_generator_dialog.py # AI drum generator dialog
 │   └── widgets.py            # Custom GUI components
 ├── tests/                 # Unit and integration tests
 │   ├── test_synthesis.py     # Synthesis accuracy tests
@@ -212,6 +214,61 @@ Pythonic includes 8 built-in drum sounds:
 6. **Low Tom** - Tuned low tom
 7. **Clap** - Hand clap with modulated envelope
 8. **Rim Shot** - Sharp rimshot click
+
+## 🤖 AI Drum Generator
+
+Pythonic includes an optional AI-powered drum generator that uses a Conditional Variational Autoencoder (CVAE) trained on hundreds of drum patches.
+
+### Optional ML Installation
+
+The generator requires PyTorch, which is **not** included in the base install to keep the app lightweight.
+
+**Option A — In-app install**: Open the generator dialog (Preset menu → *AI Drum Generator...*) and click **Install ML Support**. This runs `pip install -r requirements-ml.txt` in the current environment after confirmation.
+
+**Option B — Manual install**:
+
+```bash
+pip install -r requirements-ml.txt
+```
+
+> For GPU acceleration, install the appropriate CUDA/ROCm PyTorch variant first following [pytorch.org](https://pytorch.org/get-started/locally/). The CPU-only build works fine for inference.
+
+### Loading a Model
+
+The repository includes two pre-trained checkpoints:
+
+| File | Description |
+|------|-------------|
+| `drum_cvae_best.pt` | Best validation loss during training |
+| `drum_cvae_final.pt` | Final epoch checkpoint |
+
+Point the generator to either file via the **Load Model...** button. The path is saved in preferences for next time.
+
+### Generator Workflow
+
+1. Open the preset menu and click **AI Drum Generator...**
+2. Load a model checkpoint (`.pt` file)
+3. Adjust **Temperature** (lower = conservative, higher = experimental), **Candidates** count, and optional **Seed** for reproducibility
+4. Choose a drum type per slot using the dropdown (constrained to TR-8-style families)
+5. Click **Generate** per slot or **Generate All 8**
+6. Browse candidates with `<` / `>` arrows
+7. **Preview** a single slot (one-shot) or **Loop Preview** the full pattern with generated drums overlaid on your current kit
+8. Check the slots you want to keep and click **Apply Selected**
+
+The live kit is never modified until you explicitly apply — preview is non-destructive.
+
+### Slot Layout
+
+| Slot | Label | Allowed Types |
+|------|-------|---------------|
+| 1 | BD | bd |
+| 2 | SD | sd |
+| 3 | CH | ch, shaker |
+| 4 | OH | oh |
+| 5 | TOM HI/PERC | tom, perc |
+| 6 | TOM LO/PERC | tom, perc, cowbell |
+| 7 | CLAP/RIM | clap, blip, zap, cowbell |
+| 8 | CY/FX | cy, fx, fuzz, reverse, synth, bass, other |
 
 ## ⚙️ Technical Specifications
 

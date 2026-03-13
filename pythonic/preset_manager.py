@@ -11,34 +11,122 @@ from scipy.io import wavfile
 from typing import Dict, Any, List, Optional
 
 
+# ─────────────────────────────────────────────
+# Shared enum maps (used by parsers, converters, and generator bridge)
+# ─────────────────────────────────────────────
+
+WAVEFORM_MAP = {'Sine': 0, 'Triangle': 1, 'Saw': 2}
+PITCH_MOD_MAP = {'Decay': 0, 'Sine': 1, 'Noise': 2}
+FILTER_MODE_MAP = {'LP': 0, 'BP': 1, 'HP': 2}
+ENV_MODE_MAP = {'Exp': 0, 'Linear': 1, 'Mod': 2}
+
+
+# ─────────────────────────────────────────────
+# Public helpers: raw patch dict → channel format → apply
+# ─────────────────────────────────────────────
+
+def convert_drum_patch_data(patch: Dict) -> Dict:
+    """Convert a raw patch dict (OscFreq / OscWave style) to internal channel format.
+
+    Works identically for file-parsed .mtdrum dicts and model-generated dicts.
+    """
+    mix_value = patch.get('Mix', 50.0)
+    if isinstance(mix_value, tuple):
+        osc_mix = mix_value[0] / 100.0
+    else:
+        osc_mix = mix_value / 100.0
+
+    return {
+        'name': patch.get('Name', 'Untitled'),
+        'osc_frequency': patch.get('OscFreq', 440.0),
+        'osc_waveform': WAVEFORM_MAP.get(patch.get('OscWave', 'Sine'), 0),
+        'osc_attack': patch.get('OscAtk', 0.0) / 1000.0,
+        'osc_decay': patch.get('OscDcy', 316.0) / 1000.0,
+        'pitch_mod_mode': PITCH_MOD_MAP.get(patch.get('ModMode', 'Decay'), 0),
+        'pitch_mod_amount': patch.get('ModAmt', 0.0),
+        'pitch_mod_rate': (patch.get('ModRate', 100.0) / 1000.0
+                           if patch.get('ModMode', 'Decay') == 'Decay'
+                           else patch.get('ModRate', 100.0)),
+        'noise_filter_mode': FILTER_MODE_MAP.get(patch.get('NFilMod', 'LP'), 0),
+        'noise_filter_freq': patch.get('NFilFrq', 20000.0),
+        'noise_filter_q': patch.get('NFilQ', 0.707),
+        'noise_stereo': patch.get('NStereo', False),
+        'noise_envelope_mode': ENV_MODE_MAP.get(patch.get('NEnvMod', 'Exp'), 0),
+        'noise_attack': patch.get('NEnvAtk', 0.0) / 1000.0,
+        'noise_decay': patch.get('NEnvDcy', 316.0) / 1000.0,
+        'osc_noise_mix': osc_mix,
+        'distortion': patch.get('DistAmt', 0.0) / 100.0,
+        'eq_frequency': patch.get('EQFreq', 1000.0),
+        'eq_gain_db': patch.get('EQGain', 0.0),
+        'level_db': patch.get('Level', 0.0),
+        'pan': patch.get('Pan', 0.0),
+        'output_pair': patch.get('Output', 'A'),
+        'osc_vel_sensitivity': patch.get('OscVel', 0.0) / 100.0,
+        'noise_vel_sensitivity': patch.get('NVel', 0.0) / 100.0,
+        'mod_vel_sensitivity': patch.get('ModVel', 0.0) / 100.0,
+    }
+
+
+def apply_drum_patch_to_channel(channel, data: Dict):
+    """Apply a converted channel-format dict to a DrumChannel."""
+    from .oscillator import WaveformType, PitchModMode
+    from .noise import NoiseFilterMode, NoiseEnvelopeMode
+
+    channel.name = data.get('name', 'Untitled')
+    channel.pitch_semitones = data.get('pitch_semitones', 0.0)
+
+    channel.oscillator.frequency = data.get('osc_frequency', 440.0)
+    waveform_int = data.get('osc_waveform', 0)
+    channel.oscillator.waveform = WaveformType(waveform_int)
+
+    channel.osc_envelope.set_attack(data.get('osc_attack', 0.0) * 1000.0)
+    channel.osc_envelope.set_decay(data.get('osc_decay', 0.316) * 1000.0)
+
+    pitch_mod_int = data.get('pitch_mod_mode', 0)
+    channel.oscillator.pitch_mod_mode = PitchModMode(pitch_mod_int)
+    channel.oscillator.pitch_mod_amount = data.get('pitch_mod_amount', 0.0)
+    channel.oscillator.pitch_mod_rate = data.get('pitch_mod_rate', 0.1)
+
+    filter_mode_int = data.get('noise_filter_mode', 0)
+    channel.noise_gen.filter_mode = NoiseFilterMode(filter_mode_int)
+    channel.noise_gen.filter_frequency = data.get('noise_filter_freq', 20000.0)
+    channel.noise_gen.filter_q = data.get('noise_filter_q', 0.707)
+    channel.noise_gen.stereo = data.get('noise_stereo', False)
+
+    envelope_mode_int = data.get('noise_envelope_mode', 0)
+    channel.noise_gen.envelope_mode = NoiseEnvelopeMode(envelope_mode_int)
+    channel.noise_gen.set_attack(data.get('noise_attack', 0.0) * 1000.0)
+    channel.noise_gen.set_decay(data.get('noise_decay', 0.316) * 1000.0)
+
+    channel.osc_noise_mix = data.get('osc_noise_mix', 0.5)
+    channel.distortion = data.get('distortion', 0.0)
+    channel.eq_frequency = data.get('eq_frequency', 1000.0)
+    channel.eq_gain_db = data.get('eq_gain_db', 0.0)
+    channel.level_db = data.get('level_db', 0.0)
+    channel.pan = data.get('pan', 0.0)
+    channel.output_pair = data.get('output_pair', 'A')
+
+    channel.osc_vel_sensitivity = data.get('osc_vel_sensitivity', 0.0)
+    channel.noise_vel_sensitivity = data.get('noise_vel_sensitivity', 0.0)
+    channel.mod_vel_sensitivity = data.get('mod_vel_sensitivity', 0.0)
+
+    channel.eq_filter_l.set_frequency(channel.eq_frequency)
+    channel.eq_filter_l.set_gain(channel.eq_gain_db)
+    channel.eq_filter_r.set_frequency(channel.eq_frequency)
+    channel.eq_filter_r.set_gain(channel.eq_gain_db)
+
+
 class PythonicPresetParser:
     """
     Parser for Pythonic .mtpreset files
     """
 
-    WAVEFORM_MAP = {
-        'Sine': 0,
-        'Triangle': 1,
-        'Saw': 2,
-    }
-
-    PITCH_MOD_MAP = {
-        'Decay': 0,
-        'Sine': 1,
-        'Noise': 2,
-    }
-
-    FILTER_MODE_MAP = {
-        'LP': 0,
-        'BP': 1,
-        'HP': 2,
-    }
-
-    ENV_MODE_MAP = {
-        'Exp': 0,
-        'Linear': 1,
-        'Mod': 2,
-    }
+    # Delegate to module-level maps for backward compat with code that
+    # references parser.WAVEFORM_MAP etc.
+    WAVEFORM_MAP = WAVEFORM_MAP
+    PITCH_MOD_MAP = PITCH_MOD_MAP
+    FILTER_MODE_MAP = FILTER_MODE_MAP
+    ENV_MODE_MAP = ENV_MODE_MAP
 
     def __init__(self):
         self.content = ""
@@ -230,6 +318,14 @@ class PythonicPresetParser:
         # Parse the numeric part
         while self.pos < len(self.content) and (self.content[self.pos].isdigit() or self.content[self.pos] == '.'):
             self.pos += 1
+        
+        # Check for exponent (scientific notation)
+        if self.pos < len(self.content) and self.content[self.pos].lower() == 'e':
+            self.pos += 1
+            if self.pos < len(self.content) and self.content[self.pos] in '-+':
+                self.pos += 1
+            while self.pos < len(self.content) and self.content[self.pos].isdigit():
+                self.pos += 1
         
         value_str = self.content[start:self.pos].strip()
         
@@ -572,102 +668,11 @@ class PresetManager:
 
     def _convert_drum_patch_data(self, patch: Dict) -> Dict:
         """Convert parsed .mtdrum data to internal channel format"""
-        # Handle Mix parameter (can be tuple or single value)
-        mix_value = patch.get('Mix', 50.0)
-        if isinstance(mix_value, tuple):
-            osc_mix = mix_value[0] / 100.0
-        else:
-            osc_mix = mix_value / 100.0
-        
-        return {
-            'name': patch.get('Name', 'Untitled'),
-            'osc_frequency': patch.get('OscFreq', 440.0),
-            'osc_waveform': self.parser.WAVEFORM_MAP.get(patch.get('OscWave', 'Sine'), 0),
-            'osc_attack': patch.get('OscAtk', 0.0) / 1000.0,  # Convert ms to seconds
-            'osc_decay': patch.get('OscDcy', 316.0) / 1000.0,  # Convert ms to seconds
-            'pitch_mod_mode': self.parser.PITCH_MOD_MAP.get(patch.get('ModMode', 'Decay'), 0),
-            'pitch_mod_amount': patch.get('ModAmt', 0.0),
-            'pitch_mod_rate': patch.get('ModRate', 100.0) / 1000.0 if patch.get('ModMode', 'Decay') == 'Decay' else patch.get('ModRate', 100.0),
-            'noise_filter_mode': self.parser.FILTER_MODE_MAP.get(patch.get('NFilMod', 'LP'), 0),
-            'noise_filter_freq': patch.get('NFilFrq', 20000.0),
-            'noise_filter_q': patch.get('NFilQ', 0.707),
-            'noise_stereo': patch.get('NStereo', False),
-            'noise_envelope_mode': self.parser.ENV_MODE_MAP.get(patch.get('NEnvMod', 'Exp'), 0),
-            'noise_attack': patch.get('NEnvAtk', 0.0) / 1000.0,  # Convert ms to seconds
-            'noise_decay': patch.get('NEnvDcy', 316.0) / 1000.0,  # Convert ms to seconds
-            'osc_noise_mix': osc_mix,
-            'distortion': patch.get('DistAmt', 0.0) / 100.0,
-            'eq_frequency': patch.get('EQFreq', 1000.0),
-            'eq_gain_db': patch.get('EQGain', 0.0),
-            'level_db': patch.get('Level', 0.0),
-            'pan': patch.get('Pan', 0.0),
-            'output_pair': patch.get('Output', 'A'),
-            'osc_vel_sensitivity': patch.get('OscVel', 0.0) / 100.0,
-            'noise_vel_sensitivity': patch.get('NVel', 0.0) / 100.0,
-            'mod_vel_sensitivity': patch.get('ModVel', 0.0) / 100.0,
-        }
+        return convert_drum_patch_data(patch)
 
     def _apply_drum_patch_to_channel(self, channel, data: Dict):
         """Apply drum patch data to a channel"""
-        from .oscillator import WaveformType, PitchModMode
-        from .noise import NoiseFilterMode, NoiseEnvelopeMode
-        
-        # Set name
-        channel.name = data.get('name', 'Untitled')
-        
-        # Pitch offset (semitones) — not present in PO-32 or mtpreset, default 0
-        channel.pitch_semitones = data.get('pitch_semitones', 0.0)
-        
-        # Oscillator parameters
-        channel.oscillator.frequency = data.get('osc_frequency', 440.0)
-        
-        # Convert waveform int to enum
-        waveform_int = data.get('osc_waveform', 0)
-        channel.oscillator.waveform = WaveformType(waveform_int)
-        
-        # Note: attack and decay are in seconds in data, convert to ms
-        channel.osc_envelope.set_attack(data.get('osc_attack', 0.0) * 1000.0)
-        channel.osc_envelope.set_decay(data.get('osc_decay', 0.316) * 1000.0)
-        
-        # Pitch modulation - convert mode int to enum
-        pitch_mod_int = data.get('pitch_mod_mode', 0)
-        channel.oscillator.pitch_mod_mode = PitchModMode(pitch_mod_int)
-        channel.oscillator.pitch_mod_amount = data.get('pitch_mod_amount', 0.0)
-        channel.oscillator.pitch_mod_rate = data.get('pitch_mod_rate', 0.1)
-        
-        # Noise parameters - convert filter mode int to enum
-        filter_mode_int = data.get('noise_filter_mode', 0)
-        channel.noise_gen.filter_mode = NoiseFilterMode(filter_mode_int)
-        channel.noise_gen.filter_frequency = data.get('noise_filter_freq', 20000.0)
-        channel.noise_gen.filter_q = data.get('noise_filter_q', 0.707)
-        channel.noise_gen.stereo = data.get('noise_stereo', False)
-        
-        # Convert envelope mode int to enum
-        envelope_mode_int = data.get('noise_envelope_mode', 0)
-        channel.noise_gen.envelope_mode = NoiseEnvelopeMode(envelope_mode_int)
-        # Note: attack and decay are in seconds in data, convert to ms
-        channel.noise_gen.set_attack(data.get('noise_attack', 0.0) * 1000.0)
-        channel.noise_gen.set_decay(data.get('noise_decay', 0.316) * 1000.0)
-        
-        # Mixing and effects
-        channel.osc_noise_mix = data.get('osc_noise_mix', 0.5)
-        channel.distortion = data.get('distortion', 0.0)
-        channel.eq_frequency = data.get('eq_frequency', 1000.0)
-        channel.eq_gain_db = data.get('eq_gain_db', 0.0)
-        channel.level_db = data.get('level_db', 0.0)
-        channel.pan = data.get('pan', 0.0)
-        channel.output_pair = data.get('output_pair', 'A')
-        
-        # Velocity sensitivity
-        channel.osc_vel_sensitivity = data.get('osc_vel_sensitivity', 0.0)
-        channel.noise_vel_sensitivity = data.get('noise_vel_sensitivity', 0.0)
-        channel.mod_vel_sensitivity = data.get('mod_vel_sensitivity', 0.0)
-        
-        # Update filters (EQ)
-        channel.eq_filter_l.set_frequency(channel.eq_frequency)
-        channel.eq_filter_l.set_gain(channel.eq_gain_db)
-        channel.eq_filter_r.set_frequency(channel.eq_frequency)
-        channel.eq_filter_r.set_gain(channel.eq_gain_db)
+        apply_drum_patch_to_channel(channel, data)
 
 
     def export_drum_to_wav(self, channel, filepath: str, duration_ms: float = 2000.0, velocity: int = 127, sample_rate: int = 44100, bit_depth: int = 16):
@@ -703,29 +708,10 @@ class DrumPatchParser:
     Parser for .mtdrum drum patch files
     """
 
-    WAVEFORM_MAP = {
-        'Sine': 0,
-        'Triangle': 1,
-        'Saw': 2,
-    }
-
-    PITCH_MOD_MAP = {
-        'Decay': 0,
-        'Sine': 1,
-        'Noise': 2,
-    }
-
-    FILTER_MODE_MAP = {
-        'LP': 0,
-        'BP': 1,
-        'HP': 2,
-    }
-
-    ENV_MODE_MAP = {
-        'Exp': 0,
-        'Linear': 1,
-        'Mod': 2,
-    }
+    WAVEFORM_MAP = WAVEFORM_MAP
+    PITCH_MOD_MAP = PITCH_MOD_MAP
+    FILTER_MODE_MAP = FILTER_MODE_MAP
+    ENV_MODE_MAP = ENV_MODE_MAP
 
     def __init__(self):
         self.content = ""

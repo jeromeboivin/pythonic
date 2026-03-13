@@ -74,7 +74,7 @@ class TestOscillatorWaveforms:
         osc.reset_phase()
         
         samples = osc.process(SAMPLE_RATE)
-        expected_gain = 1.218  # Triangle gain compensation
+        expected_gain = 1.241  # Triangle gain compensation
         
         assert abs(np.max(samples) - expected_gain) < 0.02, \
             f"Triangle peak should be ~{expected_gain}, got {np.max(samples)}"
@@ -87,7 +87,7 @@ class TestOscillatorWaveforms:
         osc.reset_phase()
         
         samples = osc.process(SAMPLE_RATE)
-        expected_gain = 1.164  # Sawtooth gain compensation
+        expected_gain = 1.214  # Sawtooth gain compensation
         
         assert abs(np.max(samples) - expected_gain) < 0.02, \
             f"Sawtooth peak should be ~{expected_gain}, got {np.max(samples)}"

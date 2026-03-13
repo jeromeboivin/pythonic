@@ -30,6 +30,8 @@ from gui.widgets import (
 )
 from gui.po32_transfer import PO32TransferDialog
 from gui.po32_import_dialog import PO32ImportDialog
+from gui.drum_generator_dialog import DrumGeneratorDialog
+from pythonic.drum_generator import infer_drum_type
 
 try:
     import sounddevice as sd
@@ -438,6 +440,7 @@ class PythonicGUI:
         
         self.channel_buttons = []
         self.mute_buttons = []
+        self.channel_type_labels = []
         
         for i in range(8):
             ch_frame = tk.Frame(channels_row, bg=self.COLORS['bg_medium'])
@@ -462,6 +465,14 @@ class PythonicGUI:
                                    command=lambda en, ch=i: self._on_mute_toggle(ch, en))
             mute_btn.pack(side='left', padx=1)
             self.mute_buttons.append(mute_btn)
+            
+            # Drum type label under channel (TR-8 style)
+            type_lbl = tk.Label(ch_frame, text="", font=('Segoe UI', 6),
+                               fg=self.COLORS['orange'],
+                               bg=self.COLORS['bg_medium'],
+                               width=5, anchor='center')
+            type_lbl.pack()
+            self.channel_type_labels.append(type_lbl)
         
         self.channel_buttons[0].set_selected(True)
     
@@ -1423,6 +1434,8 @@ class PythonicGUI:
         menu.add_command(label="Transfer to PO-32...", command=self._show_po32_transfer)
         menu.add_command(label="Import from PO-32...", command=self._show_po32_import)
         menu.add_separator()
+        menu.add_command(label="AI Drum Generator...", command=self._show_drum_generator)
+        menu.add_separator()
         menu.add_command(label="Audio Settings...", command=self._show_audio_preferences)
         menu.add_command(label="MIDI Settings...", command=self._show_midi_preferences)
         menu.add_command(label="Synthesis Settings...", command=self._show_synthesis_preferences)
@@ -2371,6 +2384,11 @@ class PythonicGUI:
         patch_name = channel.name if channel.name else f"Channel {self.selected_channel + 1}"
         self.patch_name_label.config(text=patch_name)
         
+        # Update drum type labels for all 8 channels
+        for i, lbl in enumerate(self.channel_type_labels):
+            name = self.synth.channels[i].name
+            lbl.config(text=infer_drum_type(name))
+        
         # Mixing section - use set() for tk.Scale
         self.mix_slider.set(channel.osc_noise_mix * 100)
         self.eq_freq_knob.set_value(channel.eq_frequency)
@@ -3196,6 +3214,23 @@ class PythonicGUI:
         self._update_ui_from_channel()
         self._update_pattern_editors()
         self._update_morph_ui()
+    
+    def _show_drum_generator(self):
+        """Open the AI Drum Generator dialog."""
+        def on_apply():
+            self._update_ui_from_channel()
+            self._update_pattern_editors()
+            self._update_morph_ui()
+
+        dialog = DrumGeneratorDialog(
+            parent=self.root,
+            synth=self.synth,
+            pattern_manager=self.pattern_manager,
+            preferences_manager=self.preferences_manager,
+            on_apply_callback=on_apply,
+        )
+        self.root.wait_window(dialog.dialog)
+        self._update_ui_from_channel()
     
     def _get_audio_output_devices(self):
         """Get list of available audio output devices"""
