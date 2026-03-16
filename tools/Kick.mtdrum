@@ -1,0 +1,27 @@
+DrumPatchV1={
+	Name="Kick"
+	Modified=On
+	OscWave=Saw
+	OscFreq=1999.99615715Hz
+	OscDcy=1.55171123ms
+	ModMode=Decay
+	ModRate=1999994.56341830ms
+	ModAmt=-9.30435619sm
+	NFilMod=BP
+	NFilFrq=101.53731332Hz
+	NFilQ=100.00000000
+	NStereo=Off
+	NEnvMod=Linear
+	NEnvAtk=33.07956755ms
+	NEnvDcy=1.09292850ms
+	Mix=22.67101258/77.32898742
+	DistAmt=0.00000437
+	EQFreq=20.00000007Hz
+	EQGain=-39.99999996dB
+	Level=+5.62765467dB
+	Pan=0.00000000
+	Output=A
+	OscVel=0.00000000%
+	NVel=0.00000000%
+	ModVel=0.00000000%
+}

@@ -482,6 +482,40 @@ class TestDrumChannel:
         
         assert local_peak > 0, "Should have oscillator component"
         assert high_freq_energy > 0, "Should have noise component"
+
+    def test_drum_channel_mix_equal_power_midpoint(self):
+        """50% mix should be the equal-power sum of pure osc and pure noise."""
+        base_params = {
+            'osc_waveform': 0,
+            'osc_frequency': 220,
+            'osc_decay': 500,
+            'noise_filter_freq': 5000,
+            'noise_filter_q': 1.0,
+            'noise_decay': 500,
+            'distortion': 0.0,
+            'eq_gain_db': 0.0,
+            'level_db': 0.0,
+            'pan': 0.0,
+        }
+
+        pure_osc = DrumChannel(0, SAMPLE_RATE)
+        pure_osc.set_parameters({**base_params, 'osc_noise_mix': 1.0})
+        pure_osc.trigger()
+        osc_audio = pure_osc.process(4096)
+
+        pure_noise = DrumChannel(0, SAMPLE_RATE)
+        pure_noise.set_parameters({**base_params, 'osc_noise_mix': 0.0})
+        pure_noise.trigger()
+        noise_audio = pure_noise.process(4096)
+
+        mixed_channel = DrumChannel(0, SAMPLE_RATE)
+        mixed_channel.set_parameters({**base_params, 'osc_noise_mix': 0.5})
+        mixed_channel.trigger()
+        mixed_audio = mixed_channel.process(4096)
+
+        expected = (osc_audio + noise_audio) * np.sqrt(0.5)
+        assert np.allclose(mixed_audio, expected, atol=1e-6), \
+            "50/50 mix should use equal-power gains for osc and noise"
     
     def test_drum_channel_pan_left(self):
         """Pan full left should put more signal in left channel"""
