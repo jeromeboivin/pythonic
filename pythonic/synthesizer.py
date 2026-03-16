@@ -6,9 +6,15 @@ Manages 8 drum channels with audio output
 import numpy as np
 from typing import Optional, List
 from concurrent.futures import ThreadPoolExecutor
+from itertools import repeat
 from .drum_channel import DrumChannel
 from .oscillator import WaveformType, PitchModMode
 from .noise import NoiseFilterMode, NoiseEnvelopeMode
+
+
+def _render_channel_audio(channel: DrumChannel, num_samples: int):
+    """Render one channel block for optional parallel processing."""
+    return channel, channel.process(num_samples)
 
 
 class PythonicSynthesizer:
@@ -18,7 +24,8 @@ class PythonicSynthesizer:
     
     NUM_CHANNELS = 8
     
-    def __init__(self, sample_rate: int = 44100):
+    def __init__(self, sample_rate: int = 44100, *,
+                 parallel_channel_processing: bool = False):
         self.sr = sample_rate
         
         # Create 8 drum channels
@@ -28,15 +35,24 @@ class PythonicSynthesizer:
         
         # Master output
         self.master_volume_db = 0.0  # -inf to +10 dB
+        self._master_gain_linear = 1.0
         
         # Pre-allocate buffers to avoid allocations in process_audio
         self._output_buffer = np.zeros((4096, 2), dtype=np.float32)
         self._bus_a_buffer = np.zeros((4096, 2), dtype=np.float32)
         self._bus_b_buffer = np.zeros((4096, 2), dtype=np.float32)
         
-        # Thread pool for parallel channel processing (8 workers for 8 channels)
-        self._thread_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="audio_")
-        self._channel_buffers = [np.zeros((8192, 2), dtype=np.float32) for _ in range(self.NUM_CHANNELS)]
+        # Preview overlays are rendered off the audio callback and mixed here.
+        self._preview_source = None
+
+        # Channel parallelism is only enabled for non-real-time renderers.
+        self.parallel_channel_processing = parallel_channel_processing
+        self._thread_pool = None
+        if self.parallel_channel_processing:
+            self._thread_pool = ThreadPoolExecutor(
+                max_workers=self.NUM_CHANNELS,
+                thread_name_prefix="audio_",
+            )
         
         # Current state
         self.selected_channel = 0
@@ -211,31 +227,50 @@ class PythonicSynthesizer:
             bus_a = np.zeros((num_samples, 2), dtype=np.float32)
             bus_b = np.zeros((num_samples, 2), dtype=np.float32)
         
-        # Route active unmuted channels to their assigned sub-mix bus
-        active_count = 0
-        for channel in self.channels:
-            if channel.is_active and not channel.muted:
-                active_count += 1
-                channel_output = channel.process(num_samples)
+        preview_source = self._preview_source
+
+        # Build the active channel list once so the render path can stay lean.
+        active_channels = [
+            channel for channel in self.channels
+            if channel.is_active and not channel.muted
+        ]
+
+        if not active_channels and preview_source is None:
+            return output
+
+        if active_channels:
+            if (self.parallel_channel_processing and self._thread_pool is not None
+                    and len(active_channels) > 1 and num_samples >= 512):
+                rendered_channels = self._thread_pool.map(
+                    _render_channel_audio,
+                    active_channels,
+                    repeat(num_samples),
+                )
+            else:
+                rendered_channels = (
+                    (channel, channel.process(num_samples))
+                    for channel in active_channels
+                )
+
+            for channel, channel_output in rendered_channels:
                 if channel.output_pair == 'B':
                     np.add(bus_b, channel_output, out=bus_b)
                 else:
                     np.add(bus_a, channel_output, out=bus_a)
-        
-        # If no active channels, return early
-        if active_count == 0:
-            return output
-        
-        # Combine both buses into the final output
-        np.add(bus_a, bus_b, out=output)
+
+            # Combine both buses into the final output
+            np.add(bus_a, bus_b, out=output)
+
+        if preview_source is not None:
+            preview_audio = preview_source.read(num_samples)
+            np.add(output, preview_audio, out=output)
         
         # Apply master volume (optimized)
-        if self.master_volume_db != 0.0 and self.master_volume_db > -60:
-            master_gain = 10.0 ** (self.master_volume_db / 20.0)
-            np.multiply(output, master_gain, out=output)
-        elif self.master_volume_db <= -60:
+        if self._master_gain_linear == 0.0:
             output.fill(0)
             return output
+        if self._master_gain_linear != 1.0:
+            np.multiply(output, self._master_gain_linear, out=output)
         
         # Note: Channel-level headroom is already applied in DrumChannel.INTERNAL_HEADROOM_LINEAR
         # No additional headroom reduction needed here for accurate reproduction
@@ -262,6 +297,38 @@ class PythonicSynthesizer:
     def set_master_volume(self, volume_db: float):
         """Set master volume in dB"""
         self.master_volume_db = np.clip(volume_db, -60.0, 10.0)
+        if self.master_volume_db <= -60.0:
+            self._master_gain_linear = 0.0
+        elif self.master_volume_db == 0.0:
+            self._master_gain_linear = 1.0
+        else:
+            self._master_gain_linear = 10.0 ** (self.master_volume_db / 20.0)
+
+    def set_preview_source(self, preview_source):
+        """Attach a preview renderer that will be mixed into the main output."""
+        if self._preview_source is preview_source:
+            return
+
+        old_source = self._preview_source
+        self._preview_source = preview_source
+        if old_source is not None:
+            try:
+                old_source.stop()
+            except Exception:
+                pass
+
+    def clear_preview_source(self, preview_source=None):
+        """Detach the current preview renderer from the main output."""
+        if preview_source is not None and self._preview_source is not preview_source:
+            return
+
+        old_source = self._preview_source
+        self._preview_source = None
+        if old_source is not None:
+            try:
+                old_source.stop()
+            except Exception:
+                pass
     
     def set_bpm(self, bpm: float):
         """Set BPM for all channels (for tempo-synced delay effects)"""
@@ -270,8 +337,10 @@ class PythonicSynthesizer:
     
     def cleanup(self):
         """Cleanup thread pool resources (call on shutdown)"""
+        self.clear_preview_source()
         if hasattr(self, '_thread_pool'):
-            self._thread_pool.shutdown(wait=False)
+            if self._thread_pool is not None:
+                self._thread_pool.shutdown(wait=False)
     
     def mute_channel(self, channel_idx: int, muted: bool):
         """Mute or unmute a channel"""

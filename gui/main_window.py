@@ -3217,9 +3217,11 @@ class PythonicGUI:
     
     def _show_drum_generator(self):
         """Open the AI Drum Generator dialog."""
-        def on_apply():
+        def on_apply(mode='patches'):
+            self._push_undo_state()
             self._update_ui_from_channel()
-            self._update_pattern_editors()
+            if mode == 'patches_and_patterns':
+                self._update_pattern_editors()
             self._update_morph_ui()
 
         dialog = DrumGeneratorDialog(

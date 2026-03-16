@@ -19,6 +19,8 @@ from pythonic.drum_generator import (
     CONTINUOUS_PARAMS, CATEGORICAL_PARAMS, is_torch_available,
 )
 from pythonic.preset_manager import convert_drum_patch_data, apply_drum_patch_to_channel
+from pythonic.synthesizer import PythonicSynthesizer
+from gui.drum_generator_dialog import BufferedPatternPreviewSource
 
 
 # ─────────────────────────────────────────────
@@ -175,6 +177,49 @@ class TestConversionBridge:
         assert abs(channel.oscillator.frequency - 100.0) < 1e-6
 
 
+class TestLoopPreviewAudioPath:
+    class _DummyPreviewSource:
+        def __init__(self, value: float):
+            self.value = value
+            self.stop_called = False
+
+        def read(self, num_samples: int) -> np.ndarray:
+            return np.full((num_samples, 2), self.value, dtype=np.float32)
+
+        def stop(self):
+            self.stop_called = True
+
+    def test_synth_mixes_preview_source(self):
+        synth = PythonicSynthesizer(44100)
+        source = self._DummyPreviewSource(0.125)
+
+        synth.set_preview_source(source)
+        audio = synth.process_audio(256)
+        synth.clear_preview_source()
+
+        assert np.allclose(audio, 0.125, atol=1e-6)
+        assert source.stop_called
+
+    def test_buffered_preview_renderer_prefills_audio(self):
+        preview_synth = PythonicSynthesizer(
+            44100,
+            parallel_channel_processing=True,
+        )
+        trigger_table = [[0]] + [[] for _ in range(15)]
+        source = BufferedPatternPreviewSource(
+            preview_synth,
+            [trigger_table],
+            bpm=120,
+        )
+
+        source.start(prefill_blocks=1)
+        audio = source.read(1050)
+        source.stop()
+
+        assert audio.shape == (1050, 2)
+        assert np.max(np.abs(audio)) > 0.0
+
+
 # ─────────────────────────────────────────────
 # Generator (requires torch)
 # ─────────────────────────────────────────────
@@ -229,6 +274,35 @@ class TestPatchGenerator:
             for param in CONTINUOUS_PARAMS:
                 assert abs(pa[param] - pb[param]) < 1e-6, f"Mismatch on {param}"
 
+    def test_sampling_mode_validation(self):
+        if self._skip_if_unavailable():
+            return
+        gen = PatchGenerator()
+        gen.load_model(self._get_checkpoint())
+
+        with pytest.raises(ValueError):
+            gen.generate("bd", n=1, sampling_mode="not-a-mode")
+
+    def test_explicit_prior_sampling(self):
+        if self._skip_if_unavailable():
+            return
+        gen = PatchGenerator()
+        gen.load_model(self._get_checkpoint())
+
+        patches = gen.generate("bd", n=2, temperature=0.1, seed=7, sampling_mode="prior")
+        assert len(patches) == 2
+
+    def test_empirical_bank_detected_when_cache_present(self):
+        if self._skip_if_unavailable():
+            return
+        gen = PatchGenerator()
+        gen.load_model(self._get_checkpoint())
+
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        cache_path = os.path.join(base, "drum_dataset_cache.pt")
+        if os.path.isfile(cache_path):
+            assert gen.has_empirical_bank
+
     def test_generate_for_slot_validates_type(self):
         if self._skip_if_unavailable():
             return
@@ -269,7 +343,13 @@ if __name__ == "__main__":
     else:
         # Minimal manual test runner
         import traceback
-        test_classes = [TestPatchPreprocessor, TestSlotMap, TestConversionBridge, TestPatchGenerator]
+        test_classes = [
+            TestPatchPreprocessor,
+            TestSlotMap,
+            TestConversionBridge,
+            TestLoopPreviewAudioPath,
+            TestPatchGenerator,
+        ]
         passed = failed = skipped = 0
         for cls in test_classes:
             inst = cls()

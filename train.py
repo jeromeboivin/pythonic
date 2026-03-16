@@ -49,21 +49,22 @@ FINAL_CKPT   = os.path.join(DRIVE_DIR, "drum_cvae_final.pt")
 # os.makedirs(DRIVE_DIR, exist_ok=True)
 
 # ── Hyperparameters ───────────────────────────────────────────────────────────
-LATENT_DIM       = 16
-HIDDEN_DIM       = 512
+LATENT_DIM       = 64
+HIDDEN_DIM       = 1024
 BATCH_SIZE       = 256
-LR               = 1e-5
-BETA             = 0.005  # weak KL to favour reconstruction while keeping sampling usable
-KL_WARMUP_EPOCHS = 50
-KL_FREE_BITS     = 0.25   # min nats per latent dim — prevents posterior collapse
-KL_CYCLICAL      = False  # keep KL simple and weak when optimising for low train loss
-KL_CYCLE_EPOCHS  = 200    # length of one KL annealing cycle
+LR               = 3e-4
+BETA             = 1e-5   # KL is summed over latent dims while recon is a mean,
+                          # so useful values are tiny in this script.
+KL_WARMUP_EPOCHS = 1000
+KL_FREE_BITS     = 0.01
+KL_CYCLICAL      = False
+KL_CYCLE_EPOCHS  = 200
 DROPOUT          = 0.0
-EPOCHS           = 100000
+EPOCHS           = 4000
 LOG_EVERY        = 5
 TARGET_LOSS      = None
-EARLY_STOPPING_PATIENCE  = 3000
-EARLY_STOPPING_MIN_DELTA = 1e-5
+EARLY_STOPPING_PATIENCE  = 600
+EARLY_STOPPING_MIN_DELTA = 5e-6
 
 # %% [markdown]
 # ## Cell 3 — Imports, constants, and all class/function definitions
@@ -328,6 +329,38 @@ class PatchDataset(Dataset):
             types,
         )
 
+
+def build_empirical_latent_bank(model: nn.Module, dataset: PatchDataset,
+                                device: torch.device) -> tuple[dict, dict]:
+    """Encode the training set and build per-type latent anchors for sampling."""
+    mus_by_type = {drum_type: [] for drum_type in DRUM_TYPES}
+    batch_size = 1024
+
+    model.eval()
+    with torch.no_grad():
+        for start in range(0, len(dataset), batch_size):
+            end = min(start + batch_size, len(dataset))
+            x_batch = dataset.x[start:end].to(device)
+            c_batch = dataset.c[start:end].to(device)
+            mu_batch, _ = model.encoder(x_batch, c_batch)
+            mu_batch = mu_batch.cpu()
+            for row_idx, drum_type in enumerate(dataset.types[start:end]):
+                if drum_type in mus_by_type:
+                    mus_by_type[drum_type].append(mu_batch[row_idx])
+
+    latent_bank = {}
+    latent_jitter = {}
+    for drum_type, rows in mus_by_type.items():
+        if not rows:
+            continue
+        mus = torch.stack(rows).to(device)
+        median = mus.median(dim=0).values
+        mad = (mus - median).abs().median(dim=0).values
+        latent_bank[drum_type] = mus
+        latent_jitter[drum_type] = torch.clamp(mad * 0.15, min=0.01, max=0.5)
+
+    return latent_bank, latent_jitter
+
 # ─────────────────────────────────────────────
 # Dataset cache — build once, reload in seconds
 # ─────────────────────────────────────────────
@@ -416,7 +449,15 @@ class Encoder(nn.Module):
             nn.GELU(),
             nn.Dropout(dropout),
         )
-        self.res_block = nn.Sequential(
+        self.res_block1 = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+        )
+        self.res_block2 = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.GELU(),
@@ -436,7 +477,8 @@ class Encoder(nn.Module):
 
     def forward(self, x, c):
         h = self.input_proj(torch.cat([x, c], dim=-1))
-        h = self.res_act(h + self.res_block(h))
+        h = self.res_act(h + self.res_block1(h))
+        h = self.res_act(h + self.res_block2(h))
         h = self.compress(h)
         return self.mu_head(h), self.logvar_head(h)
 
@@ -463,7 +505,15 @@ class Decoder(nn.Module):
             nn.GELU(),
             nn.Dropout(dropout),
         )
-        self.res_block = nn.Sequential(
+        self.res_block1 = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+        )
+        self.res_block2 = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.GELU(),
@@ -478,7 +528,8 @@ class Decoder(nn.Module):
     def forward(self, z, c):
         h    = self.input_proj(torch.cat([z, c], dim=-1))
         h    = self.expand(h)
-        h    = self.res_act(h + self.res_block(h))
+        h    = self.res_act(h + self.res_block1(h))
+        h    = self.res_act(h + self.res_block2(h))
         cont = torch.sigmoid(self.cont_head(h))
         cats = self.cat_head(h)
         return torch.cat([cont, cats], dim=-1)
@@ -735,6 +786,13 @@ class CVAETrainer:
                 "hidden_dim": self.model.hidden_dim,
                 "dropout":    self.model.dropout,
             },
+            "training_config": {
+                "beta": self.beta,
+                "kl_warmup_epochs": self.kl_warmup_epochs,
+                "kl_free_bits": self.kl_free_bits,
+                "kl_cyclical": self.kl_cyclical,
+                "kl_cycle_epochs": self.kl_cycle_epochs,
+            },
             "scaler": self.preprocessor.scaler_state_dict(),
         }, path)
 
@@ -771,24 +829,76 @@ class PatchGenerator:
         self.preprocessor = trainer.preprocessor
         self.device       = trainer.device
         self.use_amp      = trainer.use_amp
+        self.beta         = trainer.beta
         self.model.eval()
+        train_dataset = trainer.train_loader.dataset
+        self.latent_bank, self.latent_jitter = build_empirical_latent_bank(
+            self.model, train_dataset, self.device
+        )
+
+    @property
+    def sampling_summary(self) -> str:
+        if self.beta > 0.0:
+            return "prior"
+        return "data-guided" if self.latent_bank else "prior"
+
+    def _resolve_sampling_mode(self, sampling_mode: str, drum_type: str) -> str:
+        if sampling_mode not in {"auto", "prior", "empirical"}:
+            raise ValueError(
+                f"Unknown sampling_mode '{sampling_mode}'. Use 'auto', 'prior', or 'empirical'."
+            )
+        if sampling_mode == "auto":
+            if self.beta > 0.0:
+                return "prior"
+            return "empirical" if drum_type in self.latent_bank else "prior"
+        if sampling_mode == "empirical" and drum_type not in self.latent_bank:
+            raise RuntimeError(
+                f"No empirical latent bank available for drum type '{drum_type}'."
+            )
+        return sampling_mode
+
+    def _sample_prior_latents(self, n: int, temperature: float):
+        scale = max(float(temperature), 0.0)
+        return torch.randn(n, self.model.latent_dim, device=self.device) * scale
+
+    def _sample_empirical_latents(self, drum_type: str, n: int, temperature: float):
+        bank = self.latent_bank[drum_type]
+        count = bank.shape[0]
+        primary = bank[torch.randint(count, (n,), device=self.device)]
+        if count == 1:
+            return primary.clone()
+
+        temp = max(float(temperature), 0.0)
+        secondary = bank[torch.randint(count, (n,), device=self.device)]
+        blend_cap = min(0.5, temp * 0.35)
+        blend = torch.rand(n, 1, device=self.device) * blend_cap
+        jitter = self.latent_jitter[drum_type].unsqueeze(0)
+        noise = torch.randn(n, self.model.latent_dim, device=self.device) * jitter * min(temp, 1.5)
+        return primary + (secondary - primary) * blend + noise
 
     def generate(self, drum_type: str, n: int = 1,
-                 temperature: float = 1.0, name_prefix: str = None) -> list:
+                 temperature: float = 1.0, name_prefix: str = None,
+                 sampling_mode: str = "auto") -> list:
         """
         Generate n patches for the given drum type.
 
         Args:
             drum_type:    One of the DRUM_TYPES labels, e.g. "bd", "sd", "oh"
             n:            Number of patches to generate
-            temperature:  1.0 = normal, <1 = conservative, >1 = adventurous
+            temperature:  In prior mode this scales Gaussian sampling. In
+                          data-guided mode it scales interpolation and jitter.
             name_prefix:  Optional prefix for the patch Name field
+            sampling_mode: 'auto', 'prior', or 'empirical'
         """
         c = (torch.tensor(self.preprocessor.encode_type(drum_type), dtype=torch.float32)
                .unsqueeze(0).repeat(n, 1).to(self.device))
+        resolved_mode = self._resolve_sampling_mode(sampling_mode, drum_type)
 
         with torch.no_grad(), autocast("cuda", enabled=self.use_amp):
-            z     = torch.randn(n, self.model.latent_dim, device=self.device) * temperature
+            if resolved_mode == "empirical":
+                z = self._sample_empirical_latents(drum_type, n, temperature)
+            else:
+                z = self._sample_prior_latents(n, temperature)
             recon = self.model.decoder(z, c).float().cpu().numpy()
 
         prefix  = name_prefix or f"Gen {drum_type.upper()}"
@@ -801,10 +911,16 @@ class PatchGenerator:
         ]
         return patches
 
-    def generate_batch(self, type_counts: dict, temperature: float = 1.0) -> dict:
+    def generate_batch(self, type_counts: dict, temperature: float = 1.0,
+                       sampling_mode: str = "auto") -> dict:
         """e.g. type_counts = {"bd": 4, "sd": 4, "ch": 8}"""
         return {
-            drum_type: self.generate(drum_type, n=count, temperature=temperature)
+            drum_type: self.generate(
+                drum_type,
+                n=count,
+                temperature=temperature,
+                sampling_mode=sampling_mode,
+            )
             for drum_type, count in type_counts.items()
         }
 
@@ -910,6 +1026,7 @@ print(f"\nFinal model saved → {FINAL_CKPT}")
 
 # %%
 generator = PatchGenerator(trainer)
+print(f"Sampler: {generator.sampling_summary}")
 
 bd_patch = generator.generate("bd", n=1, temperature=1.0)[0]
 print("Generated BD patch:")

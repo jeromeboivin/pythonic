@@ -8,6 +8,11 @@ Only numpy is imported at module level (already a core dependency).
 import re
 import numpy as np
 
+
+DEFAULT_DATASET_CACHE = "drum_dataset_cache.pt"
+EMPIRICAL_BLEND_SCALE = 0.35
+EMPIRICAL_JITTER_SCALE = 0.15
+
 # ─────────────────────────────────────────────
 # Constants (mirrored from drum_patches/train.py)
 # ─────────────────────────────────────────────
@@ -65,7 +70,7 @@ SLOT_MAP = {
     7: ("CY/FX",        ["cy", "fx", "fuzz", "reverse", "synth", "bass", "other"]),
 }
 
-DEFAULT_HIDDEN_DIM = 256
+DEFAULT_HIDDEN_DIM = 1024
 
 # ─────────────────────────────────────────────
 # Keyword-based drum type inference (like TR-8 labels)
@@ -206,7 +211,15 @@ def _build_model(param_dim, type_dim, cont_dim, cat_dim, latent_dim, hidden_dim,
                 nn.GELU(),
                 nn.Dropout(dropout),
             )
-            self.res_block = nn.Sequential(
+            self.res_block1 = nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+            )
+            self.res_block2 = nn.Sequential(
                 nn.Linear(hidden_dim, hidden_dim),
                 nn.LayerNorm(hidden_dim),
                 nn.GELU(),
@@ -226,7 +239,8 @@ def _build_model(param_dim, type_dim, cont_dim, cat_dim, latent_dim, hidden_dim,
 
         def forward(self, x, c):
             h = self.input_proj(torch.cat([x, c], dim=-1))
-            h = self.res_act(h + self.res_block(h))
+            h = self.res_act(h + self.res_block1(h))
+            h = self.res_act(h + self.res_block2(h))
             h = self.compress(h)
             return self.mu_head(h), self.logvar_head(h)
 
@@ -247,7 +261,15 @@ def _build_model(param_dim, type_dim, cont_dim, cat_dim, latent_dim, hidden_dim,
                 nn.GELU(),
                 nn.Dropout(dropout),
             )
-            self.res_block = nn.Sequential(
+            self.res_block1 = nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+            )
+            self.res_block2 = nn.Sequential(
                 nn.Linear(hidden_dim, hidden_dim),
                 nn.LayerNorm(hidden_dim),
                 nn.GELU(),
@@ -262,7 +284,8 @@ def _build_model(param_dim, type_dim, cont_dim, cat_dim, latent_dim, hidden_dim,
         def forward(self, z, c):
             h = self.input_proj(torch.cat([z, c], dim=-1))
             h = self.expand(h)
-            h = self.res_act(h + self.res_block(h))
+            h = self.res_act(h + self.res_block1(h))
+            h = self.res_act(h + self.res_block2(h))
             cont = torch.sigmoid(self.cont_head(h))
             cats = self.cat_head(h)
             return torch.cat([cont, cats], dim=-1)
@@ -338,11 +361,16 @@ class PatchGenerator:
     module level so the rest of the app is unaffected when torch is absent.
     """
 
+    _EMPIRICAL_BANK_CACHE = {}
+
     def __init__(self):
         self._model = None
         self._preprocessor = PatchPreprocessor()
         self._device = None
         self._loaded_path = None
+        self._training_config = {}
+        self._latent_bank = {}
+        self._latent_jitter = {}
 
     @property
     def is_loaded(self) -> bool:
@@ -352,8 +380,141 @@ class PatchGenerator:
     def loaded_path(self) -> str | None:
         return self._loaded_path
 
+    @property
+    def has_empirical_bank(self) -> bool:
+        return bool(self._latent_bank)
+
+    @property
+    def sampling_summary(self) -> str:
+        return "data-guided" if self._auto_sampling_mode() == "empirical" else "prior"
+
+    def _reset_sampling_support(self):
+        self._training_config = {}
+        self._latent_bank = {}
+        self._latent_jitter = {}
+
+    def _auto_sampling_mode(self) -> str:
+        beta = float(self._training_config.get("beta", 0.0) or 0.0)
+        if beta > 0.0:
+            return "prior"
+        return "empirical" if self.has_empirical_bank else "prior"
+
+    def _resolve_sampling_mode(self, sampling_mode: str, drum_type: str) -> str:
+        if sampling_mode not in {"auto", "prior", "empirical"}:
+            raise ValueError(
+                f"Unknown sampling_mode '{sampling_mode}'. Use 'auto', 'prior', or 'empirical'."
+            )
+        if sampling_mode == "auto":
+            return self._auto_sampling_mode() if drum_type in self._latent_bank else "prior"
+        if sampling_mode == "empirical" and drum_type not in self._latent_bank:
+            raise RuntimeError(
+                f"No empirical latent bank available for drum type '{drum_type}'."
+            )
+        return sampling_mode
+
+    def _build_empirical_latent_bank(self, cache_path: str):
+        import os
+        import torch
+
+        self._latent_bank = {}
+        self._latent_jitter = {}
+        if not os.path.isfile(cache_path):
+            return
+
+        cache_key = None
+        if self._loaded_path and os.path.isfile(self._loaded_path):
+            cache_key = (
+                self._loaded_path,
+                os.path.getmtime(self._loaded_path),
+                cache_path,
+                os.path.getmtime(cache_path),
+            )
+            cached = self._EMPIRICAL_BANK_CACHE.get(cache_key)
+            if cached is not None:
+                self._latent_bank, self._latent_jitter = cached
+                return
+
+        cache = torch.load(cache_path, map_location="cpu", weights_only=False)
+        train_x = cache.get("train_x")
+        train_c = cache.get("train_c")
+        train_types = cache.get("train_types")
+
+        if train_x is None or train_c is None or train_types is None:
+            return
+        if train_x.ndim != 2 or train_c.ndim != 2:
+            return
+        if train_x.shape[1] != self._preprocessor.param_dim:
+            return
+        if train_c.shape[1] != self._preprocessor.type_dim:
+            return
+        if train_x.shape[0] != train_c.shape[0] or train_x.shape[0] != len(train_types):
+            return
+
+        mus_by_type = {drum_type: [] for drum_type in DRUM_TYPES}
+        batch_size = 1024
+
+        self._model.eval()
+        with torch.no_grad():
+            for start in range(0, train_x.shape[0], batch_size):
+                end = min(start + batch_size, train_x.shape[0])
+                x_batch = train_x[start:end].to(self._device)
+                c_batch = train_c[start:end].to(self._device)
+                mu_batch, _ = self._model.encoder(x_batch, c_batch)
+                mu_batch = mu_batch.cpu()
+                type_batch = train_types[start:end]
+                for row_idx, drum_type in enumerate(type_batch):
+                    if drum_type in mus_by_type:
+                        mus_by_type[drum_type].append(mu_batch[row_idx])
+
+        for drum_type, rows in mus_by_type.items():
+            if not rows:
+                continue
+            mus = torch.stack(rows).to(self._device)
+            median = mus.median(dim=0).values
+            mad = (mus - median).abs().median(dim=0).values
+            jitter = torch.clamp(mad * EMPIRICAL_JITTER_SCALE, min=0.01, max=0.5)
+            self._latent_bank[drum_type] = mus
+            self._latent_jitter[drum_type] = jitter
+
+        if cache_key is not None and self._latent_bank:
+            self._EMPIRICAL_BANK_CACHE[cache_key] = (
+                self._latent_bank,
+                self._latent_jitter,
+            )
+
+    def _sample_prior_latents(self, n: int, temperature: float, gen):
+        import torch
+
+        scale = max(float(temperature), 0.0)
+        return torch.randn(
+            n, self._model.latent_dim, device=self._device, generator=gen
+        ) * scale
+
+    def _sample_empirical_latents(self, drum_type: str, n: int, temperature: float, gen):
+        import torch
+
+        bank = self._latent_bank[drum_type]
+        count = bank.shape[0]
+        primary_idx = torch.randint(count, (n,), device=self._device, generator=gen)
+        primary = bank[primary_idx]
+
+        if count == 1:
+            return primary.clone()
+
+        temp = max(float(temperature), 0.0)
+        secondary_idx = torch.randint(count, (n,), device=self._device, generator=gen)
+        secondary = bank[secondary_idx]
+        blend_cap = min(0.5, temp * EMPIRICAL_BLEND_SCALE)
+        blend = torch.rand(n, 1, device=self._device, generator=gen) * blend_cap
+        jitter = self._latent_jitter[drum_type].unsqueeze(0)
+        noise = torch.randn(
+            n, self._model.latent_dim, device=self._device, generator=gen
+        ) * jitter * min(temp, 1.5)
+        return primary + (secondary - primary) * blend + noise
+
     def load_model(self, path: str):
         """Load a CVAE checkpoint from disk. Raises on failure."""
+        import os
         import torch
 
         self._device = torch.device("cpu")
@@ -376,19 +537,27 @@ class PatchGenerator:
         model.eval()
 
         self._preprocessor.load_scaler_state(ckpt["scaler"])
+        self._reset_sampling_support()
+        self._training_config = ckpt.get("training_config", {})
         self._model = model
         self._loaded_path = path
+        self._build_empirical_latent_bank(
+            os.path.join(os.path.dirname(path), DEFAULT_DATASET_CACHE)
+        )
 
     def generate(self, drum_type: str, n: int = 1,
-                 temperature: float = 1.0, seed: int | None = None) -> list[dict]:
+                 temperature: float = 1.0, seed: int | None = None,
+                 sampling_mode: str = "auto") -> list[dict]:
         """
         Generate *n* raw patch dicts for *drum_type*.
 
         Args:
             drum_type:   One of DRUM_TYPES (e.g. "bd", "sd", "oh").
             n:           Number of candidates.
-            temperature: Sampling temperature (1.0 = normal).
+            temperature: Sampling temperature. In data-guided mode this controls
+                         interpolation and jitter around real encoded patches.
             seed:        Optional RNG seed for reproducibility.
+            sampling_mode: 'auto', 'prior', or 'empirical'.
 
         Returns:
             List of patch dicts with keys like OscFreq, OscWave, etc.
@@ -406,8 +575,13 @@ class PatchGenerator:
         else:
             gen.seed()
 
+        resolved_mode = self._resolve_sampling_mode(sampling_mode, drum_type)
+
         with torch.no_grad():
-            z = torch.randn(n, self._model.latent_dim, device=self._device, generator=gen) * temperature
+            if resolved_mode == "empirical":
+                z = self._sample_empirical_latents(drum_type, n, temperature, gen)
+            else:
+                z = self._sample_prior_latents(n, temperature, gen)
             recon = self._model.decoder(z, c).cpu().numpy()
 
         return [
@@ -420,7 +594,8 @@ class PatchGenerator:
 
     def generate_for_slot(self, slot_index: int, n: int = 1,
                           temperature: float = 1.0, seed: int | None = None,
-                          type_override: str | None = None) -> list[dict]:
+                          type_override: str | None = None,
+                          sampling_mode: str = "auto") -> list[dict]:
         """
         Generate candidates for a specific TR-8 slot.
 
@@ -436,4 +611,10 @@ class PatchGenerator:
                     f"Allowed: {allowed}"
                 )
             drum_type = type_override
-        return self.generate(drum_type, n=n, temperature=temperature, seed=seed)
+        return self.generate(
+            drum_type,
+            n=n,
+            temperature=temperature,
+            seed=seed,
+            sampling_mode=sampling_mode,
+        )

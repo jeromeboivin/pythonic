@@ -67,6 +67,47 @@ def convert_drum_patch_data(patch: Dict) -> Dict:
     }
 
 
+def channel_to_raw_patch(channel) -> Dict:
+    """Convert a live DrumChannel to a raw patch dict (OscFreq, OscWave, etc.).
+
+    This is the inverse of convert_drum_patch_data + apply_drum_patch_to_channel.
+    Useful for building kit-fingerprint condition vectors from the current synth state.
+    """
+    waveform_names = ['Sine', 'Triangle', 'Saw']
+    mod_mode_names = ['Decay', 'Sine', 'Noise']
+    filter_mode_names = ['LP', 'BP', 'HP']
+    env_mode_names = ['Exp', 'Linear', 'Mod']
+
+    return {
+        'Name': channel.name,
+        'OscWave': waveform_names[channel.oscillator.waveform.value],
+        'OscFreq': channel.oscillator.frequency,
+        'OscDcy': channel.osc_envelope.decay_ms,
+        'ModMode': mod_mode_names[channel.oscillator.pitch_mod_mode.value],
+        'ModRate': (channel.oscillator.pitch_mod_rate * 1000.0
+                    if channel.oscillator.pitch_mod_mode.value == 0
+                    else channel.oscillator.pitch_mod_rate),
+        'ModAmt': channel.oscillator.pitch_mod_amount,
+        'NFilMod': filter_mode_names[channel.noise_gen.filter_mode.value],
+        'NFilFrq': channel.noise_gen.filter_frequency,
+        'NFilQ': channel.noise_gen.filter_q,
+        'NStereo': channel.noise_gen.stereo,
+        'NEnvMod': env_mode_names[channel.noise_gen.envelope_mode.value],
+        'NEnvAtk': channel.noise_gen.attack_ms,
+        'NEnvDcy': channel.noise_gen.decay_ms,
+        'Mix': channel.osc_noise_mix * 100.0,
+        'DistAmt': channel.distortion * 100.0,
+        'EQFreq': channel.eq_frequency,
+        'EQGain': channel.eq_gain_db,
+        'Level': channel.level_db,
+        'Pan': channel.pan,
+        'Output': channel.output_pair,
+        'OscVel': channel.osc_vel_sensitivity * 100.0,
+        'NVel': channel.noise_vel_sensitivity * 100.0,
+        'ModVel': channel.mod_vel_sensitivity * 100.0,
+    }
+
+
 def apply_drum_patch_to_channel(channel, data: Dict):
     """Apply a converted channel-format dict to a DrumChannel."""
     from .oscillator import WaveformType, PitchModMode

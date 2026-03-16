@@ -824,3 +824,53 @@ class PatternManager:
         for i in range(1, len(self.patterns)):
             if self.patterns[i - 1].chained_to_next:
                 self.patterns[i].chained_from_prev = True
+
+    def reset_all_patterns(self):
+        """Reset all 12 patterns to empty state."""
+        self.patterns = [
+            Pattern(name, self.pattern_length, self.num_channels)
+            for name in self.PATTERN_NAMES
+        ]
+
+    def apply_pattern_bank(self, bank: Dict[str, dict]):
+        """Apply a generated pattern bank to all 12 slots A-L.
+
+        Args:
+            bank: Dict mapping pattern name ('A'-'L') to pattern data dict.
+                  Each pattern data dict has keys "1"-"8" with
+                  Triggers/Accents/Fills strings, plus optional Length/Chained.
+        """
+        for i, name in enumerate(self.PATTERN_NAMES):
+            pat_data = bank.get(name)
+            if pat_data is None:
+                continue
+            pattern = self.patterns[i]
+            length = pat_data.get("Length", self.pattern_length)
+            pattern.set_length(length)
+            pattern.chained_to_next = pat_data.get("Chained", False)
+            pattern.chained_from_prev = False
+
+            for ch_idx in range(self.num_channels):
+                ch_key = str(ch_idx + 1)
+                ch_data = pat_data.get(ch_key, {})
+                if isinstance(ch_data, list) or not ch_data:
+                    continue
+                channel = pattern.channels[ch_idx]
+                triggers_str = ch_data.get("Triggers", "")
+                accents_str = ch_data.get("Accents", "")
+                fills_str = ch_data.get("Fills", "")
+                for step in range(min(length, len(channel.steps))):
+                    channel.steps[step].trigger = (
+                        step < len(triggers_str) and triggers_str[step] == "#"
+                    )
+                    channel.steps[step].accent = (
+                        step < len(accents_str) and accents_str[step] == "#"
+                    )
+                    channel.steps[step].fill = (
+                        step < len(fills_str) and fills_str[step] == "#"
+                    )
+
+        # Fix chained_from_prev flags
+        for i in range(1, len(self.patterns)):
+            if self.patterns[i - 1].chained_to_next:
+                self.patterns[i].chained_from_prev = True
