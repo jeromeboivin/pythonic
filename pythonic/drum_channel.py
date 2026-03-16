@@ -320,8 +320,10 @@ class DrumChannel:
         osc_stereo[:, 0] = osc_signal
         osc_stereo[:, 1] = osc_signal
         
-        # Mix crossfade using mixToGain()
-        # Dominant source at full gain, minority attenuated up to -25 dB
+        # Shaped equal-power oscillator/noise crossfade.
+        # 0.0 = pure noise, 1.0 = pure oscillator, 0.5 = equal power.
+        # A smoothstep control taper keeps the midpoint balanced while
+        # reducing the minority source more aggressively near the extremes.
         mix = smoothed_mix
         if mix > 0.999:
             # Pure oscillator
@@ -330,16 +332,9 @@ class DrumChannel:
             # Pure noise
             mixed = noise_signal
         else:
-            current_mix = mix * 2.0 - 1.0  # 0->-1, 0.5->0, 1->+1
-            if current_mix >= 0:
-                # Osc-dominant: osc at full, noise attenuated
-                osc_gain = 1.0
-                noise_gain = (1.0 - current_mix) * (10.0 ** (-25.0 * current_mix / 20.0))
-            else:
-                # Noise-dominant: noise at full, osc attenuated
-                abs_mix = -current_mix
-                osc_gain = (1.0 - abs_mix) * (10.0 ** (-25.0 * abs_mix / 20.0))
-                noise_gain = 1.0
+            shaped_mix = mix * mix * (3.0 - 2.0 * mix)
+            osc_gain = np.sin(0.5 * np.pi * shaped_mix)
+            noise_gain = np.cos(0.5 * np.pi * shaped_mix)
             # Use pre-allocated buffer for mixed output
             if num_samples <= len(self._mixed_buffer):
                 mixed = self._mixed_buffer[:num_samples]

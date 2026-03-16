@@ -1,0 +1,27 @@
+DrumPatchV1={
+	Name="Cymbal"
+	Modified=On
+	OscWave=Saw
+	OscFreq=1314.40496105Hz
+	OscDcy=1.00021602ms
+	ModMode=Noise
+	ModRate=1974.98096141ms
+	ModAmt=+21.57545774sm
+	NFilMod=LP
+	NFilFrq=7227.26626271Hz
+	NFilQ=16.61722292
+	NStereo=Off
+	NEnvMod=Exp
+	NEnvAtk=0.00000000ms
+	NEnvDcy=138.31934310ms
+	Mix=98.30185175/1.69814825
+	DistAmt=0.00000000
+	EQFreq=20.43306561Hz
+	EQGain=-0.91882706dB
+	Level=-11.89566205dB
+	Pan=0.00000000
+	Output=A
+	OscVel=0.00000000%
+	NVel=0.00000000%
+	ModVel=0.00000000%
+}

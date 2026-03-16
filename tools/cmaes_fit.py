@@ -490,6 +490,21 @@ def _feature_loss(features: Dict[str, np.ndarray], target: Dict[str, np.ndarray]
     return loss if np.isfinite(loss) else 1e6
 
 
+def _waveform_cancellation_loss(synth: np.ndarray, target: np.ndarray) -> float:
+    """Compute waveform cancellation loss (time-domain MSE).
+
+    Adding the target to the inverted synthesized waveform should produce
+    silence if they match perfectly:  loss = mean((target - synth)^2).
+    Both arrays must already be peak-normalized.
+    """
+    min_len = min(len(synth), len(target))
+    if min_len == 0:
+        return 1e6
+    diff = target[:min_len] - synth[:min_len]
+    mse = float(np.mean(diff * diff))
+    return mse if np.isfinite(mse) else 1e6
+
+
 # ---------------------------------------------------------------------------
 # Initial parameter estimation from target WAV analysis
 # ---------------------------------------------------------------------------
@@ -1024,15 +1039,10 @@ def _find_best_preset_match(
 
     # Coarse comparison settings
     compare_sr = 8000
-    compare_nperseg = 256
-    compare_hop = 64
-    compare_weights = {"log_mag": 1.0, "env": 1.0, "centroid": 0.3, "rms": 0.2}
 
-    # Prepare target features at comparison resolution
+    # Prepare target at comparison resolution
     target_rs = _resample(target_audio, target_sr, compare_sr)
     target_rs = target_rs / (np.max(np.abs(target_rs)) + 1e-8)
-    target_features = _compute_features(target_rs, compare_sr, compare_nperseg, compare_hop)
-    target_rms = float(np.sqrt(np.mean(target_rs * target_rs)))
     target_len = len(target_audio)
 
     # Pre-compute resampling filter
@@ -1069,15 +1079,7 @@ def _find_best_preset_match(
                 return label, 1e6
             audio_rs = audio_rs / (max_abs + 1e-8)
 
-            features = _compute_features(audio_rs, compare_sr, compare_nperseg, compare_hop)
-            loss = _feature_loss(features, target_features, {
-                "log_mag": compare_weights["log_mag"],
-                "env": compare_weights["env"],
-                "centroid": compare_weights["centroid"],
-            })
-            rms = float(np.sqrt(np.mean(audio_rs * audio_rs)))
-            if np.isfinite(rms) and np.isfinite(target_rms):
-                loss += compare_weights["rms"] * float((rms - target_rms) ** 2)
+            loss = _waveform_cancellation_loss(audio_rs, target_rs)
             if not np.isfinite(loss):
                 loss = 1e6
             return label, loss
@@ -1250,7 +1252,7 @@ def main() -> None:
     parser.add_argument("--popsize", type=int, default=0, help="Population size (0=auto)")
     parser.add_argument("--sigma", type=float, default=0.25, help="Initial CMA-ES sigma in unit space")
     parser.add_argument("--target-loss", type=float, default=1e-5, help="Stop early only if best loss <= target-loss")
-    parser.add_argument("--min-evals", type=int, default=200, help="Minimum evaluations before allowing early stop")
+    parser.add_argument("--early-stop-min-evals", type=int, default=200, help="Minimum evals per restart before early stop (only with --allow-cma-stop)")
     parser.add_argument("--tolx", type=float, default=1e-10, help="CMA-ES tolx (smaller = stricter)")
     parser.add_argument("--tolfun", type=float, default=1e-12, help="CMA-ES tolfun (smaller = stricter)")
     parser.add_argument("--tolstagnation", type=int, default=200, help="CMA-ES tolstagnation (higher = less early stop)")
@@ -1450,21 +1452,6 @@ def main() -> None:
                 else:
                     print("[Preset search] No valid preset found, using analysis/defaults")
 
-    weights = {
-        "log_mag": 1.0,
-        "env": 0.5,
-        "centroid": 0.2,
-        "rms": 0.1,
-    }
-    if args.weights:
-        user_weights = json.loads(args.weights)
-        weights.update({
-            "log_mag": float(user_weights.get("spec", weights["log_mag"])),
-            "env": float(user_weights.get("env", weights["env"])),
-            "centroid": float(user_weights.get("centroid", weights["centroid"])),
-            "rms": float(user_weights.get("rms", weights["rms"])),
-        })
-
     def save_checkpoint(
         tag: str,
         loss: float,
@@ -1494,12 +1481,10 @@ def main() -> None:
             return [{
                 "name": "single",
                 "feature_sr": args.feature_sr,
-                "nperseg": args.nperseg,
-                "hop": args.hop,
                 "max_evals": args.max_evals if args.max_evals > 0 else 20000,
                 "sigma": args.sigma,
                 "target_loss": args.target_loss,
-                "min_evals": args.min_evals,
+                "early_stop_min_evals": args.early_stop_min_evals,
                 "grid_search_discrete": True,
                 "restarts": 3,
             }]
@@ -1507,12 +1492,10 @@ def main() -> None:
             {
                 "name": "coarse",
                 "feature_sr": 8000,
-                "nperseg": 256,
-                "hop": 64,
                 "max_evals": 8000,
                 "sigma": 0.5,
                 "target_loss": 1e-2,
-                "min_evals": 1000,
+                "early_stop_min_evals": 1000,
                 "param_group": "major",
                 "grid_search_discrete": True,
                 "restarts": 3,
@@ -1520,24 +1503,20 @@ def main() -> None:
             {
                 "name": "mid",
                 "feature_sr": 11025,
-                "nperseg": 512,
-                "hop": 128,
                 "max_evals": 10000,
                 "sigma": 0.35,
                 "target_loss": 5e-4,
-                "min_evals": 1500,
+                "early_stop_min_evals": 1500,
                 "param_group": "minor",
                 "restarts": 2,
             },
             {
                 "name": "fine",
                 "feature_sr": 22050,
-                "nperseg": 1024,
-                "hop": 256,
                 "max_evals": 15000,
                 "sigma": 0.25,
                 "target_loss": 1e-5,
-                "min_evals": 2000,
+                "early_stop_min_evals": 2000,
                 "param_group": "core",
                 "restarts": 1,
             },
@@ -1580,15 +1559,13 @@ def main() -> None:
         feature_sr = int(stage.get("feature_sr", args.feature_sr))
         if feature_sr <= 0:
             feature_sr = target_sr
-        nperseg = int(stage.get("nperseg", args.nperseg))
-        hop = int(stage.get("hop", args.hop))
         if args.allow_cma_stop:
             max_evals = int(stage.get("max_evals", args.max_evals))
         else:
             max_evals = int(args.max_evals) if args.max_evals > 0 else int(stage.get("max_evals", 10000))
         sigma = float(stage.get("sigma", args.sigma))
         target_loss = float(stage.get("target_loss", args.target_loss))
-        min_evals = int(stage.get("min_evals", args.min_evals))
+        early_stop_min_evals = int(stage.get("early_stop_min_evals", args.early_stop_min_evals))
 
         param_group = stage.get("param_group", "default")
         if param_group == "major":
@@ -1610,26 +1587,12 @@ def main() -> None:
         if args.force_waveform:
             stage_params = _filter_waveform_param(stage_params)
 
+        # Prepare target at stage resolution
         target_audio_rs = _resample(target_audio, target_sr, feature_sr)
         target_audio_rs = target_audio_rs / (np.max(np.abs(target_audio_rs)) + 1e-8)
-        target_features = _compute_features(target_audio_rs, feature_sr, nperseg, hop)
-        target_rms = float(np.sqrt(np.mean(target_audio_rs * target_audio_rs)))
 
-        # Pre-compute resampling filter for this stage (optimization: avoid
-        # re-designing the FIR filter on every evaluate() call)
+        # Pre-compute resampling filter for this stage
         resample_filt = _get_resample_filter(synth_sr, feature_sr)
-
-        # Adaptive feature weights per stage (optimization: coarse stages
-        # emphasize envelope to nail gross shape, fine stages emphasize
-        # spectral detail for precision)
-        stage_weights = dict(weights)
-        if not args.weights:  # Only apply adaptive weights if user didn't override
-            if stage_name == "coarse":
-                stage_weights = {"log_mag": 0.5, "env": 1.5, "centroid": 0.3, "rms": 0.2}
-            elif stage_name == "mid":
-                stage_weights = {"log_mag": 1.0, "env": 0.8, "centroid": 0.2, "rms": 0.1}
-            elif stage_name == "fine":
-                stage_weights = {"log_mag": 1.5, "env": 0.3, "centroid": 0.2, "rms": 0.05}
 
         # Pre-allocate buffers for evaluation to reduce allocations
         target_len = len(target_audio)
@@ -1736,17 +1699,8 @@ def main() -> None:
                     cache[key] = loss
                 return loss
             np.divide(audio_rs, max_abs + 1e-8, out=bufs.audio_norm_buf)
-            
-            features = _compute_features(bufs.audio_norm_buf, feature_sr, nperseg, hop)
-            loss = _feature_loss(features, target_features, {
-                "log_mag": stage_weights["log_mag"],
-                "env": stage_weights["env"],
-                "centroid": stage_weights["centroid"],
-            })
 
-            rms = float(np.sqrt(np.mean(audio_rs * audio_rs)))
-            if np.isfinite(rms) and np.isfinite(target_rms):
-                loss += stage_weights["rms"] * float((rms - target_rms) ** 2)
+            loss = _waveform_cancellation_loss(bufs.audio_norm_buf[:target_rs_len], target_audio_rs)
 
             # Final NaN check - return high penalty if loss is invalid
             if not np.isfinite(loss):
@@ -1926,7 +1880,7 @@ def main() -> None:
                     restart_best = np.array(solutions[idx], dtype=np.float32)
                 
                 if args.allow_cma_stop:
-                    if restart_best_loss <= target_loss and evals_this_restart >= min_evals // num_restarts:
+                    if restart_best_loss <= target_loss and evals_this_restart >= early_stop_min_evals // num_restarts:
                         break
                     if max_evals_per_restart > 0 and evals_this_restart >= max_evals_per_restart:
                         break
