@@ -656,7 +656,9 @@ class PythonicGUI:
                 bg=self.COLORS['bg_medium']).pack(side='left', padx=2)
         
         # Horizontal mix slider
-        self.mix_slider = tk.Scale(mix_row, from_=0, to=100, 
+        # Show oscillator on the left and noise on the right.
+        # Internal parameter semantics remain 0=noise, 100=oscillator.
+        self.mix_slider = tk.Scale(mix_row, from_=100, to=0, 
                                   orient='horizontal', length=60,
                                   showvalue=False,
                                   bg=self.COLORS['bg_medium'], 
