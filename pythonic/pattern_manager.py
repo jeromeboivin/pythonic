@@ -874,3 +874,85 @@ class PatternManager:
         for i in range(1, len(self.patterns)):
             if self.patterns[i - 1].chained_to_next:
                 self.patterns[i].chained_from_prev = True
+
+    def apply_single_pattern(self, pattern_index: int, pat_data: dict):
+        """Replace a single pattern slot from generated pattern data.
+
+        Wipes all existing trigger/accent/fill content before applying.
+
+        Args:
+            pattern_index: Index (0-11) of the pattern to replace.
+            pat_data: Pattern data dict with keys "1"-"8", each containing
+                      Triggers/Accents/Fills strings, plus optional Length.
+        """
+        if not (0 <= pattern_index < len(self.patterns)):
+            return
+        pattern = self.patterns[pattern_index]
+        length = pat_data.get("Length", self.pattern_length)
+        pattern.set_length(length)
+        # Clear all channels first
+        pattern.clear()
+
+        for ch_idx in range(self.num_channels):
+            ch_key = str(ch_idx + 1)
+            ch_data = pat_data.get(ch_key, {})
+            if isinstance(ch_data, list) or not ch_data:
+                continue
+            channel = pattern.channels[ch_idx]
+            triggers_str = ch_data.get("Triggers", "")
+            accents_str = ch_data.get("Accents", "")
+            fills_str = ch_data.get("Fills", "")
+            for step in range(min(length, len(channel.steps))):
+                channel.steps[step].trigger = (
+                    step < len(triggers_str) and triggers_str[step] == "#"
+                )
+                channel.steps[step].accent = (
+                    step < len(accents_str) and accents_str[step] == "#"
+                )
+                channel.steps[step].fill = (
+                    step < len(fills_str) and fills_str[step] == "#"
+                )
+
+    def apply_single_channel(self, pattern_index: int, channel_id: int,
+                             pat_data: dict):
+        """Replace a single channel within a pattern from generated data.
+
+        Wipes the channel's existing trigger/accent/fill content before applying.
+
+        Args:
+            pattern_index: Index (0-11) of the pattern.
+            channel_id: Channel index (0-7) to replace.
+            pat_data: Full generated pattern data dict (keys "1"-"8").
+        """
+        if not (0 <= pattern_index < len(self.patterns)):
+            return
+        pattern = self.patterns[pattern_index]
+        if not (0 <= channel_id < len(pattern.channels)):
+            return
+
+        channel = pattern.channels[channel_id]
+        length = pat_data.get("Length", len(channel.steps))
+
+        # Clear this channel first
+        for step in channel.steps:
+            step.trigger = False
+            step.accent = False
+            step.fill = False
+
+        ch_key = str(channel_id + 1)
+        ch_data = pat_data.get(ch_key, {})
+        if isinstance(ch_data, list) or not ch_data:
+            return
+        triggers_str = ch_data.get("Triggers", "")
+        accents_str = ch_data.get("Accents", "")
+        fills_str = ch_data.get("Fills", "")
+        for step in range(min(length, len(channel.steps))):
+            channel.steps[step].trigger = (
+                step < len(triggers_str) and triggers_str[step] == "#"
+            )
+            channel.steps[step].accent = (
+                step < len(accents_str) and accents_str[step] == "#"
+            )
+            channel.steps[step].fill = (
+                step < len(fills_str) and fills_str[step] == "#"
+            )

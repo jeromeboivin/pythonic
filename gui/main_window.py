@@ -32,6 +32,8 @@ from gui.po32_transfer import PO32TransferDialog
 from gui.po32_import_dialog import PO32ImportDialog
 from gui.drum_generator_dialog import DrumGeneratorDialog
 from pythonic.drum_generator import infer_drum_type
+from pythonic.pattern_generator import PatternGenerator
+from pythonic.preset_manager import channel_to_raw_patch
 
 try:
     import sounddevice as sd
@@ -1441,6 +1443,7 @@ class PythonicGUI:
         menu.add_command(label="Audio Settings...", command=self._show_audio_preferences)
         menu.add_command(label="MIDI Settings...", command=self._show_midi_preferences)
         menu.add_command(label="Synthesis Settings...", command=self._show_synthesis_preferences)
+        menu.add_command(label="AI Settings...", command=self._show_ai_preferences)
         
         try:
             menu.tk_popup(self.root.winfo_pointerx(), self.root.winfo_pointery())
@@ -1985,6 +1988,11 @@ class PythonicGUI:
         menu.add_command(label="Randomize Accents/Fills",
                         command=lambda: self._pattern_menu_action('rand_accents', idx))
         menu.add_separator()
+        menu.add_command(label="Randomize Pattern (AI)",
+                        command=lambda: self._pattern_menu_action('ai_randomize_pattern', idx))
+        menu.add_command(label="Randomize Channel (AI)",
+                        command=lambda: self._pattern_menu_action('ai_randomize_channel', idx))
+        menu.add_separator()
         menu.add_command(label="Export Pattern to MIDI File...",
                         command=lambda: self._pattern_menu_action('export_midi', idx))
         menu.add_command(label="Export Pattern to Audio File...",
@@ -2027,6 +2035,12 @@ class PythonicGUI:
                 self.pattern_manager.alter_pattern(pattern_idx)
             elif action == 'rand_accents':
                 self.pattern_manager.randomize_accents_fills(pattern_idx)
+            elif action == 'ai_randomize_pattern':
+                self._ai_randomize_pattern(pattern_idx)
+                return
+            elif action == 'ai_randomize_channel':
+                self._ai_randomize_channel(pattern_idx, self.selected_channel)
+                return
             elif action == 'export_midi':
                 self._export_pattern_to_midi(pattern_idx)
                 return  # Don't refresh editors or show message
@@ -2036,10 +2050,83 @@ class PythonicGUI:
             
             # Refresh editors
             self._update_pattern_editors()
-            messagebox.showinfo("Pattern", f"Pattern operation '{action}' completed!")
         except Exception as e:
             messagebox.showerror("Error", f"Pattern operation failed: {e}")
     
+    # ── AI pattern randomization ─────────────────────────────────────
+
+    def _get_ai_pattern_generator(self) -> 'PatternGenerator | None':
+        """Return a loaded PatternGenerator or None with user feedback."""
+        if not hasattr(self, '_pattern_gen'):
+            self._pattern_gen = PatternGenerator()
+        gen = self._pattern_gen
+        if gen.ensure_loaded(self.preferences_manager):
+            return gen
+        messagebox.showwarning(
+            "No Pattern Model",
+            "No AI pattern model is available.\n\n"
+            "Set one via the preset menu → AI Settings,\n"
+            "or place 'pattern_cvae_best.pt' in the\n"
+            "drum_patterns/ folder.",
+        )
+        return None
+
+    def _get_raw_patches_from_synth(self) -> list:
+        """Build 8 raw patch dicts from the current live synth channels."""
+        return [channel_to_raw_patch(ch) for ch in self.synth.channels[:8]]
+
+    def _ai_randomize_pattern(self, pattern_idx: int):
+        """Replace the selected pattern with an AI-generated one."""
+        gen = self._get_ai_pattern_generator()
+        if gen is None:
+            return
+        try:
+            self._push_undo_state()
+            raw_patches = self._get_raw_patches_from_synth()
+            pm = self.pattern_manager
+            temp = self.preferences_manager.get(
+                'drum_generator_pattern_temperature', 0.7)
+            patterns = gen.generate(
+                raw_patches,
+                tempo=pm.bpm,
+                swing=pm.swing,
+                fill_rate=pm.fill_rate,
+                step_rate=pm.step_rate,
+                n=1,
+                temperature=temp,
+            )
+            pm.apply_single_pattern(pattern_idx, patterns[0])
+            self._update_pattern_editors()
+        except Exception as e:
+            messagebox.showerror("Error",
+                                 f"AI pattern generation failed: {e}")
+
+    def _ai_randomize_channel(self, pattern_idx: int, channel_id: int):
+        """Replace the selected channel with AI-generated data."""
+        gen = self._get_ai_pattern_generator()
+        if gen is None:
+            return
+        try:
+            self._push_undo_state()
+            raw_patches = self._get_raw_patches_from_synth()
+            pm = self.pattern_manager
+            temp = self.preferences_manager.get(
+                'drum_generator_pattern_temperature', 0.7)
+            patterns = gen.generate(
+                raw_patches,
+                tempo=pm.bpm,
+                swing=pm.swing,
+                fill_rate=pm.fill_rate,
+                step_rate=pm.step_rate,
+                n=1,
+                temperature=temp,
+            )
+            pm.apply_single_channel(pattern_idx, channel_id, patterns[0])
+            self._update_pattern_editors()
+        except Exception as e:
+            messagebox.showerror("Error",
+                                 f"AI channel generation failed: {e}")
+
     def _export_pattern_to_midi(self, pattern_idx):
         """Export pattern to MIDI file"""
         if not MIDI_AVAILABLE:
@@ -2121,7 +2208,6 @@ class PythonicGUI:
             
             # Save MIDI file
             mid.save(filename)
-            messagebox.showinfo("Export Success", f"Pattern exported to:\\n{filename}")
             
         except Exception as e:
             messagebox.showerror("Export Error", f"Failed to export MIDI file:\\n{e}")
@@ -2225,8 +2311,6 @@ class PythonicGUI:
                 wav_file.setframerate(self.sample_rate)
                 wav_file.writeframes(audio_int16.tobytes())
             
-            messagebox.showinfo("Export Success", f"Pattern exported to:\\n{filename}")
-            
         except Exception as e:
             messagebox.showerror("Export Error", f"Failed to export audio file:\\n{e}")
     
@@ -2287,7 +2371,7 @@ class PythonicGUI:
             'fills': channel.get_fills(),
             'probabilities': channel.get_probabilities(),
         }
-        messagebox.showinfo("Copy", "Pattern channel copied to clipboard")
+
     
     def _on_pattern_paste(self):
         """Paste pattern/channel from clipboard"""
@@ -2306,7 +2390,6 @@ class PythonicGUI:
             if 'probabilities' in data:
                 channel.set_probabilities(data['probabilities'])
             self._update_pattern_editors()
-            messagebox.showinfo("Paste", "Pattern channel pasted")
     
     def _on_matrix_edit(self, channel_id, step, value):
         """Handle matrix editor edits"""
@@ -2471,7 +2554,6 @@ class PythonicGUI:
                 json.dump(data, f, indent=2)
             self.preferences_manager.add_recent_file(filename)
             self._refresh_preset_list()
-            messagebox.showinfo("Saved", f"Preset saved to {filename}")
     
     def _load_preset(self):
         """Load preset from file"""
@@ -2512,7 +2594,6 @@ class PythonicGUI:
                 # Get the patch name from the file
                 import os
                 patch_name = os.path.splitext(os.path.basename(filename))[0]
-                messagebox.showinfo("Loaded", f"Drum patch loaded into channel {self.selected_channel + 1}:\n{patch_name}")
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to load drum patch: {e}")
     
@@ -2536,7 +2617,6 @@ class PythonicGUI:
             try:
                 # Save the drum patch
                 self.preset_manager.save_drum_patch(self.selected_channel, filename)
-                messagebox.showinfo("Saved", f"Drum patch saved to:\n{filename}")
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to save drum patch: {e}")
     
@@ -2546,7 +2626,6 @@ class PythonicGUI:
         if folder:
             try:
                 exported = self.preset_manager.export_all_drums_to_wav(self.synth, folder)
-                messagebox.showinfo("Exported", f"Exported {len(exported)} drums to {folder}")
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to export: {e}")
     
@@ -2563,7 +2642,6 @@ class PythonicGUI:
                     self.synth.channels[self.selected_channel],
                     filename
                 )
-                messagebox.showinfo("Exported", f"Drum exported to {filename}")
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to export: {e}")
     
@@ -2619,8 +2697,6 @@ class PythonicGUI:
                     self.preferences_manager.add_recent_file(filename)
                     self.preferences_manager.set('last_preset', filename)
                     self._refresh_preset_list()
-                    if show_message:
-                        messagebox.showinfo("Loaded", f"Preset loaded: {preset_data.get('name', 'Unknown')}")
                 else:
                     messagebox.showerror("Error", "Failed to parse preset file")
             else:
@@ -2680,8 +2756,6 @@ class PythonicGUI:
                 self.preferences_manager.add_recent_file(filename)
                 self.preferences_manager.set('last_preset', filename)
                 self._refresh_preset_list()
-                if show_message:
-                    messagebox.showinfo("Loaded", f"Preset loaded from {filename}")
         except Exception as e:
             if show_message:
                 messagebox.showerror("Error", f"Failed to load preset: {e}")
@@ -2697,7 +2771,6 @@ class PythonicGUI:
         if folder:
             self.preferences_manager.set_preset_folder(folder)
             self._refresh_preset_list()
-            messagebox.showinfo("Folder Selected", f"Preset folder set to:\n{folder}")
     
     # ============ MIDI Input Methods ============
     
@@ -3555,6 +3628,133 @@ class PythonicGUI:
         y = self.root.winfo_y() + (self.root.winfo_height() - dialog.winfo_height()) // 2
         dialog.geometry(f"+{x}+{y}")
     
+    def _show_ai_preferences(self):
+        """Show AI settings dialog (pattern model path, temperature)."""
+        from pythonic.pattern_generator import PatternGenerator, _BUNDLED_CHECKPOINT
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("AI Settings")
+        dialog.geometry("500x260")
+        dialog.resizable(True, True)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.configure(bg=self.COLORS['bg_dark'])
+
+        tk.Label(dialog, text="AI Settings",
+                 font=('Segoe UI', 12, 'bold'),
+                 fg=self.COLORS['text'],
+                 bg=self.COLORS['bg_dark']).pack(pady=(15, 10))
+
+        # ── Pattern model path ───────────────────────────────────────
+        path_frame = tk.Frame(dialog, bg=self.COLORS['bg_dark'])
+        path_frame.pack(fill='x', padx=20, pady=5)
+
+        tk.Label(path_frame, text="Pattern Model Checkpoint:",
+                 font=('Segoe UI', 9),
+                 fg=self.COLORS['text'],
+                 bg=self.COLORS['bg_dark']).pack(anchor='w')
+
+        saved_path = self.preferences_manager.get(
+            'drum_generator_pattern_model_path', None) or ''
+        path_var = tk.StringVar(value=saved_path)
+        entry_row = tk.Frame(path_frame, bg=self.COLORS['bg_dark'])
+        entry_row.pack(fill='x', pady=(2, 0))
+        path_entry = tk.Entry(entry_row, textvariable=path_var,
+                              font=('Segoe UI', 9),
+                              bg=self.COLORS['bg_medium'],
+                              fg=self.COLORS['text'],
+                              insertbackground=self.COLORS['text'])
+        path_entry.pack(side='left', fill='x', expand=True, padx=(0, 4))
+
+        def browse():
+            initial_dir = None
+            cur = path_var.get()
+            if cur:
+                d = os.path.dirname(cur)
+                if os.path.isdir(d):
+                    initial_dir = d
+            p = filedialog.askopenfilename(
+                parent=dialog,
+                title="Select Pattern CVAE Checkpoint",
+                filetypes=[("PyTorch Checkpoint", "*.pt"),
+                           ("All Files", "*.*")],
+                initialdir=initial_dir,
+            )
+            if p:
+                path_var.set(p)
+
+        tk.Button(entry_row, text="Browse...", command=browse,
+                  bg=self.COLORS['bg_light'], fg=self.COLORS['text'],
+                  font=('Segoe UI', 8), relief='flat',
+                  padx=4).pack(side='left')
+
+        def clear_path():
+            path_var.set('')
+
+        tk.Button(entry_row, text="Clear", command=clear_path,
+                  bg=self.COLORS['bg_light'], fg=self.COLORS['text'],
+                  font=('Segoe UI', 8), relief='flat',
+                  padx=4).pack(side='left', padx=(2, 0))
+
+        # Fallback info
+        fallback_exists = os.path.isfile(_BUNDLED_CHECKPOINT)
+        fallback_text = ("Bundled checkpoint will be used as fallback."
+                         if fallback_exists
+                         else "No bundled checkpoint found.")
+        tk.Label(path_frame, text=fallback_text,
+                 font=('Segoe UI', 8),
+                 fg=self.COLORS['text_dim'],
+                 bg=self.COLORS['bg_dark']).pack(anchor='w', pady=(4, 0))
+
+        # ── Pattern temperature ──────────────────────────────────────
+        temp_frame = tk.Frame(dialog, bg=self.COLORS['bg_dark'])
+        temp_frame.pack(fill='x', padx=20, pady=(10, 5))
+
+        tk.Label(temp_frame, text="Pattern Temperature:",
+                 font=('Segoe UI', 9),
+                 fg=self.COLORS['text'],
+                 bg=self.COLORS['bg_dark']).pack(side='left')
+
+        saved_temp = self.preferences_manager.get(
+            'drum_generator_pattern_temperature', 0.7)
+        temp_var = tk.DoubleVar(value=saved_temp)
+        tk.Spinbox(temp_frame, from_=0.1, to=3.0, increment=0.1,
+                   textvariable=temp_var, width=5,
+                   font=('Segoe UI', 9),
+                   bg=self.COLORS['bg_medium'],
+                   fg=self.COLORS['text'],
+                   buttonbackground=self.COLORS['bg_light'],
+                   insertbackground=self.COLORS['text']).pack(
+                       side='left', padx=(4, 0))
+
+        # ── Buttons ──────────────────────────────────────────────────
+        btn_frame = tk.Frame(dialog, bg=self.COLORS['bg_dark'])
+        btn_frame.pack(fill='x', padx=20, pady=15)
+
+        def apply_and_close():
+            new_path = path_var.get().strip() or None
+            self.preferences_manager.set(
+                'drum_generator_pattern_model_path', new_path)
+            self.preferences_manager.set(
+                'drum_generator_pattern_temperature', temp_var.get())
+            # Invalidate cached generator so next use picks up new path
+            if hasattr(self, '_pattern_gen'):
+                del self._pattern_gen
+            dialog.destroy()
+
+        tk.Button(btn_frame, text="OK", command=apply_and_close,
+                  bg=self.COLORS['accent'], fg=self.COLORS['text'],
+                  font=('Segoe UI', 9), padx=8).pack(side='right')
+        tk.Button(btn_frame, text="Cancel", command=dialog.destroy,
+                  bg=self.COLORS['bg_light'], fg=self.COLORS['text'],
+                  font=('Segoe UI', 9), padx=8).pack(
+                      side='right', padx=(0, 5))
+
+        dialog.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() - dialog.winfo_width()) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - dialog.winfo_height()) // 2
+        dialog.geometry(f"+{x}+{y}")
+
     def _show_midi_preferences(self):
         """Show MIDI settings dialog"""
         dialog = tk.Toplevel(self.root)

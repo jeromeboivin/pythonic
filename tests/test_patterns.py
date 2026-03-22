@@ -695,6 +695,93 @@ class TestStepRate:
         assert abs(pm.step_duration_ms - 62.5) < 0.1
 
 
+class TestAIPatternApplication:
+    """Test apply_single_pattern and apply_single_channel helpers"""
+
+    @staticmethod
+    def _make_pat_data():
+        """Build a minimal generated-pattern-style dict."""
+        return {
+            "Length": 16,
+            "1": {"Triggers": "####------------", "Accents": "#---#-----------", "Fills": "----------------"},
+            "2": {"Triggers": "----####--------", "Accents": "----------------", "Fills": "----------------"},
+            "3": {"Triggers": "--------####----", "Accents": "----------------", "Fills": "----------------"},
+            "4": {"Triggers": "------------####", "Accents": "----------------", "Fills": "----------------"},
+            "5": {"Triggers": "----------------", "Accents": "----------------", "Fills": "----------------"},
+            "6": {"Triggers": "----------------", "Accents": "----------------", "Fills": "----------------"},
+            "7": {"Triggers": "----------------", "Accents": "----------------", "Fills": "----------------"},
+            "8": {"Triggers": "----------------", "Accents": "----------------", "Fills": "----------------"},
+        }
+
+    def test_apply_single_pattern_replaces_content(self):
+        """apply_single_pattern should wipe previous content and apply new data"""
+        pm = PatternManager()
+        # Seed pattern 0 with all triggers on
+        for ch in pm.patterns[0].channels:
+            for step in ch.steps:
+                step.trigger = True
+                step.accent = True
+                step.fill = True
+
+        pat_data = self._make_pat_data()
+        pm.apply_single_pattern(0, pat_data)
+
+        ch0 = pm.patterns[0].channels[0]
+        assert ch0.steps[0].trigger is True
+        assert ch0.steps[4].trigger is False  # should be cleared
+
+        ch1 = pm.patterns[0].channels[1]
+        assert ch1.steps[4].trigger is True
+        assert ch1.steps[0].trigger is False
+
+    def test_apply_single_pattern_leaves_other_patterns(self):
+        """apply_single_pattern should not affect other patterns"""
+        pm = PatternManager()
+        # Set something in pattern 1
+        pm.patterns[1].channels[0].steps[0].trigger = True
+        pm.apply_single_pattern(0, self._make_pat_data())
+        assert pm.patterns[1].channels[0].steps[0].trigger is True
+
+    def test_apply_single_channel_replaces_only_target(self):
+        """apply_single_channel should wipe and replace only the target channel"""
+        pm = PatternManager()
+        # Seed channel 3 with all triggers
+        for step in pm.patterns[0].channels[3].steps:
+            step.trigger = True
+
+        pat_data = self._make_pat_data()
+        pm.apply_single_channel(0, 3, pat_data)
+
+        ch3 = pm.patterns[0].channels[3]
+        # Channel "4" in pat_data has triggers at steps 12-15
+        assert ch3.steps[12].trigger is True
+        assert ch3.steps[0].trigger is False  # was cleared
+
+    def test_apply_single_channel_leaves_other_channels(self):
+        """apply_single_channel should not affect other channels"""
+        pm = PatternManager()
+        pm.patterns[0].channels[0].steps[0].trigger = True
+        pm.apply_single_channel(0, 3, self._make_pat_data())
+        assert pm.patterns[0].channels[0].steps[0].trigger is True
+
+    def test_apply_single_channel_leaves_other_patterns(self):
+        """apply_single_channel should not affect other patterns"""
+        pm = PatternManager()
+        pm.patterns[1].channels[3].steps[0].trigger = True
+        pm.apply_single_channel(0, 3, self._make_pat_data())
+        assert pm.patterns[1].channels[3].steps[0].trigger is True
+
+    def test_apply_single_pattern_accent_mapping(self):
+        """apply_single_pattern should correctly map accents"""
+        pm = PatternManager()
+        pat_data = self._make_pat_data()
+        pm.apply_single_pattern(0, pat_data)
+        ch0 = pm.patterns[0].channels[0]
+        assert ch0.steps[0].accent is True   # '#' at position 0
+        assert ch0.steps[4].accent is True    # '#' at position 4
+        assert ch0.steps[1].accent is False
+
+
 def run_tests_standalone():
     """Run tests without pytest for environments where pytest is not available"""
     import traceback
@@ -707,6 +794,7 @@ def run_tests_standalone():
         TestFillRate,
         TestSwing,
         TestStepRate,
+        TestAIPatternApplication,
     ]
     
     total_passed = 0

@@ -6,6 +6,7 @@ Only numpy is imported at module level (already a core dependency).
 """
 
 import numpy as np
+import os
 
 # ─────────────────────────────────────────────
 # Constants (mirrored from train_patterns.py)
@@ -39,6 +40,12 @@ GLOBAL_META_DIM = 3 + STEP_RATE_DIM
 CONDITION_DIM = KIT_CONTINUOUS_DIM + GLOBAL_META_DIM
 
 PATTERN_NAMES = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L']
+
+# Default bundled checkpoint path (relative to project root)
+_BUNDLED_CHECKPOINT = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "drum_patterns", "pattern_cvae_best.pt",
+)
 
 
 # ─────────────────────────────────────────────
@@ -291,6 +298,40 @@ class PatternGenerator:
     @property
     def loaded_path(self) -> str | None:
         return self._loaded_path
+
+    @staticmethod
+    def resolve_model_path(preferences_manager=None) -> str | None:
+        """Return the best available pattern model path.
+
+        Priority:
+        1. Saved preference ``drum_generator_pattern_model_path`` (if file exists).
+        2. Bundled checkpoint ``drum_patterns/pattern_cvae_best.pt``.
+        3. ``None`` when neither is available.
+        """
+        if preferences_manager is not None:
+            saved = preferences_manager.get('drum_generator_pattern_model_path', None)
+            if saved and os.path.isfile(saved):
+                return saved
+        if os.path.isfile(_BUNDLED_CHECKPOINT):
+            return _BUNDLED_CHECKPOINT
+        return None
+
+    def ensure_loaded(self, preferences_manager=None) -> bool:
+        """Load the model if not already loaded, using preference + fallback.
+
+        Returns True if the model is (now) loaded, False otherwise.
+        """
+        if self.is_loaded:
+            return True
+        path = self.resolve_model_path(preferences_manager)
+        if path is None:
+            return False
+        try:
+            self.load_model(path)
+            return True
+        except Exception as e:
+            print(f"PatternGenerator: failed to load {path}: {e}", flush=True)
+            return False
 
     def load_model(self, path: str):
         """Load a pattern CVAE checkpoint from disk. Raises on failure."""

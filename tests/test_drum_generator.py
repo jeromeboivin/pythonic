@@ -21,6 +21,7 @@ from pythonic.drum_generator import (
 from pythonic.preset_manager import convert_drum_patch_data, apply_drum_patch_to_channel
 from pythonic.synthesizer import PythonicSynthesizer
 from gui.drum_generator_dialog import BufferedPatternPreviewSource
+from pythonic.pattern_generator import PatternGenerator, _BUNDLED_CHECKPOINT
 
 
 # ─────────────────────────────────────────────
@@ -337,6 +338,72 @@ class TestPatchGenerator:
             assert p["NEnvMod"] in CATEGORICAL_PARAMS["NEnvMod"]
 
 
+class TestPatternModelResolution:
+    """Tests for PatternGenerator.resolve_model_path and ensure_loaded."""
+
+    def test_resolve_returns_bundled_when_no_pref(self):
+        """resolve_model_path should return bundled checkpoint when it exists."""
+        path = PatternGenerator.resolve_model_path(preferences_manager=None)
+        if os.path.isfile(_BUNDLED_CHECKPOINT):
+            assert path == _BUNDLED_CHECKPOINT
+        else:
+            assert path is None
+
+    def test_resolve_prefers_saved_path(self):
+        """resolve_model_path should prefer a saved preference over bundled."""
+        class FakePrefs:
+            def get(self, key, default=None):
+                if key == 'drum_generator_pattern_model_path':
+                    return _BUNDLED_CHECKPOINT  # reuse bundled as stand-in
+                return default
+        if os.path.isfile(_BUNDLED_CHECKPOINT):
+            path = PatternGenerator.resolve_model_path(FakePrefs())
+            assert path == _BUNDLED_CHECKPOINT
+
+    def test_resolve_ignores_missing_saved_path(self):
+        """resolve_model_path should skip a saved path that doesn't exist."""
+        class FakePrefs:
+            def get(self, key, default=None):
+                if key == 'drum_generator_pattern_model_path':
+                    return '/nonexistent/path/model.pt'
+                return default
+        path = PatternGenerator.resolve_model_path(FakePrefs())
+        if os.path.isfile(_BUNDLED_CHECKPOINT):
+            assert path == _BUNDLED_CHECKPOINT
+        else:
+            assert path is None
+
+    def test_ensure_loaded_returns_false_when_no_model(self):
+        """ensure_loaded should return False when no model is available."""
+        class FakePrefs:
+            def get(self, key, default=None):
+                return default
+        # Temporarily hide the bundled checkpoint
+        gen = PatternGenerator()
+        import pythonic.pattern_generator as pg
+        orig = pg._BUNDLED_CHECKPOINT
+        pg._BUNDLED_CHECKPOINT = '/nonexistent/path.pt'
+        try:
+            result = gen.ensure_loaded(FakePrefs())
+            assert result is False
+        finally:
+            pg._BUNDLED_CHECKPOINT = orig
+
+    def test_ensure_loaded_succeeds_with_bundled(self):
+        """ensure_loaded should succeed when the bundled checkpoint exists."""
+        if not is_torch_available():
+            if PYTEST_AVAILABLE:
+                pytest.skip("torch not installed")
+            return
+        if not os.path.isfile(_BUNDLED_CHECKPOINT):
+            if PYTEST_AVAILABLE:
+                pytest.skip("no bundled checkpoint")
+            return
+        gen = PatternGenerator()
+        assert gen.ensure_loaded() is True
+        assert gen.is_loaded
+
+
 if __name__ == "__main__":
     if PYTEST_AVAILABLE:
         pytest.main([__file__, "-v"])
@@ -349,6 +416,7 @@ if __name__ == "__main__":
             TestConversionBridge,
             TestLoopPreviewAudioPath,
             TestPatchGenerator,
+            TestPatternModelResolution,
         ]
         passed = failed = skipped = 0
         for cls in test_classes:

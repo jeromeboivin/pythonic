@@ -543,9 +543,8 @@ class DrumGeneratorDialog:
             self.pattern_model_status_label.config(text="loaded",
                                                    fg=COLORS['led_on'])
         else:
-            saved_path = self.preferences_manager.get(
-                'drum_generator_pattern_model_path', None)
-            if saved_path and self._try_load_pattern_model(saved_path):
+            resolved = PatternGenerator.resolve_model_path(self.preferences_manager)
+            if resolved and self._try_load_pattern_model(resolved):
                 pass
             else:
                 self.pattern_model_status_label.config(text="not loaded",
