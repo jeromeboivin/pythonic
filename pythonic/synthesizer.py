@@ -56,6 +56,7 @@ class PythonicSynthesizer:
         
         # Current state
         self.selected_channel = 0
+        self.mono = False  # Mono output mode
         
         # Program bank (16 slots, 1-indexed for display)
         self.NUM_PROGRAMS = 16
@@ -283,7 +284,19 @@ class PythonicSynthesizer:
             # This preserves more RMS energy than linear scaling
             np.tanh(output, out=output)
         
+        # Mono downmix: average L+R, duplicate to both channels
+        if self.mono:
+            mono = (output[:, 0] + output[:, 1]) * 0.5
+            output[:, 0] = mono
+            output[:, 1] = mono
+        
         return output
+    
+    def set_mono(self, mono: bool):
+        """Enable/disable mono output mode. Propagates to all channels."""
+        self.mono = mono
+        for channel in self.channels:
+            channel.mono = mono
     
     def select_channel(self, channel_idx: int):
         """Select a channel for editing"""
@@ -335,12 +348,26 @@ class PythonicSynthesizer:
         for channel in self.channels:
             channel.set_bpm(bpm)
     
+    def set_parallel_processing(self, enabled: bool):
+        """Enable or disable parallel channel processing at runtime."""
+        if enabled == self.parallel_channel_processing:
+            return
+        self.parallel_channel_processing = enabled
+        if enabled and self._thread_pool is None:
+            self._thread_pool = ThreadPoolExecutor(
+                max_workers=self.NUM_CHANNELS,
+                thread_name_prefix="audio_",
+            )
+        elif not enabled and self._thread_pool is not None:
+            self._thread_pool.shutdown(wait=True)
+            self._thread_pool = None
+    
     def cleanup(self):
         """Cleanup thread pool resources (call on shutdown)"""
         self.clear_preview_source()
         if hasattr(self, '_thread_pool'):
             if self._thread_pool is not None:
-                self._thread_pool.shutdown(wait=False)
+                self._thread_pool.shutdown(wait=True)
     
     def mute_channel(self, channel_idx: int, muted: bool):
         """Mute or unmute a channel"""

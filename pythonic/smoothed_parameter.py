@@ -123,17 +123,26 @@ class SmoothedParameter:
             output.fill(self._target)
             return output
         
-        # Apply smoothing sample by sample
-        # For efficiency, use vectorized approach when possible
+        # Vectorized one-pole IIR: y[n] = target + (current - target) * (1 - alpha)^n
+        # This is the closed-form solution — no Python loop needed.
         alpha = self._alpha
+        decay = 1.0 - alpha
         current = self._current
         target = self._target
+        diff = current - target
         
-        for i in range(num_samples):
-            current += (target - current) * alpha
-            output[i] = current
+        # Compute decay^[1, 2, ..., N] — each sample applies one more step
+        # Use the identity: decay^n = exp(n * log(decay))
+        if decay > 0.0:
+            exponents = np.arange(1, num_samples + 1, dtype=np.float32)
+            np.multiply(exponents, np.float32(np.log(decay)), out=exponents)
+            np.exp(exponents, out=output)
+            np.multiply(output, np.float32(diff), out=output)
+            np.add(output, np.float32(target), out=output)
+        else:
+            output.fill(target)
         
-        self._current = current
+        self._current = float(output[-1]) if num_samples > 0 else current
         return output
     
     def is_settled(self, threshold: float = 1e-6) -> bool:
@@ -208,16 +217,27 @@ class LogSmoothedParameter(SmoothedParameter):
             output.fill(self._target)
             return output
         
+        # Vectorized one-pole in log domain
         alpha = self._alpha
+        decay = 1.0 - alpha
         log_current = self._log_current
         log_target = self._log_target
+        log_diff = log_current - log_target
         
-        for i in range(num_samples):
-            log_current += (log_target - log_current) * alpha
-            output[i] = np.exp(log_current)
+        if decay > 0.0:
+            exponents = np.arange(1, num_samples + 1, dtype=np.float32)
+            np.multiply(exponents, np.float32(np.log(decay)), out=exponents)
+            np.exp(exponents, out=exponents)
+            # log_values = log_target + log_diff * decay^n
+            np.multiply(exponents, np.float32(log_diff), out=exponents)
+            np.add(exponents, np.float32(log_target), out=exponents)
+            # Convert from log domain to linear
+            np.exp(exponents, out=output)
+        else:
+            output.fill(self._target)
         
-        self._log_current = log_current
-        self._current = np.exp(log_current)
+        self._log_current = float(np.log(output[-1])) if num_samples > 0 else log_current
+        self._current = float(output[-1]) if num_samples > 0 else self._current
         return output
 
 

@@ -716,10 +716,12 @@ class PresetManager:
         apply_drum_patch_to_channel(channel, data)
 
 
-    def export_drum_to_wav(self, channel, filepath: str, duration_ms: float = 2000.0, velocity: int = 127, sample_rate: int = 44100, bit_depth: int = 16):
+    def export_drum_to_wav(self, channel, filepath: str, duration_ms: float = 2000.0, velocity: int = 127, sample_rate: int = 44100, bit_depth: int = 16, mono: bool = False):
         num_samples = int(duration_ms * sample_rate / 1000.0)
         channel.trigger(velocity)
         audio = channel.process(num_samples)
+        if mono:
+            audio = ((audio[:, 0] + audio[:, 1]) * 0.5).reshape(-1, 1)
         max_val = np.max(np.abs(audio))
         if max_val > 0.99:
             audio = audio * (0.99 / max_val)
@@ -730,7 +732,7 @@ class PresetManager:
         wavfile.write(filepath, sample_rate, audio_int)
         return filepath
 
-    def export_all_drums_to_wav(self, synth, output_dir: str, duration_ms: float = 2000.0, velocity: int = 127, sample_rate: int = 44100, bit_depth: int = 16) -> List[str]:
+    def export_all_drums_to_wav(self, synth, output_dir: str, duration_ms: float = 2000.0, velocity: int = 127, sample_rate: int = 44100, bit_depth: int = 16, mono: bool = False) -> List[str]:
         os.makedirs(output_dir, exist_ok=True)
         exported_files = []
         for i in range(8):
@@ -739,7 +741,7 @@ class PresetManager:
             safe_name = re.sub(r'\s+', '_', safe_name)
             filename = f"{i+1:02d}_{safe_name}.wav"
             filepath = os.path.join(output_dir, filename)
-            self.export_drum_to_wav(channel=channel, filepath=filepath, duration_ms=duration_ms, velocity=velocity, sample_rate=sample_rate, bit_depth=bit_depth)
+            self.export_drum_to_wav(channel=channel, filepath=filepath, duration_ms=duration_ms, velocity=velocity, sample_rate=sample_rate, bit_depth=bit_depth, mono=mono)
             exported_files.append(filepath)
         return exported_files
 

@@ -12,6 +12,7 @@ from .vintage import VintageProcessor
 from .reverb import FastStereoReverb
 from .delay import FastStereoDelay, DelayTime
 from .smoothed_parameter import SmoothedParameter, LogSmoothedParameter
+import time as _time
 
 
 class DrumChannel:
@@ -39,6 +40,9 @@ class DrumChannel:
     
     # Default smoothing time constant (ms)
     DEFAULT_SMOOTHING_MS = 30.0
+    
+    # Per-component timing (set True for diagnostics, False for production)
+    PROFILE_COMPONENTS = False
     
     def __init__(self, channel_id: int, sample_rate: int = 44100):
         self.channel_id = channel_id
@@ -75,6 +79,15 @@ class DrumChannel:
         self.delay_mix = 0.0                # 0.0 to 1.0 (dry/wet)
         self.delay_ping_pong = False        # Stereo ping-pong mode
         
+        # Cached previous FX parameter values to skip redundant setter calls
+        self._prev_delay_time = None
+        self._prev_delay_feedback = None
+        self._prev_delay_mix = None
+        self._prev_delay_pp = None
+        self._prev_reverb_decay = None
+        self._prev_reverb_mix = None
+        self._prev_reverb_width = None
+        
         # Mixing parameters
         self.osc_noise_mix = 0.5  # 0 = all noise, 1 = all oscillator
         self.level_db = 0.0  # Output level in dB (-inf to +10)
@@ -85,6 +98,9 @@ class DrumChannel:
         
         # EQ (raw target values - smoothing applied in process)
         self.eq_frequency = 632.46  # Hz
+        
+        # Mono mode flag (set by synthesizer)
+        self.mono = False
         self.eq_gain_db = 0.0  # dB (-40 to +40)
         
         # Smoothed parameters for click-free real-time control
@@ -125,6 +141,16 @@ class DrumChannel:
         
         # Pitch offset in semitones (-24 to +24, applied to oscillator frequency)
         self.pitch_semitones = 0.0
+        self._cached_pitch_ratio = 1.0  # Cached 2^(pitch_semitones/12)
+        self._cached_pitch_semitones = 0.0  # Value used to compute cached ratio
+        
+        # Cached distortion coefficients
+        self._cached_dist_val = -1.0
+        self._cached_dist_n = 0.0
+        self._cached_dist_v = 0.0
+        self._cached_dist_p = 0.0
+        self._cached_dist_dc = 0.0
+        self._cached_dist_hard = False
         
         # State
         self.is_active = False
@@ -135,6 +161,15 @@ class DrumChannel:
         self._output_buffer = np.zeros((8192, 2), dtype=np.float32)
         self._osc_stereo_buffer = np.zeros((8192, 2), dtype=np.float32)
         self._mixed_buffer = np.zeros((8192, 2), dtype=np.float32)
+        
+        # Per-component timing accumulators (only populated when PROFILE_COMPONENTS is True)
+        self._profile_osc_ms = 0.0
+        self._profile_noise_ms = 0.0
+        self._profile_distortion_ms = 0.0
+        self._profile_eq_ms = 0.0
+        self._profile_delay_ms = 0.0
+        self._profile_reverb_ms = 0.0
+        self._profile_count = 0
         
         # Initialize default drum sound
         self._init_defaults()
@@ -266,7 +301,11 @@ class DrumChannel:
         # Shifts both oscillator and noise filter frequency so the entire
         # drum character moves (important for noise-heavy sounds like snares)
         if self.pitch_semitones != 0.0:
-            pitch_ratio = 2.0 ** (self.pitch_semitones / 12.0)
+            # Cache pitch_ratio to avoid 2^x every block
+            if self.pitch_semitones != self._cached_pitch_semitones:
+                self._cached_pitch_semitones = self.pitch_semitones
+                self._cached_pitch_ratio = 2.0 ** (self.pitch_semitones / 12.0)
+            pitch_ratio = self._cached_pitch_ratio
             effective_osc_freq = smoothed_osc_freq * pitch_ratio
             effective_noise_freq = np.clip(smoothed_noise_freq * pitch_ratio, 20.0, 20000.0)
         else:
@@ -292,13 +331,29 @@ class DrumChannel:
             self.oscillator.set_pitch_drift(1.0)
         
         # Generate oscillator signal
+        if self.PROFILE_COMPONENTS:
+            _t0 = _time.perf_counter()
         osc_raw = self.oscillator.process(num_samples)
         osc_env = self.osc_envelope.process(num_samples)
         osc_signal = osc_raw * osc_env
         osc_signal *= self.OSC_LEVEL_SCALING
         
         # Generate noise signal (already stereo)
+        # In mono mode, force mono noise to avoid phase cancellation when summed
+        if self.mono and self.noise_gen.stereo:
+            self.noise_gen.stereo = False
+            _restore_noise_stereo = True
+        else:
+            _restore_noise_stereo = False
+        if self.PROFILE_COMPONENTS:
+            _t1 = _time.perf_counter()
         noise_signal = self.noise_gen.process(num_samples)
+        if _restore_noise_stereo:
+            self.noise_gen.stereo = True
+        if self.PROFILE_COMPONENTS:
+            _t2 = _time.perf_counter()
+            self._profile_osc_ms += (_t1 - _t0) * 1000
+            self._profile_noise_ms += (_t2 - _t1) * 1000
         
         # In Mod (handclap) mode with noise-dominant mix, gate the oscillator
         # by the noise envelope so the osc decays with the noise burst instead
@@ -344,11 +399,18 @@ class DrumChannel:
             mixed += noise_signal * noise_gain
         
         # Apply smoothed distortion
+        if self.PROFILE_COMPONENTS:
+            _td0 = _time.perf_counter()
         if smoothed_distortion > 0.001:
             self.distortion = smoothed_distortion  # Update for _apply_distortion
             mixed = self._apply_distortion(mixed)
+        if self.PROFILE_COMPONENTS:
+            _td1 = _time.perf_counter()
+            self._profile_distortion_ms += (_td1 - _td0) * 1000
         
         # Apply EQ with smoothed frequency (process left and right separately)
+        if self.PROFILE_COMPONENTS:
+            _teq0 = _time.perf_counter()
         if abs(self.eq_gain_db) > 0.1:
             # Only update EQ params when smoothed frequency is still changing
             if not self._smoothed_eq_freq.is_settled():
@@ -358,8 +420,14 @@ class DrumChannel:
             # Process left channel
             mixed[:, 0] = self.eq_filter_l.process(mixed[:, 0])
             
-            # Process right channel
-            mixed[:, 1] = self.eq_filter_r.process(mixed[:, 1])
+            # Process right channel (skip in mono — L=R)
+            if not self.mono:
+                mixed[:, 1] = self.eq_filter_r.process(mixed[:, 1])
+            else:
+                mixed[:, 1] = mixed[:, 0]
+        if self.PROFILE_COMPONENTS:
+            _teq1 = _time.perf_counter()
+            self._profile_eq_ms += (_teq1 - _teq0) * 1000
         
         # Post-EQ soft limiter — prevents clipping from extreme EQ boost
         # and adds subtle saturation. Transparent below ±1.0, gently
@@ -383,28 +451,87 @@ class DrumChannel:
             mixed = self.vintage.process(mixed)
         
         # Apply per-channel tempo-synced delay/echo (after vintage)
+        if self.PROFILE_COMPONENTS:
+            _tdl0 = _time.perf_counter()
         if self.delay_mix > 0.001:
-            self.delay.set_delay_time(self.delay_time)
-            self.delay.set_feedback(self.delay_feedback)
-            self.delay.set_mix(self.delay_mix)
-            self.delay.set_ping_pong(self.delay_ping_pong)
+            # Only update delay parameters when they change (avoids
+            # recalculating delay samples every block)
+            if (self.delay_time != self._prev_delay_time
+                    or self.delay_feedback != self._prev_delay_feedback
+                    or self.delay_mix != self._prev_delay_mix
+                    or self.delay_ping_pong != self._prev_delay_pp):
+                self.delay.set_delay_time(self.delay_time)
+                self.delay.set_feedback(self.delay_feedback)
+                self.delay.set_mix(self.delay_mix)
+                self.delay.set_ping_pong(self.delay_ping_pong)
+                self._prev_delay_time = self.delay_time
+                self._prev_delay_feedback = self.delay_feedback
+                self._prev_delay_mix = self.delay_mix
+                self._prev_delay_pp = self.delay_ping_pong
             mixed = self.delay.process(mixed)
+        if self.PROFILE_COMPONENTS:
+            _tdl1 = _time.perf_counter()
+            self._profile_delay_ms += (_tdl1 - _tdl0) * 1000
         
         # Apply per-channel stereo reverb (after delay, before pan)
+        if self.PROFILE_COMPONENTS:
+            _trv0 = _time.perf_counter()
         if self.reverb_mix > 0.001:
-            self.reverb.set_decay(self.reverb_decay)
-            self.reverb.set_mix(self.reverb_mix)
-            self.reverb.set_width(self.reverb_width)
+            effective_width = 0.0 if self.mono else self.reverb_width
+            if (self.reverb_decay != self._prev_reverb_decay
+                    or self.reverb_mix != self._prev_reverb_mix
+                    or effective_width != self._prev_reverb_width):
+                self.reverb.set_decay(self.reverb_decay)
+                self.reverb.set_mix(self.reverb_mix)
+                self.reverb.set_width(effective_width)
+                self._prev_reverb_decay = self.reverb_decay
+                self._prev_reverb_mix = self.reverb_mix
+                self._prev_reverb_width = effective_width
             mixed = self.reverb.process(mixed)
+        if self.PROFILE_COMPONENTS:
+            _trv1 = _time.perf_counter()
+            self._profile_reverb_ms += (_trv1 - _trv0) * 1000
+            self._profile_count += 1
         
-        # Apply pan (in-place where possible)
-        output = self._apply_pan_inplace(mixed)
+        # Apply pan (in-place where possible) — skip in mono mode
+        if not self.mono:
+            output = self._apply_pan_inplace(mixed)
+        else:
+            output = mixed
         
         # Check if voice is done
         if not self.osc_envelope.is_active and not self.noise_gen.is_active:
             self.is_active = False
         
         return output
+    
+    def get_profile_snapshot(self):
+        """Return accumulated per-component timing and reset counters.
+        
+        Only meaningful when PROFILE_COMPONENTS is True.
+        Returns dict with component names -> average ms per block,
+        or empty dict if no data collected.
+        """
+        n = self._profile_count
+        if n == 0:
+            return {}
+        result = {
+            'oscillator': self._profile_osc_ms / n,
+            'noise': self._profile_noise_ms / n,
+            'distortion': self._profile_distortion_ms / n,
+            'eq': self._profile_eq_ms / n,
+            'delay': self._profile_delay_ms / n,
+            'reverb': self._profile_reverb_ms / n,
+            'blocks': n,
+        }
+        self._profile_osc_ms = 0.0
+        self._profile_noise_ms = 0.0
+        self._profile_distortion_ms = 0.0
+        self._profile_eq_ms = 0.0
+        self._profile_delay_ms = 0.0
+        self._profile_reverb_ms = 0.0
+        self._profile_count = 0
+        return result
     
     def _apply_distortion(self, signal: np.ndarray) -> np.ndarray:
         """
@@ -427,33 +554,47 @@ class DrumChannel:
         if self.distortion < 0.001:
             return signal
         
-        # Cubic drive curve (n = 200 * dist^3)
         dist = self.distortion
-        n = 200.0 * dist * dist * dist
         
+        # Cache distortion coefficients (avoid recomputing every block)
+        if dist != self._cached_dist_val:
+            self._cached_dist_val = dist
+            n = 200.0 * dist * dist * dist
+            self._cached_dist_n = n
+            if n < 0.001:
+                self._cached_dist_v = 0.0
+            elif n < 1.0:
+                self._cached_dist_v = 1.0 - n / 30.0
+                self._cached_dist_p = (1.0 + np.sqrt((n + 3.0) / n)) / 3.0
+                self._cached_dist_dc = -2.0 * n / 27.0 - 9.0 / 27.0
+                self._cached_dist_hard = False
+            else:
+                self._cached_dist_v = 0.2 / (n - 0.95894909 + 0.47619048) + 0.58
+                self._cached_dist_dc = -11.0 / 27.0
+                self._cached_dist_hard = True
+        
+        n = self._cached_dist_n
         if n < 0.001:
             return signal
         
-        if n < 1.0:
-            # SOFT distortion region
-            v = 1.0 - n / 30.0
-            p = (1.0 + np.sqrt((n + 3.0) / n)) / 3.0
-            dc = -2.0 * n / 27.0 - 9.0 / 27.0
-            
-            def shape(x):
-                xc = np.clip(x - 1.0 / 3.0, -p, p)
-                return xc * (n * (np.abs(xc) - xc * xc) + 1.0) - dc
-        else:
-            # HARD distortion region (n >= 1)
-            v = 0.2 / (n - 0.95894909 + 0.47619048) + 0.58
-            dc = -11.0 / 27.0
-            
-            def shape(x):
-                xc = np.clip(x * n - 1.0 / 3.0, -1.0, 1.0)
-                return xc * (np.abs(xc) - xc * xc + 1.0) - dc
+        v = self._cached_dist_v
+        dc = self._cached_dist_dc
         
-        # Odd-symmetry waveshaper: removes DC, preserves odd harmonics
-        return (shape(signal) - shape(-signal)) * (0.5 * v)
+        if not self._cached_dist_hard:
+            p = self._cached_dist_p
+            # Inline soft shape to avoid closure + function call overhead
+            xc_pos = np.clip(signal - 1.0 / 3.0, -p, p)
+            shaped_pos = xc_pos * (n * (np.abs(xc_pos) - xc_pos * xc_pos) + 1.0) - dc
+            xc_neg = np.clip(-signal - 1.0 / 3.0, -p, p)
+            shaped_neg = xc_neg * (n * (np.abs(xc_neg) - xc_neg * xc_neg) + 1.0) - dc
+        else:
+            # Inline hard shape
+            xc_pos = np.clip(signal * n - 1.0 / 3.0, -1.0, 1.0)
+            shaped_pos = xc_pos * (np.abs(xc_pos) - xc_pos * xc_pos + 1.0) - dc
+            xc_neg = np.clip(-signal * n - 1.0 / 3.0, -1.0, 1.0)
+            shaped_neg = xc_neg * (np.abs(xc_neg) - xc_neg * xc_neg + 1.0) - dc
+        
+        return (shaped_pos - shaped_neg) * (0.5 * v)
     
     def _apply_pan(self, stereo_signal: np.ndarray) -> np.ndarray:
         """

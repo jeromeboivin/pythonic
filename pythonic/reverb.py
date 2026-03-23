@@ -12,6 +12,7 @@ Features:
 
 import numpy as np
 from typing import Tuple
+from scipy.fft import rfft, irfft, next_fast_len
 
 # Try to import Numba for JIT compilation (optional, falls back to pure NumPy)
 try:
@@ -404,6 +405,43 @@ class FastStereoReverb:
         if max_val > 0:
             self._ir_l /= max_val
             self._ir_r /= max_val
+        
+        # Pre-compute FFT of IR for fast block convolution
+        self._prepare_ir_fft()
+    
+    def _prepare_ir_fft(self):
+        """Pre-compute FFT of impulse response for efficient overlap-add convolution."""
+        # Adaptive IR length: use shorter IR for short decays to reduce FFT cost
+        # Find the point where IR energy drops below -60dB
+        ir_full = max(np.max(np.abs(self._ir_l)), np.max(np.abs(self._ir_r)))
+        if ir_full > 0:
+            threshold = ir_full * 0.001  # -60dB
+            # Scan from end to find last significant sample
+            effective_len = self._ir_length
+            for i in range(self._ir_length - 1, -1, -1):
+                if abs(self._ir_l[i]) > threshold or abs(self._ir_r[i]) > threshold:
+                    effective_len = i + 1
+                    break
+            ir_len = min(effective_len, 8192)
+        else:
+            ir_len = min(self._ir_length, 8192)
+        ir_len = max(ir_len, 64)  # Minimum to avoid degenerate FFTs
+        self._ir_len_used = ir_len
+        # Use scipy.fft.next_fast_len for optimal FFT size
+        # (works with composite sizes like 2^a * 3^b * 5^c, not just powers of 2)
+        min_n = 1050 + ir_len  # block size + ir_len
+        fft_n = next_fast_len(min_n)
+        self._fft_n = fft_n
+        self._ir_fft_l = rfft(self._ir_l[:ir_len], n=fft_n)
+        self._ir_fft_r = rfft(self._ir_r[:ir_len], n=fft_n)
+        # Overlap-add work buffers (tail = ir_len - 1 samples)
+        tail_len = max(ir_len - 1, 1)
+        self._overlap_l = np.zeros(tail_len, dtype=np.float32)
+        self._overlap_r = np.zeros(tail_len, dtype=np.float32)
+        self._new_overlap_l = np.zeros(tail_len, dtype=np.float32)
+        self._new_overlap_r = np.zeros(tail_len, dtype=np.float32)
+        # Pre-allocate output buffer
+        self._reverb_output = np.zeros((4096, 2), dtype=np.float32)
     
     def set_decay(self, decay: float):
         """Set reverb decay time (0.0 to 1.0)"""
@@ -424,12 +462,16 @@ class FastStereoReverb:
         """Reset overlap buffers"""
         self._overlap_l.fill(0)
         self._overlap_r.fill(0)
+        self._new_overlap_l.fill(0)
+        self._new_overlap_r.fill(0)
     
     def process(self, input_signal: np.ndarray) -> np.ndarray:
         """
         Process stereo signal through fast reverb
         
-        Uses overlap-add convolution for efficiency
+        Uses FFT-based overlap-add convolution with pre-computed IR FFTs.
+        The IR FFT is computed once (on decay change); only the input FFT
+        runs per block.
         """
         if self._mix < 0.001:
             return input_signal
@@ -438,45 +480,42 @@ class FastStereoReverb:
         in_l = input_signal[:, 0]
         in_r = input_signal[:, 1]
         
-        # Convolution with truncated IR for speed
-        # Use enough of the IR for an audible reverb tail (~186ms at 44100Hz)
-        ir_len_used = min(self._ir_length, 8192)
+        ir_len = self._ir_len_used
+        tail_len = max(ir_len - 1, 1)
         
-        # Convolve (numpy is fast for small kernels)
-        wet_l_full = np.convolve(in_l, self._ir_l[:ir_len_used], mode='full')[:num_samples + ir_len_used - 1]
-        wet_r_full = np.convolve(in_r, self._ir_r[:ir_len_used], mode='full')[:num_samples + ir_len_used - 1]
+        # FFT-based convolution with pre-computed IR FFT (scipy.fft is faster)
+        fft_n = self._fft_n
+        wet_l_full = irfft(
+            rfft(in_l, n=fft_n) * self._ir_fft_l, n=fft_n)
+        wet_r_full = irfft(
+            rfft(in_r, n=fft_n) * self._ir_fft_r, n=fft_n)
         
-        # Add overlap from previous block
-        overlap_len = min(ir_len_used - 1, len(self._overlap_l), num_samples)
-        wet_l = wet_l_full[:num_samples].copy()
-        wet_r = wet_r_full[:num_samples].copy()
+        # Overlap-add: merge previous tail into current output
+        add_len = min(tail_len, num_samples)
+        wet_l_full[:add_len] += self._overlap_l[:add_len]
+        wet_r_full[:add_len] += self._overlap_r[:add_len]
         
-        wet_l[:overlap_len] += self._overlap_l[:overlap_len]
-        wet_r[:overlap_len] += self._overlap_r[:overlap_len]
+        # Current block output (views into the full convolution result)
+        wet_l = wet_l_full[:num_samples]
+        wet_r = wet_r_full[:num_samples]
         
-        # Save new overlap (accumulate remaining tail beyond current block)
-        tail_len = len(wet_l_full) - num_samples
-        if tail_len > 0:
-            new_overlap = np.zeros(len(self._overlap_l), dtype=np.float32)
-            copy_len = min(tail_len, len(new_overlap))
-            new_overlap[:copy_len] = wet_l_full[num_samples:num_samples + copy_len]
-            # Add any leftover overlap from previous block that extends beyond current block
-            leftover_start = num_samples
-            leftover_end = min(len(self._overlap_l), len(new_overlap) + num_samples)
-            if overlap_len < len(self._overlap_l):
-                remaining = min(len(self._overlap_l) - overlap_len, len(new_overlap))
-                new_overlap[:remaining] += self._overlap_l[overlap_len:overlap_len + remaining]
-            self._overlap_l = new_overlap
-            
-            new_overlap_r = np.zeros(len(self._overlap_r), dtype=np.float32)
-            new_overlap_r[:copy_len] = wet_r_full[num_samples:num_samples + copy_len]
-            if overlap_len < len(self._overlap_r):
-                remaining = min(len(self._overlap_r) - overlap_len, len(new_overlap_r))
-                new_overlap_r[:remaining] += self._overlap_r[overlap_len:overlap_len + remaining]
-            self._overlap_r = new_overlap_r
-        else:
-            self._overlap_l.fill(0)
-            self._overlap_r.fill(0)
+        # Build new overlap: convolution tail + unconsumed previous overlap
+        conv_tail = min(tail_len, len(wet_l_full) - num_samples)
+        new_ol = self._new_overlap_l
+        new_or = self._new_overlap_r
+        new_ol[:conv_tail] = wet_l_full[num_samples:num_samples + conv_tail]
+        new_or[:conv_tail] = wet_r_full[num_samples:num_samples + conv_tail]
+        if conv_tail < tail_len:
+            new_ol[conv_tail:tail_len] = 0
+            new_or[conv_tail:tail_len] = 0
+        if add_len < tail_len:
+            remaining = tail_len - add_len
+            new_ol[:remaining] += self._overlap_l[add_len:add_len + remaining]
+            new_or[:remaining] += self._overlap_r[add_len:add_len + remaining]
+        
+        # Swap overlap buffers (zero-copy pointer swap)
+        self._overlap_l, self._new_overlap_l = new_ol, self._overlap_l
+        self._overlap_r, self._new_overlap_r = new_or, self._overlap_r
         
         # Apply stereo width
         if abs(self._width - 1.0) > 0.001:
@@ -489,7 +528,10 @@ class FastStereoReverb:
         dry_gain = 1.0 - self._mix
         wet_gain = self._mix
         
-        output = np.empty_like(input_signal)
+        if num_samples <= len(self._reverb_output):
+            output = self._reverb_output[:num_samples]
+        else:
+            output = np.empty_like(input_signal)
         output[:, 0] = in_l * dry_gain + wet_l * wet_gain
         output[:, 1] = in_r * dry_gain + wet_r * wet_gain
         

@@ -82,12 +82,24 @@ class PythonicGUI:
         self.root.minsize(800, 480)  # Compact minimum window size
         self.root.geometry("960x600")  # Compact default window size
         
-        # Initialize synthesizer
-        self.sample_rate = 44100
-        self.synth = PythonicSynthesizer(self.sample_rate)
-        
-        # Preferences manager
+        # Initialize preferences first (needed for sample rate)
         self.preferences_manager = PreferencesManager()
+        
+        # Audio output rate (must match device) and internal synthesis rate
+        self.sample_rate = self.preferences_manager.get('audio_sample_rate', 44100)
+        self.synth_sample_rate = self.preferences_manager.get('synth_sample_rate', 44100)
+        # Synth rate should not exceed output rate (would waste CPU)
+        if self.synth_sample_rate > self.sample_rate:
+            self.synth_sample_rate = self.sample_rate
+        self._resample_ratio = self.sample_rate / self.synth_sample_rate
+        
+        # Initialize synthesizer at the internal synthesis rate
+        self.synth = PythonicSynthesizer(self.synth_sample_rate,
+                                         parallel_channel_processing=True)
+        
+        # Apply mono mode
+        mono_mode = self.preferences_manager.get('audio_mono', False)
+        self.synth.set_mono(mono_mode)
         
         # Apply saved parameter smoothing time to all channels
         smoothing_ms = self.preferences_manager.get('param_smoothing_ms', 30.0)
@@ -154,10 +166,22 @@ class PythonicGUI:
         self.callback_count = 0
         self.last_perf_report = time.time()
         
+        # Audio buffer size from preferences
+        buffer_ms = self.preferences_manager.get('audio_buffer_ms', 23.8)
+        self._audio_block_size = max(64, int(round(buffer_ms / 1000.0 * self.sample_rate)))
+        self._buffer_time_ms = (self._audio_block_size / self.sample_rate) * 1000
+
         # Adaptive processing - drop samples to prevent underruns
         self.enable_sample_dropping = True  # Enable adaptive processing
         self.dropped_callback_count = 0
-        self._last_good_audio = np.zeros((1050, 2), dtype=np.float32)
+        self._last_good_audio = np.zeros((self._audio_block_size, 2), dtype=np.float32)
+        
+        # Resampling state (for synth_rate != output_rate)
+        self._resample_out_frames = 0
+        self._resample_in_frames = 0
+        self._resample_x_out = None
+        self._resample_x_in = None
+        self._resample_buffer = None
         
         # Build the interface
         self._build_ui()
@@ -2258,13 +2282,15 @@ class PythonicGUI:
             import wave
             
             # Calculate total samples needed
-            step_duration_samples = int((self.sample_rate * self.pattern_manager.step_duration_ms) / 1000.0)
+            # Use synth sample rate for offline rendering
+            render_sr = self.synth_sample_rate
+            step_duration_samples = int((render_sr * self.pattern_manager.step_duration_ms) / 1000.0)
             pattern_duration_samples = step_duration_samples * pattern.length
             
             # Add tail handling
             if tail_option.get() == "append":
                 # Add 2 seconds of tail for reverb/decay
-                tail_samples = self.sample_rate * 2
+                tail_samples = render_sr * 2
             elif tail_option.get() == "loop":
                 # Add one more loop iteration
                 tail_samples = pattern_duration_samples
@@ -2302,13 +2328,18 @@ class PythonicGUI:
             self.pattern_manager.playing_pattern_index = old_playing_idx
             
             # Convert to int16 for WAV file
-            audio_int16 = (audio_buffer * 32767).astype(np.int16)
+            is_mono = self.synth.mono
+            if is_mono:
+                audio_out = audio_buffer[:, 0]  # L=R in mono, take one channel
+                audio_int16 = (audio_out * 32767).astype(np.int16)
+            else:
+                audio_int16 = (audio_buffer * 32767).astype(np.int16)
             
             # Write WAV file
             with wave.open(filename, 'wb') as wav_file:
-                wav_file.setnchannels(2)
+                wav_file.setnchannels(1 if is_mono else 2)
                 wav_file.setsampwidth(2)
-                wav_file.setframerate(self.sample_rate)
+                wav_file.setframerate(render_sr)
                 wav_file.writeframes(audio_int16.tobytes())
             
         except Exception as e:
@@ -2625,7 +2656,11 @@ class PythonicGUI:
         folder = filedialog.askdirectory(title='Select folder for WAV export')
         if folder:
             try:
-                exported = self.preset_manager.export_all_drums_to_wav(self.synth, folder)
+                exported = self.preset_manager.export_all_drums_to_wav(
+                    self.synth, folder,
+                    sample_rate=self.synth_sample_rate,
+                    mono=self.synth.mono
+                )
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to export: {e}")
     
@@ -2640,7 +2675,9 @@ class PythonicGUI:
             try:
                 self.preset_manager.export_drum_to_wav(
                     self.synth.channels[self.selected_channel],
-                    filename
+                    filename,
+                    sample_rate=self.synth_sample_rate,
+                    mono=self.synth.mono
                 )
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to export: {e}")
@@ -3337,7 +3374,7 @@ class PythonicGUI:
         """Show audio settings dialog"""
         dialog = tk.Toplevel(self.root)
         dialog.title("Audio Settings")
-        dialog.geometry("450x400")
+        dialog.geometry("450x810")
         dialog.resizable(True, True)
         dialog.transient(self.root)
         dialog.grab_set()
@@ -3398,7 +3435,7 @@ class PythonicGUI:
         
         # Note about restart
         note_label = tk.Label(device_frame, 
-                             text="Note: Changes take effect after restarting the application.",
+                             text="Use 'Apply Now' to apply changes immediately, or 'OK' to save for next launch.",
                              font=('Segoe UI', 8, 'italic'),
                              fg=self.COLORS['accent'],
                              bg=self.COLORS['bg_dark'])
@@ -3439,6 +3476,208 @@ class PythonicGUI:
                 fg=self.COLORS['text_dim'],
                 bg=self.COLORS['bg_dark']).pack(anchor='w', pady=(5, 0))
         
+        # --- Audio Buffer Size section ---
+        buffer_frame = tk.Frame(dialog, bg=self.COLORS['bg_dark'])
+        buffer_frame.pack(fill='x', padx=20, pady=(15, 0))
+        
+        tk.Label(buffer_frame, text="Audio Buffer Size:", 
+                font=('Segoe UI', 9),
+                fg=self.COLORS['text'],
+                bg=self.COLORS['bg_dark']).pack(anchor='w')
+        
+        buffer_options = [
+            ("2 ms  (88 samples) — extreme", 2.0),
+            ("5 ms  (220 samples) — ultra low latency", 5.0),
+            ("10 ms  (441 samples) — low latency", 10.0),
+            ("15 ms  (661 samples) — balanced", 15.0),
+            ("23.8 ms  (1050 samples) — default", 23.8),
+            ("30 ms  (1323 samples) — relaxed", 30.0),
+            ("50 ms  (2205 samples) — safe", 50.0),
+            ("75 ms  (3307 samples) — very safe", 75.0),
+            ("100 ms  (4410 samples) — maximum", 100.0),
+        ]
+        current_buffer_ms = self.preferences_manager.get('audio_buffer_ms', 23.8)
+        # Find closest match
+        closest_label = buffer_options[4][0]  # default (23.8 ms)
+        for label, val in buffer_options:
+            if abs(val - current_buffer_ms) < 0.5:
+                closest_label = label
+                break
+        
+        buffer_var = tk.StringVar(value=closest_label)
+        buffer_combo = ttk.Combobox(buffer_frame, textvariable=buffer_var, 
+                                    values=[label for label, _ in buffer_options],
+                                    width=50, state='readonly')
+        buffer_combo.pack(fill='x', pady=(2, 0))
+        
+        buffer_info = tk.Label(buffer_frame, 
+                              text="Lower = less latency but more CPU. Higher = more stable.",
+                              font=('Segoe UI', 8),
+                              fg=self.COLORS['text_dim'],
+                              bg=self.COLORS['bg_dark'])
+        buffer_info.pack(anchor='w', pady=(5, 0))
+        
+        # --- Output Sample Rate section ---
+        sr_frame = tk.Frame(dialog, bg=self.COLORS['bg_dark'])
+        sr_frame.pack(fill='x', padx=20, pady=(15, 0))
+        
+        tk.Label(sr_frame, text="Output Sample Rate:", 
+                font=('Segoe UI', 9),
+                fg=self.COLORS['text'],
+                bg=self.COLORS['bg_dark']).pack(anchor='w')
+        
+        sr_options = [
+            ("96000 Hz — studio quality", 96000),
+            ("48000 Hz — high quality", 48000),
+            ("44100 Hz — CD quality (default)", 44100),
+            ("32000 Hz — broadcast", 32000),
+            ("22050 Hz — low quality", 22050),
+            ("11025 Hz — very low", 11025),
+            ("8000 Hz — telephone", 8000),
+        ]
+        
+        def _get_supported_rates(device_name):
+            """Query which sample rates the selected device supports."""
+            dev_idx = None
+            if device_name and device_name != "(System Default)":
+                try:
+                    for i, dev in enumerate(sd.query_devices()):
+                        if dev['max_output_channels'] > 0 and dev['name'] == device_name:
+                            dev_idx = i
+                            break
+                except Exception:
+                    pass
+            supported = []
+            for label, rate in sr_options:
+                try:
+                    sd.check_output_settings(device=dev_idx, channels=2, samplerate=rate)
+                    supported.append((label, rate))
+                except Exception:
+                    pass
+            return supported if supported else sr_options  # fallback to all if query fails
+        
+        def _update_sr_combo(*_args):
+            """Update sample rate combo to show only device-supported rates."""
+            dev_name = device_var.get()
+            if dev_name == "(System Default)":
+                dev_name = None
+            supported = _get_supported_rates(dev_name)
+            sr_combo['values'] = [label for label, _ in supported]
+            # If current selection is not supported, pick closest supported
+            current_sel = sr_var.get()
+            supported_labels = [label for label, _ in supported]
+            if current_sel not in supported_labels:
+                # Default to 44100 if available, else first supported
+                for label, val in supported:
+                    if val == 44100:
+                        sr_var.set(label)
+                        return
+                sr_var.set(supported_labels[0])
+        
+        current_sr = self.preferences_manager.get('audio_sample_rate', 44100)
+        current_sr_label = sr_options[2][0]  # default 44100
+        for label, val in sr_options:
+            if val == current_sr:
+                current_sr_label = label
+                break
+        
+        sr_var = tk.StringVar(value=current_sr_label)
+        sr_combo = ttk.Combobox(sr_frame, textvariable=sr_var, 
+                                values=[label for label, _ in sr_options],
+                                width=50, state='readonly')
+        sr_combo.pack(fill='x', pady=(2, 0))
+        
+        sr_status_label = tk.Label(sr_frame, 
+                text="",
+                font=('Segoe UI', 8),
+                fg=self.COLORS['text_dim'],
+                bg=self.COLORS['bg_dark'])
+        sr_status_label.pack(anchor='w', pady=(5, 0))
+        
+        # Populate supported rates for current device and show status
+        def _refresh_sr_status():
+            dev_name = device_var.get()
+            if dev_name == "(System Default)":
+                dev_name = None
+            supported = _get_supported_rates(dev_name)
+            n = len(supported)
+            total = len(sr_options)
+            if n < total:
+                sr_status_label.config(text=f"Device supports {n} of {total} sample rates. Unsupported rates are hidden.")
+            else:
+                sr_status_label.config(text="Device supports all sample rates.")
+        
+        _update_sr_combo()
+        _refresh_sr_status()
+        
+        # Re-filter when output device changes
+        device_var.trace_add('write', lambda *a: (_update_sr_combo(), _refresh_sr_status()))
+        
+        # --- Internal Synth Rate section ---
+        synth_sr_frame = tk.Frame(dialog, bg=self.COLORS['bg_dark'])
+        synth_sr_frame.pack(fill='x', padx=20, pady=(15, 0))
+        
+        tk.Label(synth_sr_frame, text="Internal Synth Rate:", 
+                font=('Segoe UI', 9),
+                fg=self.COLORS['text'],
+                bg=self.COLORS['bg_dark']).pack(anchor='w')
+        
+        synth_sr_options = [
+            ("Same as output (default)", 0),
+            ("22050 Hz — lo-fi", 22050),
+            ("11025 Hz — crunchy lo-fi", 11025),
+            ("8000 Hz — telephone / 8-bit", 8000),
+        ]
+        
+        current_synth_sr = self.preferences_manager.get('synth_sample_rate', 44100)
+        current_synth_sr_label = synth_sr_options[0][0]  # default "Same as output"
+        for label, val in synth_sr_options:
+            if val == current_synth_sr:
+                current_synth_sr_label = label
+                break
+        
+        synth_sr_var = tk.StringVar(value=current_synth_sr_label)
+        synth_sr_combo = ttk.Combobox(synth_sr_frame, textvariable=synth_sr_var, 
+                                      values=[label for label, _ in synth_sr_options],
+                                      width=50, state='readonly')
+        synth_sr_combo.pack(fill='x', pady=(2, 0))
+        
+        tk.Label(synth_sr_frame,
+                text="Lower = less CPU + lo-fi character. Audio is upsampled to output rate.",
+                font=('Segoe UI', 8),
+                fg=self.COLORS['text_dim'],
+                bg=self.COLORS['bg_dark']).pack(anchor='w', pady=(5, 0))
+        
+        def _get_selected_synth_rate():
+            """Extract synth rate from combo selection. 0 means same as output."""
+            sel = synth_sr_var.get()
+            for label, val in synth_sr_options:
+                if label == sel:
+                    return val
+            return 0
+        
+        # --- Mono / Stereo section ---
+        mono_frame = tk.Frame(dialog, bg=self.COLORS['bg_dark'])
+        mono_frame.pack(fill='x', padx=20, pady=(15, 0))
+        
+        current_mono = self.preferences_manager.get('audio_mono', False)
+        mono_var = tk.BooleanVar(value=current_mono)
+        mono_check = tk.Checkbutton(mono_frame, text="Mono output",
+                                    variable=mono_var,
+                                    font=('Segoe UI', 9),
+                                    fg=self.COLORS['text'],
+                                    bg=self.COLORS['bg_dark'],
+                                    selectcolor=self.COLORS['bg_medium'],
+                                    activebackground=self.COLORS['bg_dark'],
+                                    activeforeground=self.COLORS['text'])
+        mono_check.pack(anchor='w')
+        
+        tk.Label(mono_frame,
+                text="Disables pan, stereo noise, and reverb width. WAV exports in mono.",
+                font=('Segoe UI', 8),
+                fg=self.COLORS['text_dim'],
+                bg=self.COLORS['bg_dark']).pack(anchor='w', pady=(2, 0))
+        
         # Buttons
         button_frame = tk.Frame(dialog, bg=self.COLORS['bg_dark'])
         button_frame.pack(fill='x', padx=20, pady=20)
@@ -3450,6 +3689,24 @@ class PythonicGUI:
             available_input = self._get_audio_input_devices()
             input_names = [name for _, name in available_input]
             input_device_combo['values'] = ["(System Default)"] + input_names
+            _update_sr_combo()
+            _refresh_sr_status()
+        
+        def _get_selected_buffer_ms():
+            """Extract buffer ms value from combo selection."""
+            sel = buffer_var.get()
+            for label, val in buffer_options:
+                if label == sel:
+                    return val
+            return 23.8
+        
+        def _get_selected_sample_rate():
+            """Extract sample rate from combo selection."""
+            sel = sr_var.get()
+            for label, val in sr_options:
+                if label == sel:
+                    return val
+            return 44100
         
         def save_and_close():
             selected = device_var.get()
@@ -3462,8 +3719,17 @@ class PythonicGUI:
                 self.preferences_manager.set('audio_input_device', None)
             else:
                 self.preferences_manager.set('audio_input_device', selected_input)
+            self.preferences_manager.set('audio_buffer_ms', _get_selected_buffer_ms())
+            self.preferences_manager.set('audio_sample_rate', _get_selected_sample_rate())
+            synth_sr = _get_selected_synth_rate()
+            self.preferences_manager.set('synth_sample_rate', synth_sr if synth_sr > 0 else _get_selected_sample_rate())
+            self.preferences_manager.set('audio_mono', mono_var.get())
             print(f"Audio output device preference saved: {selected}", flush=True)
             print(f"Audio input device preference saved: {selected_input}", flush=True)
+            print(f"Audio buffer size preference saved: {_get_selected_buffer_ms()} ms", flush=True)
+            print(f"Audio sample rate preference saved: {_get_selected_sample_rate()} Hz", flush=True)
+            print(f"Synth rate preference saved: {'same as output' if synth_sr == 0 else str(synth_sr) + ' Hz'}", flush=True)
+            print(f"Mono mode preference saved: {mono_var.get()}", flush=True)
             dialog.destroy()
         
         def apply_now():
@@ -3479,6 +3745,38 @@ class PythonicGUI:
                 self.preferences_manager.set('audio_input_device', None)
             else:
                 self.preferences_manager.set('audio_input_device', selected_input)
+            
+            # Save and apply buffer size
+            new_buffer_ms = _get_selected_buffer_ms()
+            self.preferences_manager.set('audio_buffer_ms', new_buffer_ms)
+            
+            # Save and apply output sample rate
+            new_sr = _get_selected_sample_rate()
+            self.preferences_manager.set('audio_sample_rate', new_sr)
+            if new_sr != self.sample_rate:
+                self._apply_sample_rate(new_sr)
+                print(f"Output sample rate changed to {new_sr} Hz", flush=True)
+            
+            # Save and apply internal synth rate
+            synth_sr_sel = _get_selected_synth_rate()
+            effective_synth_sr = synth_sr_sel if synth_sr_sel > 0 else self.sample_rate
+            # Cap at output rate
+            effective_synth_sr = min(effective_synth_sr, self.sample_rate)
+            self.preferences_manager.set('synth_sample_rate', effective_synth_sr)
+            if effective_synth_sr != self.synth_sample_rate:
+                self._apply_synth_rate(effective_synth_sr)
+                print(f"Synth rate changed to {effective_synth_sr} Hz (synth recreated)", flush=True)
+            
+            # Save and apply mono mode
+            new_mono = mono_var.get()
+            self.preferences_manager.set('audio_mono', new_mono)
+            if new_mono != self.synth.mono:
+                self.synth.set_mono(new_mono)
+                print(f"Mono mode {'enabled' if new_mono else 'disabled'}", flush=True)
+            
+            self._audio_block_size = max(64, int(round(new_buffer_ms / 1000.0 * self.sample_rate)))
+            self._buffer_time_ms = (self._audio_block_size / self.sample_rate) * 1000
+            self._last_good_audio = np.zeros((self._audio_block_size, 2), dtype=np.float32)
             
             # Restart audio stream
             self._stop_audio()
@@ -4220,10 +4518,12 @@ class PythonicGUI:
         # Adaptive: If we're consistently running behind, drop audio processing
         drop_this_callback = False
         if self.enable_sample_dropping and len(self.callback_times) > 10:
-            avg_recent = np.mean(list(self.callback_times)[-10:])
-            buffer_time_ms = (frames / self.sample_rate) * 1000
-            # If average callback time exceeds 90% of buffer time, start dropping
-            if avg_recent > buffer_time_ms * 0.9:
+            # Sum last 10 entries directly from deque (avoids list alloc + numpy)
+            recent_total = 0.0
+            for _i in range(1, 11):
+                recent_total += self.callback_times[-_i]
+            # Equivalent to avg_recent > buffer_time_ms * 0.9
+            if recent_total > self._buffer_time_ms * 9.0:
                 drop_this_callback = True
                 self.dropped_callback_count += 1
                 if self.dropped_callback_count <= 3:
@@ -4309,14 +4609,14 @@ class PythonicGUI:
             return
         
         process_start = time.perf_counter()
-        audio = self.synth.process_audio(frames)
+        # Synthesize at internal rate, then upsample if needed
+        if self._resample_ratio == 1.0:
+            audio = self.synth.process_audio(frames)
+        else:
+            synth_frames = max(1, int(round(frames / self._resample_ratio)))
+            synth_audio = self.synth.process_audio(synth_frames)
+            audio = self._upsample_linear(synth_audio, synth_frames, frames)
         process_time = (time.perf_counter() - process_start) * 1000  # ms
-        
-        # Debug: log if processing is unexpectedly slow when idle
-        if self.callback_count % 100 == 0:
-            active_count = sum(1 for ch in self.synth.channels if ch.is_active)
-            if active_count == 0 and process_time > 5.0:
-                print(f"DEBUG: No active channels but process_audio took {process_time:.1f}ms!", flush=True)
         
         # Copy to output buffer
         outdata[:]  = audio
@@ -4352,7 +4652,7 @@ class PythonicGUI:
         avg_process = np.mean(self.process_times) if self.process_times else 0
         avg_trigger = np.mean(self.trigger_times) if self.trigger_times else 0
         
-        buffer_time_ms = (1050 / self.sample_rate) * 1000  # Updated to 1050
+        buffer_time_ms = self._buffer_time_ms
         utilization = (avg_callback / buffer_time_ms) * 100
         
         # Count active channels
@@ -4363,6 +4663,9 @@ class PythonicGUI:
         print(f"Buffer time available: {buffer_time_ms:.2f}ms", flush=True)
         print(f"Active channels: {active_count}/8", flush=True)
         print(f"Sample dropping: {'ENABLED' if self.enable_sample_dropping else 'DISABLED'}", flush=True)
+        if self._resample_ratio != 1.0:
+            print(f"Synth rate: {self.synth_sample_rate} Hz → output: {self.sample_rate} Hz (upsample {self._resample_ratio:.1f}x)", flush=True)
+        print(f"Mono: {'YES' if self.synth.mono else 'NO'}", flush=True)
         print(f"Avg callback time: {avg_callback:.3f}ms ({utilization:.1f}% utilization)", flush=True)
         print(f"Max callback time: {max_callback:.3f}ms", flush=True)
         print(f"Avg process_audio: {avg_process:.3f}ms", flush=True)
@@ -4375,7 +4678,7 @@ class PythonicGUI:
         print("="*60, flush=True)
     
     def _start_audio(self):
-        """Start the audio stream"""
+        """Start the audio stream with fallback for unsupported configurations."""
         try:
             # Get preferred audio device from preferences
             preferred_device = self.preferences_manager.get('audio_output_device')
@@ -4395,25 +4698,112 @@ class PythonicGUI:
                 except Exception as e:
                     print(f"Error querying audio devices: {e}", flush=True)
             
-            self.audio_stream = sd.OutputStream(
-                device=device_param,
-                channels=2,
-                callback=self._audio_callback,
-                samplerate=self.sample_rate,
-                blocksize=1050,  # Reduced buffer size
-                dtype=np.float32
-            )
-            self.audio_stream.start()
+            blocksize = self._audio_block_size
+            
+            # Validate sample rate against device
+            try:
+                sd.check_output_settings(device=device_param, channels=2, samplerate=self.sample_rate)
+            except Exception:
+                # Requested sample rate not supported — fall back to device default
+                dev_info = sd.query_devices(device_param if device_param is not None else sd.default.device[1])
+                fallback_sr = int(dev_info['default_samplerate'])
+                print(f"WARNING: {self.sample_rate} Hz not supported by device, falling back to {fallback_sr} Hz", flush=True)
+                self._apply_sample_rate(fallback_sr)
+                blocksize = self._audio_block_size
+            
+            # Try opening the stream — may still fail even after check_output_settings
+            stream = None
+            attempts = [
+                (device_param, self.sample_rate, "requested"),
+                (device_param, 44100, "44100 Hz fallback"),
+                (None, 44100, "system default @ 44100 Hz"),
+            ]
+            for dev, sr, desc in attempts:
+                try:
+                    if sr != self.sample_rate:
+                        self._apply_sample_rate(sr)
+                        blocksize = self._audio_block_size
+                    stream = sd.OutputStream(
+                        device=dev,
+                        channels=2,
+                        callback=self._audio_callback,
+                        samplerate=self.sample_rate,
+                        blocksize=blocksize,
+                        dtype=np.float32
+                    )
+                    stream.start()
+                    device_param = dev
+                    break
+                except Exception as e:
+                    print(f"Failed to open audio ({desc}): {e}", flush=True)
+                    stream = None
+            
+            if stream is None:
+                print("ERROR: Could not open any audio device!", flush=True)
+                return
+            
+            self.audio_stream = stream
             
             # Show which device is being used
+            latency_ms = blocksize / self.sample_rate * 1000
+            synth_info = f", synth @ {self.synth_sample_rate} Hz" if self.synth_sample_rate != self.sample_rate else ""
+            mono_info = ", MONO" if self.synth.mono else ""
             if device_param is not None:
                 device_name = sd.query_devices(device_param)['name']
-                print(f"Audio stream started on '{device_name}' (buffer: 1050 samples, ~{1050/self.sample_rate*1000:.1f}ms latency)", flush=True)
+                print(f"Audio stream started on '{device_name}' @ {self.sample_rate} Hz (buffer: {blocksize} samples, ~{latency_ms:.1f}ms latency{synth_info}{mono_info})", flush=True)
             else:
                 default_device = sd.query_devices(sd.default.device[1])
-                print(f"Audio stream started on '{default_device['name']}' [default] (buffer: 1050 samples, ~{1050/self.sample_rate*1000:.1f}ms latency)", flush=True)
+                print(f"Audio stream started on '{default_device['name']}' [default] @ {self.sample_rate} Hz (buffer: {blocksize} samples, ~{latency_ms:.1f}ms latency{synth_info}{mono_info})", flush=True)
         except Exception as e:
             print(f"Failed to start audio: {e}", flush=True)
+    
+    def _apply_sample_rate(self, new_sr: int):
+        """Change the output sample rate (device rate). Does NOT recreate the synth.
+        Call _apply_synth_rate() separately if synthesis rate also changes."""
+        if new_sr == self.sample_rate:
+            return
+        self.sample_rate = new_sr
+        self._resample_ratio = self.sample_rate / self.synth_sample_rate
+        buffer_ms = self.preferences_manager.get('audio_buffer_ms', 23.8)
+        self._audio_block_size = max(64, int(round(buffer_ms / 1000.0 * self.sample_rate)))
+        self._buffer_time_ms = (self._audio_block_size / self.sample_rate) * 1000
+        self._last_good_audio = np.zeros((self._audio_block_size, 2), dtype=np.float32)
+        # Reset resampling cache so it gets rebuilt
+        self._resample_out_frames = 0
+    
+    def _apply_synth_rate(self, new_sr: int):
+        """Recreate the synth at a new internal synthesis rate, preserving preset state."""
+        if new_sr == self.synth_sample_rate:
+            return
+        preset_data = self.synth.get_preset_data()
+        was_mono = self.synth.mono
+        self.synth_sample_rate = new_sr
+        self.synth = PythonicSynthesizer(self.synth_sample_rate, parallel_channel_processing=True)
+        self.synth.set_mono(was_mono)
+        self.preset_manager.synth = self.synth
+        self.morph_manager.synth = self.synth
+        self.synth.load_preset_data(preset_data)
+        smoothing_ms = self.preferences_manager.get('param_smoothing_ms', 30.0)
+        for channel in self.synth.channels:
+            channel.set_smoothing_time(smoothing_ms)
+        self._resample_ratio = self.sample_rate / self.synth_sample_rate
+        # Reset resampling cache
+        self._resample_out_frames = 0
+    
+    def _upsample_linear(self, audio, in_frames, out_frames):
+        """Upsample stereo audio using linear interpolation (lo-fi preserving)."""
+        if in_frames == out_frames:
+            return audio
+        # Lazy-init or resize pre-computed arrays
+        if out_frames != self._resample_out_frames or in_frames != self._resample_in_frames:
+            self._resample_x_out = np.linspace(0, in_frames - 1, out_frames)
+            self._resample_x_in = np.arange(in_frames, dtype=np.float64)
+            self._resample_buffer = np.empty((out_frames, 2), dtype=np.float32)
+            self._resample_out_frames = out_frames
+            self._resample_in_frames = in_frames
+        self._resample_buffer[:, 0] = np.interp(self._resample_x_out, self._resample_x_in, audio[:, 0])
+        self._resample_buffer[:, 1] = np.interp(self._resample_x_out, self._resample_x_in, audio[:, 1])
+        return self._resample_buffer
     
     def _stop_audio(self):
         """Stop the audio stream"""

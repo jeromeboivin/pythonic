@@ -70,11 +70,19 @@ class Oscillator:
         self._output_buffer = np.zeros(8192, dtype=np.float32)
         self._freq_buffer = np.zeros(8192, dtype=np.float32)
         self._phase_buffer = np.zeros(8192, dtype=np.float32)
+        # Pre-allocated arange buffer (avoids np.arange per block)
+        self._arange_buffer = np.arange(8192, dtype=np.float32)
+        self._arange_buffer_f64 = np.arange(8192 * 4, dtype=np.float64)  # For oversampled path
+        # Cached random mod filter coefficients
+        self._rand_mod_b = None
+        self._rand_mod_a = None
+        self._rand_mod_zi = np.zeros(1, dtype=np.float64)
         
         # Oversampling for band-limited sawtooth
         self.OVERSAMPLE_FACTOR = 4
         self._os_sos = None   # Decimation filter coefficients
         self._os_zi = None    # Decimation filter state
+        self._os_output_buf = np.zeros(8192, dtype=np.float32)  # Reusable output for oversampled path
     
     def reset_phase(self):
         """Reset oscillator phase to zero crossing going positive.
@@ -101,8 +109,8 @@ class Oscillator:
         # Reset decimation filter state on new note
         self._os_zi = None
         # Reset random modulation state for deterministic playback
-        self._random_state = np.random.RandomState(42)
-        self._noise_buffer = np.zeros(512)
+        self._random_state.seed(42)
+        self._noise_buffer[:] = 0
         self._noise_index = 0
     
     def _ensure_decimation_filter(self):
@@ -185,9 +193,22 @@ class Oscillator:
                 return self._process_oversampled(num_samples)
         
         # --- Regular path for SINE, TRIANGLE, and low-frequency SAWTOOTH ---
-        # Time array for this block - start from 0 for first sample
-        # mod_time_scale accelerates/decelerates modulation for pitch shifting
-        time_array = self.mod_time + np.arange(num_samples, dtype=np.float32) * self.mod_time_scale / self.sr
+        # Time array for this block using pre-allocated buffer
+        if num_samples <= len(self._arange_buffer):
+            time_array = self._arange_buffer[:num_samples]
+        else:
+            time_array = np.arange(num_samples, dtype=np.float32)
+        # time_array now holds [0, 1, 2, ..., N-1]; scale in place
+        # We need: mod_time + i * mod_time_scale / sr
+        scale = np.float32(self.mod_time_scale / self.sr)
+        # Use freq_buffer as scratch for scaled time
+        if num_samples <= len(self._freq_buffer):
+            scratch = self._freq_buffer[:num_samples]
+        else:
+            scratch = np.empty(num_samples, dtype=np.float32)
+        np.multiply(time_array, scale, out=scratch)
+        np.add(scratch, np.float32(self.mod_time), out=scratch)
+        time_array = scratch
         
         # Calculate instantaneous frequency based on modulation mode
         freq_array = self._calculate_frequency(time_array, num_samples)
@@ -236,8 +257,14 @@ class Oscillator:
         os_num = num_samples * factor
         os_sr = self.sr * factor
         
-        # Time array at oversampled rate
-        time_array = self.mod_time + np.arange(os_num, dtype=np.float64) * self.mod_time_scale / os_sr
+        # Time array at oversampled rate using pre-allocated buffer
+        if os_num <= len(self._arange_buffer_f64):
+            time_array = self._arange_buffer_f64[:os_num].copy()
+        else:
+            time_array = np.arange(os_num, dtype=np.float64)
+        scale = self.mod_time_scale / os_sr
+        np.multiply(time_array, scale, out=time_array)
+        np.add(time_array, self.mod_time, out=time_array)
         
         # Calculate frequency at oversampled rate
         freq_array = self._calculate_frequency(time_array, os_num)
@@ -265,14 +292,18 @@ class Oscillator:
         from scipy.signal import sosfilt
         filtered, self._os_zi = sosfilt(self._os_sos, oversampled, zi=self._os_zi)
         
-        # Downsample
-        output = filtered[::factor].copy()
+        # Downsample into pre-allocated buffer (avoids copy + astype allocation)
+        if num_samples <= len(self._os_output_buf):
+            output = self._os_output_buf[:num_samples]
+            output[:] = filtered[::factor]
+        else:
+            output = np.asarray(filtered[::factor], dtype=np.float32)
         
         # Apply velocity gain
         if self.velocity_gain != 1.0:
             output *= self.velocity_gain
         
-        return output.astype(np.float32)
+        return output
     
     def _calculate_frequency(self, time_array: np.ndarray, num_samples: int) -> np.ndarray:
         """Calculate frequency array based on modulation mode"""
@@ -355,19 +386,20 @@ class Oscillator:
         # Generate filtered random noise
         noise = self._random_state.randn(num_samples)
         
-        # Simple one-pole lowpass filter for smoothing (vectorized with cumsum trick)
+        # Simple one-pole lowpass filter for smoothing (vectorized)
         cutoff_normalized = min(0.99, self.pitch_mod_rate / (self.sr / 2))
         alpha = cutoff_normalized
         
-        # Vectorized IIR filter using scipy.signal.lfilter
+        # Use cached filter coefficients (avoid np.array allocation per block)
+        if self._rand_mod_b is None or self._rand_mod_b[0] != alpha:
+            self._rand_mod_b = np.array([alpha])
+            self._rand_mod_a = np.array([1.0, -(1.0 - alpha)])
+        
         from scipy.signal import lfilter
-        b = np.array([alpha])
-        a = np.array([1.0, -(1.0 - alpha)])
-        
         prev = self._noise_buffer[-1] if len(self._noise_buffer) > 0 else 0.0
-        zi = np.array([prev * (1.0 - alpha)])
+        self._rand_mod_zi[0] = prev * (1.0 - alpha)
         
-        filtered_noise, zf = lfilter(b, a, noise, zi=zi)
+        filtered_noise, zf = lfilter(self._rand_mod_b, self._rand_mod_a, noise, zi=self._rand_mod_zi)
         self._noise_buffer = filtered_noise  # Store for next call
         
         # Scale by modulation amount

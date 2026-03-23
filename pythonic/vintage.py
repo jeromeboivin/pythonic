@@ -42,7 +42,8 @@ class VintageProcessor:
         self._drift_counter = 0
         
         # Noise state - use faster numpy random
-        self._rng = np.random.default_rng()
+        self._rng = np.random.default_rng(54321)
+        self._rng_init_state = self._rng.bit_generator.state
         
         # Filter states for stereo (left, right)
         # Noise filter state
@@ -60,6 +61,21 @@ class VintageProcessor:
         self._hf_alpha = 0.0
         self._noise_alpha = 0.1
         
+        # Pre-allocated filter coefficient arrays (avoid np.array per block)
+        self._noise_b = np.array([0.1], dtype=np.float64)
+        self._noise_a = np.array([1.0, -0.9], dtype=np.float64)
+        self._hf_b = np.array([0.0], dtype=np.float64)
+        self._hf_a = np.array([1.0, -1.0], dtype=np.float64)
+        self._dc_b = np.array([1.0, -1.0], dtype=np.float64)
+        self._dc_a = np.array([1.0, -0.995], dtype=np.float64)
+        # Pre-allocated zi arrays (1-element each, avoid per-block np.array)
+        self._noise_zi = np.zeros(1, dtype=np.float64)
+        self._hf_zi = np.zeros(1, dtype=np.float64)
+        self._dc_zi = np.zeros(1, dtype=np.float64)
+        # Cached saturation normalization
+        self._cached_sat_norm_inv = 1.0
+        self._cached_sat_drive = 0.0
+        
         # Pre-allocate work buffer
         self._work_buffer = np.zeros((8192, 2), dtype=np.float32)
     
@@ -70,8 +86,8 @@ class VintageProcessor:
         self._hf_z1.fill(0)
         self._dc_x1.fill(0)
         self._dc_y1.fill(0)
-        # Re-seed RNG for deterministic vintage processing
-        self._rng = np.random.default_rng(54321)
+        # Restore initial RNG state (avoids creating new Generator object)
+        self._rng.bit_generator.state = self._rng_init_state
         # Reset drift for deterministic pitch behavior per hit
         self._drift_position = 0.0
         self._drift_velocity = 0.0
@@ -167,15 +183,26 @@ class VintageProcessor:
         # Update cached coefficients if amount changed
         if self._cached_amount != self.amount:
             self._cached_amount = self.amount
+            # Noise lowpass coefficients
+            alpha_n = self._noise_alpha
+            self._noise_b[0] = alpha_n
+            self._noise_a[1] = -(1.0 - alpha_n)
             # HF roll-off coefficient
             if self.amount > 0.1:
                 cutoff = 20000.0 - self.amount * 8000.0
                 rc = 1.0 / (2.0 * np.pi * cutoff)
                 dt = 1.0 / self.sr
                 self._hf_alpha = dt / (rc + dt)
+            alpha_h = self._hf_alpha
+            self._hf_b[0] = alpha_h
+            self._hf_a[1] = -(1.0 - alpha_h)
         
-        # Work in-place on copy
-        output = signal.copy()
+        # Work on pre-allocated buffer (avoids per-call allocation)
+        if num_samples <= len(self._work_buffer):
+            output = self._work_buffer[:num_samples]
+            output[:] = signal
+        else:
+            output = signal.copy()
         
         # 1. Add thermal noise (vectorized)
         noise_level = self.amount * 0.001
@@ -184,15 +211,12 @@ class VintageProcessor:
             white = self._rng.standard_normal((num_samples, 2), dtype=np.float32)
             
             # Apply 1-pole lowpass for pink-ish character using scipy.lfilter
-            # This is much faster than Python loops
             alpha = self._noise_alpha
-            b = np.array([alpha], dtype=np.float32)
-            a = np.array([1.0, -(1.0 - alpha)], dtype=np.float32)
             
-            # Filter each channel
+            # Filter each channel using pre-allocated arrays
             for ch in range(2):
-                zi = np.array([self._noise_z1[ch] * (1.0 - alpha)])
-                filtered, zf = lfilter(b, a, white[:, ch], zi=zi)
+                self._noise_zi[0] = self._noise_z1[ch] * (1.0 - alpha)
+                filtered, zf = lfilter(self._noise_b, self._noise_a, white[:, ch], zi=self._noise_zi)
                 self._noise_z1[ch] = filtered[-1] if num_samples > 0 else self._noise_z1[ch]
                 output[:, ch] += filtered * noise_level
         
@@ -205,10 +229,12 @@ class VintageProcessor:
             driven = output * drive
             np.tanh(driven, out=driven)  # In-place tanh
             
-            # Normalize
-            normalization = np.tanh(drive)
-            if normalization > 0.1:
-                driven *= (1.0 / normalization)
+            # Re-use cached normalization (only changes when amount changes)
+            if drive != self._cached_sat_drive:
+                self._cached_sat_drive = drive
+                normalization = np.tanh(drive)
+                self._cached_sat_norm_inv = (1.0 / normalization) if normalization > 0.1 else 1.0
+            driven *= self._cached_sat_norm_inv
             
             # Blend (vectorized)
             blend = saturation_amount
@@ -218,24 +244,19 @@ class VintageProcessor:
         # 3. Apply high-frequency roll-off (vectorized with lfilter)
         if self.amount > 0.1:
             alpha = self._hf_alpha
-            b = np.array([alpha], dtype=np.float32)
-            a = np.array([1.0, -(1.0 - alpha)], dtype=np.float32)
             
             for ch in range(2):
-                zi = np.array([self._hf_z1[ch] * (1.0 - alpha)])
-                output[:, ch], zf = lfilter(b, a, output[:, ch], zi=zi)
+                self._hf_zi[0] = self._hf_z1[ch] * (1.0 - alpha)
+                output[:, ch], zf = lfilter(self._hf_b, self._hf_a, output[:, ch], zi=self._hf_zi)
                 self._hf_z1[ch] = output[-1, ch] if num_samples > 0 else self._hf_z1[ch]
         
         # 4. DC blocking (vectorized with lfilter) - only if saturation applied
         if saturation_amount > 0.01:
-            # DC blocker: y[n] = x[n] - x[n-1] + R * y[n-1], R = 0.995
             R = 0.995
-            b_dc = np.array([1.0, -1.0], dtype=np.float32)
-            a_dc = np.array([1.0, -R], dtype=np.float32)
             
             for ch in range(2):
-                zi = np.array([self._dc_x1[ch] - R * self._dc_y1[ch]])
-                output[:, ch], zf = lfilter(b_dc, a_dc, output[:, ch], zi=zi)
+                self._dc_zi[0] = self._dc_x1[ch] - R * self._dc_y1[ch]
+                output[:, ch], zf = lfilter(self._dc_b, self._dc_a, output[:, ch], zi=self._dc_zi)
                 if num_samples > 0:
                     self._dc_x1[ch] = signal[-1, ch]  # Use original input
                     self._dc_y1[ch] = output[-1, ch]

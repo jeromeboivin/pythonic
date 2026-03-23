@@ -50,6 +50,8 @@ class Envelope:
         
         # Pre-allocated buffer for output (avoid allocations in process)
         self._output_buffer = np.zeros(8192, dtype=np.float32)
+        # Pre-allocated buffer for decay exponents (avoids np.arange per block)
+        self._exponents_buffer = np.arange(8192, dtype=np.float32)
         
         self._update_coefficients()
     
@@ -196,8 +198,11 @@ class Envelope:
         if self.stage == EnvelopeStage.DECAY and idx < num_samples:
             decay_samples = num_samples - idx
             
-            # Vectorized exponential decay
-            exponents = np.arange(decay_samples, dtype=np.float32)
+            # Vectorized exponential decay using pre-allocated buffer
+            if decay_samples <= len(self._exponents_buffer):
+                exponents = self._exponents_buffer[:decay_samples]
+            else:
+                exponents = np.arange(decay_samples, dtype=np.float32)
             np.power(self._decay_coefficient, exponents, out=output[idx:])
             output[idx:] *= self.current_level
             

@@ -71,6 +71,9 @@ class NoiseGenerator:
         # Use the new Generator interface which supports out= parameter
         self._rng_left = np.random.default_rng(12345)
         self._rng_right = np.random.default_rng(67890)
+        # Save initial RNG states to restore on trigger (avoids re-creating objects)
+        self._rng_left_init_state = self._rng_left.bit_generator.state
+        self._rng_right_init_state = self._rng_right.bit_generator.state
         
         # Pre-allocated buffers for performance
         self._output_buffer = np.zeros((8192, 2), dtype=np.float32)
@@ -179,9 +182,9 @@ class NoiseGenerator:
         self.filter_left.reset()
         self.filter_right.reset()
         
-        # Re-seed RNGs so every hit produces the same noise sequence
-        self._rng_left = np.random.default_rng(12345)
-        self._rng_right = np.random.default_rng(67890)
+        # Restore initial RNG state (avoids creating new Generator objects)
+        self._rng_left.bit_generator.state = self._rng_left_init_state
+        self._rng_right.bit_generator.state = self._rng_right_init_state
         
         # Trigger appropriate envelope
         if self.envelope_mode == NoiseEnvelopeMode.MODULATED:
@@ -264,8 +267,9 @@ class NoiseGenerator:
             env = self.envelope.process(num_samples)
             self.is_active = self.envelope.is_active
         
-        # Store envelope for external access (used by drum_channel for osc gating)
-        self._last_envelope = env.copy()
+        # Store envelope reference for drum_channel osc gating (safe: only
+        # read within the same DrumChannel.process() call before next block)
+        self._last_envelope = env
         
         # Apply envelope and velocity - use pre-allocated buffer
         if num_samples <= len(self._output_buffer):
@@ -289,6 +293,10 @@ class NoiseGenerator:
         env = self.envelope
         
         if not env.is_active:
+            if num_samples <= len(self._noise_left):
+                result = self._noise_left[:num_samples]
+                result.fill(0)
+                return result
             return np.zeros(num_samples, dtype=np.float32)
         
         # Linear mode scales attack and decay times by 2/3
@@ -297,22 +305,31 @@ class NoiseGenerator:
         total_samples = attack_samples + decay_samples
         
         start_pos = env.sample_index
-        output = np.zeros(num_samples, dtype=np.float32)
-        sample_positions = np.arange(num_samples, dtype=np.float32) + start_pos
         
-        if attack_samples > 0:
-            # Linear attack ramp: 0 to 1
-            attack_mask = sample_positions < attack_samples
-            if np.any(attack_mask):
-                output[attack_mask] = sample_positions[attack_mask] / attack_samples
+        # Use pre-allocated buffer for output
+        if num_samples <= len(self._noise_left):
+            output = self._noise_left[:num_samples]
+            output.fill(0)
+        else:
+            output = np.zeros(num_samples, dtype=np.float32)
         
-        # Linear decay ramp: 1 to 0
-        decay_start = float(attack_samples)
-        decay_end = float(total_samples)
-        decay_mask = (sample_positions >= decay_start) & (sample_positions < decay_end)
-        if np.any(decay_mask):
-            decay_positions = sample_positions[decay_mask] - decay_start
-            output[decay_mask] = 1.0 - decay_positions / decay_samples
+        # Use index arithmetic instead of boolean masks
+        if attack_samples > 0 and start_pos < attack_samples:
+            # Attack ramp region — vectorized with linspace-like arithmetic
+            att_end = min(num_samples, attack_samples - start_pos)
+            if att_end > 0:
+                # output[0:att_end] = (start_pos + 0..att_end-1) / attack_samples
+                inv_att = 1.0 / attack_samples
+                output[:att_end] = np.arange(start_pos, start_pos + att_end, dtype=np.float32) * inv_att
+        
+        # Decay ramp region — vectorized
+        decay_block_start = max(0, attack_samples - start_pos)
+        decay_block_end = min(num_samples, total_samples - start_pos)
+        n_decay = decay_block_end - decay_block_start
+        if n_decay > 0:
+            inv_decay = 1.0 / decay_samples
+            base_pos = start_pos + decay_block_start - attack_samples
+            output[decay_block_start:decay_block_end] = 1.0 - np.arange(base_pos, base_pos + n_decay, dtype=np.float32) * inv_decay
         
         # After decay: hard gate to 0 (already zeros)
         

@@ -38,6 +38,10 @@ class PreferencesManager:
         # Audio settings
         'audio_output_device': None,  # None = system default
         'audio_input_device': None,   # None = system default
+        'audio_buffer_ms': 23.8,  # Audio buffer size in milliseconds
+        'audio_sample_rate': 44100,  # Output sample rate in Hz (must match device)
+        'synth_sample_rate': 44100,  # Internal synthesis rate (can be lower for lo-fi/CPU savings)
+        'audio_mono': False,  # Mono output mode (disables pan/stereo features)
         'po32_debug_save_recordings': False,  # Save recorded audio for debugging
         # Parameter smoothing settings
         'param_smoothing_ms': 30.0,  # Smoothing time constant (20-50ms recommended)

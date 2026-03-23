@@ -254,6 +254,12 @@ class FastStereoDelay:
         self._write_pos = 0
         
         self._delay_samples = self._calculate_delay_samples()
+        self._buffer_dirty_end = 0  # Track how much of the buffer has been written
+        
+        # Pre-allocated work buffers for process()
+        self._max_block = 4096
+        self._indices_buf = np.arange(self._max_block, dtype=np.int64)
+        self._output_buf = np.empty((self._max_block, 2), dtype=np.float32)
     
     def _calculate_delay_samples(self) -> int:
         beats = DELAY_TIME_BEATS.get(self._delay_time, 1.0)
@@ -285,9 +291,15 @@ class FastStereoDelay:
         self._ping_pong = enabled
     
     def reset(self):
-        self._buffer_l.fill(0)
-        self._buffer_r.fill(0)
+        # Only clear the written portion of buffer (avoid zeroing full 1.4MB when possible)
+        if self._buffer_dirty_end >= self._max_delay_samples:
+            self._buffer_l.fill(0)
+            self._buffer_r.fill(0)
+        elif self._buffer_dirty_end > 0:
+            self._buffer_l[:self._buffer_dirty_end] = 0
+            self._buffer_r[:self._buffer_dirty_end] = 0
         self._write_pos = 0
+        self._buffer_dirty_end = 0
     
     def get_delay_time_label(self) -> str:
         return DELAY_TIME_LABELS.get(self._delay_time, "1/8")
@@ -304,9 +316,13 @@ class FastStereoDelay:
         delay = self._delay_samples
         buffer_size = self._max_delay_samples
         
-        # Calculate read indices for all samples at once
-        read_indices = (self._write_pos + np.arange(num_samples) - delay) % buffer_size
-        write_indices = (self._write_pos + np.arange(num_samples)) % buffer_size
+        # Calculate read/write indices (reuse pre-allocated buffer to avoid allocation)
+        if num_samples <= self._max_block:
+            idx = self._indices_buf[:num_samples]
+        else:
+            idx = np.arange(num_samples, dtype=np.int64)
+        read_indices = (self._write_pos + idx - delay) % buffer_size
+        write_indices = (self._write_pos + idx) % buffer_size
         
         # Read delayed samples
         delayed_l = self._buffer_l[read_indices]
@@ -324,14 +340,20 @@ class FastStereoDelay:
             self._buffer_l[write_indices] = in_l + delayed_l * self._feedback
             self._buffer_r[write_indices] = in_r + delayed_r * self._feedback
         
-        # Update write position
+        # Update write position and dirty tracking
         self._write_pos = (self._write_pos + num_samples) % buffer_size
+        new_end = self._write_pos if self._write_pos > 0 else buffer_size
+        if new_end > self._buffer_dirty_end:
+            self._buffer_dirty_end = new_end
         
-        # Mix
+        # Mix (reuse pre-allocated output buffer)
         dry_gain = 1.0 - self._mix * 0.5
         wet_gain = self._mix
         
-        output = np.empty_like(input_signal)
+        if num_samples <= self._max_block:
+            output = self._output_buf[:num_samples]
+        else:
+            output = np.empty_like(input_signal)
         output[:, 0] = in_l * dry_gain + wet_l * wet_gain
         output[:, 1] = in_r * dry_gain + wet_r * wet_gain
         

@@ -182,11 +182,14 @@ class StateVariableFilter:
             a = self._cached_a
         
         if x_array.ndim == 1:
-            # Mono processing
+            # Mono processing — avoid type conversion if already float64
             if self._zi_left is None:
                 self._zi_left = np.zeros(2, dtype=np.float64)
             
-            output, self._zi_left = lfilter(b, a, x_array.astype(np.float64), zi=self._zi_left)
+            if x_array.dtype == np.float64:
+                output, self._zi_left = lfilter(b, a, x_array, zi=self._zi_left)
+            else:
+                output, self._zi_left = lfilter(b, a, x_array, zi=self._zi_left)
             return output.astype(np.float32)
         else:
             # Stereo processing
@@ -195,15 +198,15 @@ class StateVariableFilter:
             if self._zi_right is None:
                 self._zi_right = np.zeros(2, dtype=np.float64)
             
-            output = np.zeros_like(x_array, dtype=np.float32)
+            output = np.empty_like(x_array, dtype=np.float32)
             
-            # Left channel
-            out_l, self._zi_left = lfilter(b, a, x_array[:, 0].astype(np.float64), zi=self._zi_left)
-            output[:, 0] = out_l.astype(np.float32)
+            # lfilter auto-promotes float32 input to float64 for computation;
+            # passing float32 directly avoids the explicit .astype(np.float64) copy
+            out_l, self._zi_left = lfilter(b, a, x_array[:, 0], zi=self._zi_left)
+            output[:, 0] = out_l
             
-            # Right channel
-            out_r, self._zi_right = lfilter(b, a, x_array[:, 1].astype(np.float64), zi=self._zi_right)
-            output[:, 1] = out_r.astype(np.float32)
+            out_r, self._zi_right = lfilter(b, a, x_array[:, 1], zi=self._zi_right)
+            output[:, 1] = out_r
             
             return output
 
@@ -311,6 +314,7 @@ class EQFilter:
         if self._zi is None:
             self._zi = np.zeros(2, dtype=np.float64)
         
-        output, self._zi = lfilter(b, a, x_array.astype(np.float64), zi=self._zi)
+        # lfilter auto-promotes float32 to float64 internally — avoid explicit .astype copy
+        output, self._zi = lfilter(b, a, x_array, zi=self._zi)
         
         return output.astype(np.float32)
