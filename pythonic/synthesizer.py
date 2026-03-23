@@ -10,6 +10,7 @@ from itertools import repeat
 from .drum_channel import DrumChannel
 from .oscillator import WaveformType, PitchModMode
 from .noise import NoiseFilterMode, NoiseEnvelopeMode
+from .lfo import ModTarget
 
 
 def _render_channel_audio(channel: DrumChannel, num_samples: int):
@@ -33,9 +34,16 @@ class PythonicSynthesizer:
             DrumChannel(i, sample_rate) for i in range(self.NUM_CHANNELS)
         ]
         
+        # Back-reference so channels can reach global params (master volume, morph)
+        for channel in self.channels:
+            channel._synthesizer = self
+        
         # Master output
         self.master_volume_db = 0.0  # -inf to +10 dB
         self._master_gain_linear = 1.0
+        
+        # Current BPM (read by channel LFOs for tempo sync)
+        self._bpm = 120.0
         
         # Pre-allocate buffers to avoid allocations in process_audio
         self._output_buffer = np.zeros((4096, 2), dtype=np.float32)
@@ -239,6 +247,19 @@ class PythonicSynthesizer:
         if not active_channels and preview_source is None:
             return output
 
+        # Pre-render: apply MORPH offset (uses previous block's values)
+        _morph_offset = 0.0
+        _saved_morph = None
+        if hasattr(self, '_morph_manager'):
+            for channel in self.channels:
+                offsets = channel._global_mod_offsets
+                if offsets and ModTarget.MORPH in offsets:
+                    _morph_offset += offsets[ModTarget.MORPH]
+            if _morph_offset != 0.0:
+                _saved_morph = self._morph_manager._position
+                self._morph_manager.set_position(
+                    max(0.0, min(1.0, _saved_morph + _morph_offset)))
+
         if active_channels:
             if (self.parallel_channel_processing and self._thread_pool is not None
                     and len(active_channels) > 1 and num_samples >= 512):
@@ -265,13 +286,34 @@ class PythonicSynthesizer:
         if preview_source is not None:
             preview_audio = preview_source.read(num_samples)
             np.add(output, preview_audio, out=output)
+
+        # Post-render: restore morph position
+        if _saved_morph is not None:
+            self._morph_manager._position = _saved_morph
+            self._morph_manager._apply_interpolation()
         
-        # Apply master volume (optimized)
-        if self._master_gain_linear == 0.0:
+        # Apply global mod offsets from channel LFOs (MASTER_VOLUME, MORPH)
+        _global_vol_offset = 0.0
+        for channel in self.channels:
+            offsets = channel._global_mod_offsets
+            if offsets:
+                if ModTarget.MASTER_VOLUME in offsets:
+                    _global_vol_offset += offsets[ModTarget.MASTER_VOLUME]
+        
+        # Apply master volume with global mod offset
+        effective_gain = self._master_gain_linear
+        if _global_vol_offset != 0.0:
+            effective_vol_db = max(-60.0, min(10.0, self.master_volume_db + _global_vol_offset))
+            if effective_vol_db <= -60.0:
+                effective_gain = 0.0
+            else:
+                effective_gain = 10.0 ** (effective_vol_db / 20.0)
+        
+        if effective_gain == 0.0:
             output.fill(0)
             return output
-        if self._master_gain_linear != 1.0:
-            np.multiply(output, self._master_gain_linear, out=output)
+        if effective_gain != 1.0:
+            np.multiply(output, effective_gain, out=output)
         
         # Note: Channel-level headroom is already applied in DrumChannel.INTERNAL_HEADROOM_LINEAR
         # No additional headroom reduction needed here for accurate reproduction
@@ -344,7 +386,8 @@ class PythonicSynthesizer:
                 pass
     
     def set_bpm(self, bpm: float):
-        """Set BPM for all channels (for tempo-synced delay effects)"""
+        """Set BPM for all channels (for tempo-synced delay effects and LFOs)"""
+        self._bpm = bpm
         for channel in self.channels:
             channel.set_bpm(bpm)
     

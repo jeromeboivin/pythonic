@@ -1,0 +1,40 @@
+========================================================================
+SYNTHESIS QUALITY REPORT
+========================================================================
+
+  ✓ Preset 01: loss=0.0995 (threshold=0.22) hits=8/8 timing=0.7ms
+  ✓ Preset 02: loss=0.1110 (threshold=0.26) hits=8/8 timing=0.1ms
+  ✓ Preset 03: loss=0.0464 (threshold=0.27) hits=8/8 timing=0.3ms
+  ✓ Preset 04: loss=0.0822 (threshold=0.20) hits=8/8 timing=0.5ms
+  ✓ Preset 05: loss=0.1980 (threshold=0.58) hits=8/8 timing=3.8ms
+  ✓ Preset 06: loss=0.0989 (threshold=0.30) hits=8/8 timing=5.2ms
+  ✓ Preset 07: loss=0.1670 (threshold=0.24) hits=8/8 timing=2.9ms
+  ✓ Preset 08: loss=0.0556 (threshold=0.32) hits=8/8 timing=3.5ms
+  ✓ Preset 09: loss=0.2288 (threshold=0.48) hits=8/8 timing=0.1ms
+  ✓ Preset 10: loss=0.1835 (threshold=0.33) hits=8/8 timing=0.7ms
+  ✓ Preset 11: loss=0.1335 (threshold=0.27) hits=8/8 timing=0.1ms
+  ✓ Preset 12: loss=0.2699 (threshold=0.43) hits=8/8 timing=15.4ms
+  ✓ Preset 13: loss=0.1538 (threshold=0.16) hits=8/8 timing=3.3ms
+  ✓ Preset 14: loss=0.1666 (threshold=0.36) hits=8/8 timing=5.1ms
+  ✓ Preset 15: loss=0.1090 (threshold=0.29) hits=8/8 timing=1.4ms
+  ✓ Preset 16: loss=0.0924 (threshold=0.22) hits=8/8 timing=6.3ms
+  ✓ Preset 17: loss=0.1331 (threshold=0.33) hits=8/8 timing=1.4ms
+  ✓ Preset 18: loss=0.1313 (threshold=0.28) hits=8/8 timing=4.5ms
+  ✓ Preset 19: loss=0.1112 (threshold=0.24) hits=8/8 timing=0.1ms
+  ✓ Preset 20: loss=0.1214 (threshold=0.33) hits=8/8 timing=2.1ms
+
+  Average loss: 0.1346 (threshold: 0.28)
+  Presets tested: 20
+  Presets passing: 20
+
+  Per-metric averages:
+    ✓ crest_factor_diff              avg=0.7753 threshold=3.0000
+    ✓ decay_time_diff                avg=0.0126 threshold=0.1000
+    ✓ envelope_correlation           avg=0.0356 threshold=0.1500
+    ✓ log_spectrum_db                avg=10.2494 threshold=25.0000
+    ✓ mel_spectrum_db                avg=8.8968 threshold=10.0000
+    ✓ peak_amplitude_db              avg=2.1798 threshold=5.0000
+    ✓ pitch_semitones                avg=1.8505 threshold=4.0000
+    ✓ rms_db                         avg=2.2258 threshold=5.0000
+    ✓ spectral_centroid_hz           avg=1019.3929 threshold=1200.0000
+    ✓ stereo_width_diff              avg=0.0077 threshold=0.0500

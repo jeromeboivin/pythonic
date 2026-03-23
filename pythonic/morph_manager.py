@@ -49,7 +49,8 @@ DISCRETE_PARAMS = {
 }
 
 # Parameters to NOT interpolate (identity/metadata)
-EXCLUDED_PARAMS = {'name'}
+# LFO/pump are excluded so they stay independent of morph A/B states
+EXCLUDED_PARAMS = {'name', 'lfo1', 'lfo2', 'pump'}
 
 
 class MorphManager:

@@ -24,6 +24,10 @@ from pythonic.noise import NoiseFilterMode, NoiseEnvelopeMode
 from pythonic.preset_manager import PresetManager
 from pythonic.preferences_manager import PreferencesManager
 from pythonic.pattern_manager import PatternManager
+from pythonic.lfo import (
+    LFOWaveform, LFORetrigger, LFOPolarity, SyncDivision,
+    ModTarget, MOD_TARGET_GROUPS, MOD_TARGET_LABELS,
+)
 from gui.widgets import (
     RotaryKnob, VerticalSlider, ChannelButton,
     WaveformSelector, ModeSelector, ToggleButton, PatternEditor, MatrixEditor
@@ -657,12 +661,13 @@ class PythonicGUI:
         patch_frame = tk.Frame(parent, bg=self.COLORS['bg_medium'])
         patch_frame.pack(fill='x', expand=True, pady=(0, 2))
         
-        # Five main subsections
+        # Seven subsections — lfo1, lfo2, pump racks to the right of vel
         self._build_mixing_section(patch_frame)
         self._build_oscillator_section(patch_frame)
         self._build_noise_section(patch_frame)
         self._build_fx_section(patch_frame)
         self._build_velocity_section(patch_frame)
+        self._build_modulation_section(patch_frame)
     
     def _build_mixing_section(self, parent):
         """Build the mixing controls section"""
@@ -983,6 +988,247 @@ class PythonicGUI:
                                             command=self._on_mod_vel_change)
         self.mod_vel_slider.pack(pady=2)
         
+    def _build_modulation_section(self, parent):
+        """Build three vertical modulation racks (lfo 1, lfo 2, pump) side-by-side,
+        packed to the right of the velocity section."""
+        # Build destination option list once (short labels for narrow comboboxes)
+        self._mod_target_options = ['Off']
+        self._mod_target_values = [ModTarget.NONE]
+        for group_name, targets in MOD_TARGET_GROUPS.items():
+            for t in targets:
+                self._mod_target_options.append(MOD_TARGET_LABELS[t])
+                self._mod_target_values.append(t)
+        
+        # Wave / sync option lists for comboboxes
+        self._lfo_wave_options = ['Sin', 'Tri', 'Saw▲', 'Saw▼', 'Sq', 'S&H']
+        self._lfo_sync_options = ['Free', '1/1', '1/2', '1/4', '1/8', '1/16',
+                                  '1/4.', '1/8.', '1/4T', '1/8T', '2bar', '4bar']
+        
+        self._build_lfo_panel(parent, 'lfo1', 'lfo 1')
+        self._build_lfo_panel(parent, 'lfo2', 'lfo 2')
+        self._build_pump_panel(parent)
+    
+    def _build_lfo_panel(self, parent, lfo_id: str, title: str):
+        """Build one vertical LFO rack (same height as other sections)."""
+        section = tk.LabelFrame(parent, text=title,
+                               font=('Segoe UI', 7),
+                               fg=self.COLORS['text_dim'],
+                               bg=self.COLORS['bg_medium'],
+                               labelanchor='n')
+        section.pack(side='left', padx=2, pady=2, fill='both')
+        
+        # Enable toggle
+        enable_btn = ToggleButton(section, text="on", width=30, height=16,
+                                  command=lambda v, lid=lfo_id: self._on_lfo_enable(lid, v))
+        enable_btn.pack(pady=(2, 4))
+        
+        # Waveform combobox
+        wave_var = tk.StringVar(value=self._lfo_wave_options[0])
+        wave_combo = ttk.Combobox(section, textvariable=wave_var,
+                                  values=self._lfo_wave_options,
+                                  state='readonly', width=8,
+                                  font=('Segoe UI', 7))
+        wave_combo.pack(padx=2, pady=1)
+        wave_combo.bind('<<ComboboxSelected>>',
+                        lambda e, lid=lfo_id, wv=wave_var: self._on_lfo_waveform(lid, wv))
+        
+        # Rate knob
+        rate_knob = RotaryKnob(section, size=32,
+                               min_val=0.01, max_val=50, default=1.0,
+                               label="rate",
+                               logarithmic=True,
+                               command=lambda v, lid=lfo_id: self._on_lfo_rate(lid, v))
+        rate_knob.pack(pady=2)
+        
+        # Depth knob
+        depth_knob = RotaryKnob(section, size=32,
+                                min_val=0, max_val=100, default=0,
+                                label="depth",
+                                command=lambda v, lid=lfo_id: self._on_lfo_depth(lid, v))
+        depth_knob.pack(pady=2)
+        
+        # Sync combobox (tempo division)
+        sync_var = tk.StringVar(value=self._lfo_sync_options[0])
+        sync_combo = ttk.Combobox(section, textvariable=sync_var,
+                                  values=self._lfo_sync_options,
+                                  state='readonly', width=8,
+                                  font=('Segoe UI', 7))
+        sync_combo.pack(padx=2, pady=1)
+        sync_combo.bind('<<ComboboxSelected>>',
+                        lambda e, lid=lfo_id, sv=sync_var: self._on_lfo_sync(lid, sv))
+        
+        # Retrigger + Polarity toggles side-by-side
+        toggle_row = tk.Frame(section, bg=self.COLORS['bg_medium'])
+        toggle_row.pack(pady=2)
+        
+        retrig_btn = ToggleButton(toggle_row, text="re", width=24, height=16,
+                                  command=lambda v, lid=lfo_id: self._on_lfo_retrigger(lid, v))
+        retrig_btn.set_value(True)
+        retrig_btn.pack(side='left', padx=1)
+        
+        polar_btn = ToggleButton(toggle_row, text="uni", width=24, height=16,
+                                 command=lambda v, lid=lfo_id: self._on_lfo_polarity(lid, v))
+        polar_btn.pack(side='left', padx=1)
+        
+        # Destination combobox
+        dest_var = tk.StringVar(value='Off')
+        dest_combo = ttk.Combobox(section, textvariable=dest_var,
+                                  values=self._mod_target_options,
+                                  state='readonly', width=14,
+                                  font=('Segoe UI', 7))
+        dest_combo.pack(padx=2, pady=(2, 2))
+        dest_combo.bind('<<ComboboxSelected>>',
+                        lambda e, lid=lfo_id, dv=dest_var: self._on_lfo_dest(lid, dv))
+        
+        # Store widget refs
+        setattr(self, f'{lfo_id}_enable_btn', enable_btn)
+        setattr(self, f'{lfo_id}_wave_var', wave_var)
+        setattr(self, f'{lfo_id}_wave_combo', wave_combo)
+        setattr(self, f'{lfo_id}_rate_knob', rate_knob)
+        setattr(self, f'{lfo_id}_depth_knob', depth_knob)
+        setattr(self, f'{lfo_id}_sync_var', sync_var)
+        setattr(self, f'{lfo_id}_sync_combo', sync_combo)
+        setattr(self, f'{lfo_id}_retrig_btn', retrig_btn)
+        setattr(self, f'{lfo_id}_polar_btn', polar_btn)
+        setattr(self, f'{lfo_id}_dest_var', dest_var)
+        setattr(self, f'{lfo_id}_dest_combo', dest_combo)
+    
+    def _build_pump_panel(self, parent):
+        """Build the pump / sidechain vertical rack."""
+        section = tk.LabelFrame(parent, text="pump",
+                               font=('Segoe UI', 7),
+                               fg=self.COLORS['text_dim'],
+                               bg=self.COLORS['bg_medium'],
+                               labelanchor='n')
+        section.pack(side='left', padx=2, pady=2, fill='both')
+        
+        # Enable toggle
+        self.pump_enable_btn = ToggleButton(section, text="on", width=30, height=16,
+                                            command=self._on_pump_enable)
+        self.pump_enable_btn.pack(pady=(2, 4))
+        
+        # Amount knob
+        self.pump_amount_knob = RotaryKnob(section, size=32,
+                                           min_val=0, max_val=100, default=0,
+                                           label="amount",
+                                           command=self._on_pump_amount)
+        self.pump_amount_knob.pack(pady=2)
+        
+        # Attack knob
+        self.pump_attack_knob = RotaryKnob(section, size=32,
+                                           min_val=0.1, max_val=100, default=1,
+                                           label="attack",
+                                           logarithmic=True,
+                                           command=self._on_pump_attack)
+        self.pump_attack_knob.pack(pady=2)
+        
+        # Release knob
+        self.pump_release_knob = RotaryKnob(section, size=32,
+                                            min_val=1, max_val=1000, default=100,
+                                            label="release",
+                                            logarithmic=True,
+                                            command=self._on_pump_release)
+        self.pump_release_knob.pack(pady=2)
+        
+        # Curve knob
+        self.pump_curve_knob = RotaryKnob(section, size=32,
+                                          min_val=0, max_val=100, default=50,
+                                          label="curve",
+                                          command=self._on_pump_curve)
+        self.pump_curve_knob.pack(pady=2)
+        
+        # Destination combobox
+        self.pump_dest_var = tk.StringVar(value='Off')
+        self.pump_dest_combo = ttk.Combobox(section, textvariable=self.pump_dest_var,
+                                            values=self._mod_target_options,
+                                            state='readonly', width=14,
+                                            font=('Segoe UI', 7))
+        self.pump_dest_combo.pack(padx=2, pady=(2, 2))
+        self.pump_dest_combo.bind('<<ComboboxSelected>>', self._on_pump_dest)
+    
+    # ---- LFO callbacks ----
+    
+    def _get_lfo(self, lfo_id: str):
+        """Return the LFO object for the selected channel."""
+        ch = self.synth.get_selected_channel()
+        return getattr(ch, lfo_id)
+    
+    def _on_lfo_enable(self, lfo_id, value):
+        if not self.updating_ui:
+            self._get_lfo(lfo_id).enabled = bool(value)
+    
+    def _on_lfo_waveform(self, lfo_id, wave_var):
+        if not self.updating_ui:
+            try:
+                idx = self._lfo_wave_options.index(wave_var.get())
+            except ValueError:
+                idx = 0
+            self._get_lfo(lfo_id).waveform = LFOWaveform(idx)
+    
+    def _on_lfo_rate(self, lfo_id, value):
+        if not self.updating_ui:
+            self._get_lfo(lfo_id).rate_hz = float(value)
+    
+    def _on_lfo_depth(self, lfo_id, value):
+        if not self.updating_ui:
+            self._get_lfo(lfo_id).depth = float(value)
+    
+    def _on_lfo_sync(self, lfo_id, sync_var):
+        if not self.updating_ui:
+            try:
+                idx = self._lfo_sync_options.index(sync_var.get())
+            except ValueError:
+                idx = 0
+            self._get_lfo(lfo_id).sync = SyncDivision(idx)
+    
+    def _on_lfo_retrigger(self, lfo_id, value):
+        if not self.updating_ui:
+            self._get_lfo(lfo_id).retrigger = LFORetrigger.RETRIGGER if value else LFORetrigger.FREE
+    
+    def _on_lfo_polarity(self, lfo_id, value):
+        if not self.updating_ui:
+            self._get_lfo(lfo_id).polarity = LFOPolarity.UNIPOLAR if value else LFOPolarity.BIPOLAR
+    
+    def _on_lfo_dest(self, lfo_id, dest_var):
+        if not self.updating_ui:
+            sel = dest_var.get()
+            try:
+                idx = self._mod_target_options.index(sel)
+                self._get_lfo(lfo_id).target = self._mod_target_values[idx]
+            except ValueError:
+                self._get_lfo(lfo_id).target = ModTarget.NONE
+    
+    # ---- Pump callbacks ----
+    
+    def _on_pump_enable(self, value):
+        if not self.updating_ui:
+            self.synth.get_selected_channel().pump.enabled = bool(value)
+    
+    def _on_pump_amount(self, value):
+        if not self.updating_ui:
+            self.synth.get_selected_channel().pump.amount = value / 100.0
+    
+    def _on_pump_attack(self, value):
+        if not self.updating_ui:
+            self.synth.get_selected_channel().pump.attack_ms = float(value)
+    
+    def _on_pump_release(self, value):
+        if not self.updating_ui:
+            self.synth.get_selected_channel().pump.release_ms = float(value)
+    
+    def _on_pump_curve(self, value):
+        if not self.updating_ui:
+            self.synth.get_selected_channel().pump.curve = value / 100.0
+    
+    def _on_pump_dest(self, event=None):
+        if not self.updating_ui:
+            sel = self.pump_dest_var.get()
+            try:
+                idx = self._mod_target_options.index(sel)
+                self.synth.get_selected_channel().pump.target = self._mod_target_values[idx]
+            except ValueError:
+                self.synth.get_selected_channel().pump.target = ModTarget.NONE
+    
     def _build_fx_section(self, parent):
         """Build the effects section (reverb, delay, vintage)"""
         section = tk.LabelFrame(parent, text="fx",
@@ -2555,6 +2801,42 @@ class PythonicGUI:
         self.osc_vel_slider.set_value(channel.osc_vel_sensitivity * 100)
         self.noise_vel_slider.set_value(channel.noise_vel_sensitivity * 100)
         self.mod_vel_slider.set_value(channel.mod_vel_sensitivity * 100)
+        
+        # Modulation section
+        self._update_lfo_ui('lfo1', channel.lfo1)
+        self._update_lfo_ui('lfo2', channel.lfo2)
+        self._update_pump_ui(channel.pump)
+    
+    def _update_lfo_ui(self, lfo_id: str, lfo):
+        """Sync LFO panel widgets with LFO state."""
+        getattr(self, f'{lfo_id}_enable_btn').set_value(lfo.enabled)
+        wave_idx = min(lfo.waveform.value, len(self._lfo_wave_options) - 1)
+        getattr(self, f'{lfo_id}_wave_var').set(self._lfo_wave_options[wave_idx])
+        getattr(self, f'{lfo_id}_rate_knob').set_value(lfo.rate_hz)
+        getattr(self, f'{lfo_id}_depth_knob').set_value(lfo.depth)
+        sync_idx = min(lfo.sync.value, len(self._lfo_sync_options) - 1)
+        getattr(self, f'{lfo_id}_sync_var').set(self._lfo_sync_options[sync_idx])
+        getattr(self, f'{lfo_id}_retrig_btn').set_value(lfo.retrigger == LFORetrigger.RETRIGGER)
+        getattr(self, f'{lfo_id}_polar_btn').set_value(lfo.polarity == LFOPolarity.UNIPOLAR)
+        # Destination picker
+        try:
+            idx = self._mod_target_values.index(lfo.target)
+            getattr(self, f'{lfo_id}_dest_var').set(self._mod_target_options[idx])
+        except ValueError:
+            getattr(self, f'{lfo_id}_dest_var').set('Off')
+    
+    def _update_pump_ui(self, pump):
+        """Sync pump panel widgets with PumpSource state."""
+        self.pump_enable_btn.set_value(pump.enabled)
+        self.pump_amount_knob.set_value(pump.amount * 100)
+        self.pump_attack_knob.set_value(pump.attack_ms)
+        self.pump_release_knob.set_value(pump.release_ms)
+        self.pump_curve_knob.set_value(pump.curve * 100)
+        try:
+            idx = self._mod_target_values.index(pump.target)
+            self.pump_dest_var.set(self._mod_target_options[idx])
+        except ValueError:
+            self.pump_dest_var.set('Off')
     
     def _save_preset(self):
         """Save current preset to file"""
@@ -3278,6 +3560,20 @@ class PythonicGUI:
         
         # Morph slider (global parameter)
         self._register_cc_parameter('sound_morph', self.morph_slider, 0, 100)
+        
+        # LFO 1
+        self._register_cc_parameter('lfo1_rate', self.lfo1_rate_knob, 0.01, 50)
+        self._register_cc_parameter('lfo1_depth', self.lfo1_depth_knob, 0, 100)
+        
+        # LFO 2
+        self._register_cc_parameter('lfo2_rate', self.lfo2_rate_knob, 0.01, 50)
+        self._register_cc_parameter('lfo2_depth', self.lfo2_depth_knob, 0, 100)
+        
+        # Pump
+        self._register_cc_parameter('pump_amount', self.pump_amount_knob, 0, 100)
+        self._register_cc_parameter('pump_attack', self.pump_attack_knob, 0.1, 100)
+        self._register_cc_parameter('pump_release', self.pump_release_knob, 1, 1000)
+        self._register_cc_parameter('pump_curve', self.pump_curve_knob, 0, 100)
 
     def _update_midi_indicator(self):
         """Update the MIDI activity indicator LED"""
@@ -4947,6 +5243,32 @@ class PythonicGUI:
     
     def _start_ui_update_timer(self):
         """Start timer for UI updates (runs on main thread)"""
+        # Build target → widget mapping for modulation visual feedback.
+        # Only RotaryKnob / VerticalSlider support set_mod_offset.
+        self._mod_target_widget_map = {
+            ModTarget.OSC_FREQUENCY: self.osc_freq_knob,
+            ModTarget.PITCH_SEMITONES: self.pitch_knob,
+            ModTarget.PITCH_MOD_AMOUNT: self.pitch_amount_knob,
+            ModTarget.PITCH_MOD_RATE: self.pitch_rate_knob,
+            ModTarget.OSC_ATTACK: self.osc_attack_knob,
+            ModTarget.OSC_DECAY: self.osc_decay_knob,
+            ModTarget.NOISE_FILTER_FREQ: self.noise_freq_knob,
+            ModTarget.NOISE_FILTER_Q: self.noise_q_knob,
+            ModTarget.NOISE_ATTACK: self.noise_attack_slider,
+            ModTarget.NOISE_DECAY: self.noise_decay_slider,
+            ModTarget.LEVEL_DB: self.level_knob,
+            ModTarget.PAN: self.pan_knob,
+            ModTarget.DISTORTION: self.distort_knob,
+            ModTarget.EQ_FREQUENCY: self.eq_freq_knob,
+            ModTarget.EQ_GAIN_DB: self.eq_gain_knob,
+            ModTarget.VINTAGE_AMOUNT: self.vintage_knob,
+            ModTarget.REVERB_DECAY: self.reverb_decay_knob,
+            ModTarget.REVERB_MIX: self.reverb_mix_knob,
+            ModTarget.REVERB_WIDTH: self.reverb_width_knob,
+            ModTarget.DELAY_FEEDBACK: self.delay_feedback_knob,
+            ModTarget.DELAY_MIX: self.delay_mix_knob,
+        }
+        self._mod_active_targets = set()  # Track which widgets have active mod indicators
         self._ui_update_tick()
     
     def _ui_update_tick(self):
@@ -4975,8 +5297,32 @@ class PythonicGUI:
                 for editor in self.pattern_editors:
                     editor.set_current_position(position)
         
+        # Update modulation visual indicators on knobs/sliders
+        self._update_mod_indicators()
+        
         # Schedule next update (every 50ms to reduce load)
         self.ui_update_timer = self.root.after(50, self._ui_update_tick)
+    
+    def _update_mod_indicators(self):
+        """Read mod offsets from the selected channel and update knob indicators."""
+        channel = self.synth.get_selected_channel()
+        offsets = channel._last_mod_offsets
+        
+        # Update widgets that have active modulation
+        new_active = set()
+        for target, offset in offsets.items():
+            widget = self._mod_target_widget_map.get(target)
+            if widget is not None and offset != 0.0:
+                widget.set_mod_offset(offset)
+                new_active.add(target)
+        
+        # Clear indicators on widgets that are no longer modulated
+        for target in self._mod_active_targets - new_active:
+            widget = self._mod_target_widget_map.get(target)
+            if widget is not None:
+                widget.set_mod_offset(0.0)
+        
+        self._mod_active_targets = new_active
     
     def _update_pattern_position_display(self):
         """Update the visual position indicator in pattern editors"""

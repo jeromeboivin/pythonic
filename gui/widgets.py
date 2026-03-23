@@ -104,6 +104,9 @@ class RotaryKnob(tk.Canvas):
         self.indicator_color = '#4466ff'
         self.bg_color = '#3a3a4a'
         
+        # Modulation offset indicator (set externally by GUI timer)
+        self._mod_offset = 0.0
+        
         # Interaction state
         self.dragging = False
         self.drag_start_y = 0
@@ -239,6 +242,16 @@ class RotaryKnob(tk.Canvas):
         self.create_line(cx, cy, ix, iy,
                         fill=self.indicator_color, width=3, capstyle='round')
         
+        # Modulation indicator (secondary line showing modulated position)
+        if self._mod_offset != 0.0:
+            mod_value = max(self.min_val, min(self.max_val, self.value + self._mod_offset))
+            mod_norm = self._value_to_normalized(mod_value)
+            mod_angle = math.radians(225 - mod_norm * 270)
+            mx = cx + math.cos(mod_angle) * indicator_length
+            my = cy - math.sin(mod_angle) * indicator_length
+            self.create_line(cx, cy, mx, my,
+                            fill='#ff6644', width=2, capstyle='round')
+        
         # Draw center dot
         self.create_oval(cx - 4, cy - 4, cx + 4, cy + 4,
                         fill='#666688', outline='')
@@ -362,6 +375,12 @@ class RotaryKnob(tk.Canvas):
         new_normalized = max(0.0, min(1.0, new_normalized))
         self.set_value(self._normalized_to_value(new_normalized))
     
+    def set_mod_offset(self, offset):
+        """Set modulation offset for visual feedback. Redraws only if changed."""
+        if abs(offset - self._mod_offset) > 0.001:
+            self._mod_offset = offset
+            self._draw()
+    
     def set_value(self, value):
         """Set knob value"""
         self.value = max(self.min_val, min(self.max_val, value))
@@ -412,6 +431,9 @@ class VerticalSlider(tk.Canvas):
         # Handle dimensions
         self.handle_width = width - 8
         self.handle_height = 20
+        
+        # Modulation offset indicator (set externally by GUI timer)
+        self._mod_offset = 0.0
         
         # Interaction
         self.dragging = False
@@ -516,6 +538,15 @@ class VerticalSlider(tk.Canvas):
             self.create_line(hx1 + 4, ly, hx2 - 4, ly,
                            fill='#556688')
         
+        # Modulation indicator (small bar showing modulated position)
+        if self._mod_offset != 0.0:
+            mod_value = max(self.min_val, min(self.max_val, self.value + self._mod_offset))
+            mod_norm = self._value_to_normalized(mod_value)
+            mod_y = self.track_bottom - mod_norm * self.track_range
+            self.create_line(
+                self.track_x - 6, mod_y, self.track_x + 6, mod_y,
+                fill='#ff6644', width=3, capstyle='round')
+        
         # Draw label
         if self.label:
             self.create_text(self.slider_width // 2, self.slider_height + 10,
@@ -614,6 +645,12 @@ class VerticalSlider(tk.Canvas):
         value = self._normalized_to_value(normalized)
         
         self.set_value(value)
+    
+    def set_mod_offset(self, offset):
+        """Set modulation offset for visual feedback. Redraws only if changed."""
+        if abs(offset - self._mod_offset) > 0.001:
+            self._mod_offset = offset
+            self._draw()
     
     def set_value(self, value):
         """Set slider value"""

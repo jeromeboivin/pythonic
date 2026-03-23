@@ -39,7 +39,7 @@ class MidiManager:
     NUM_CHANNELS = 8
     NUM_PATTERNS = 12  # A-L
     MIDI_CLOCK_PPQN = 24  # Pulses per quarter note
-    MAX_CC_MAPPINGS = 8  # Maximum number of CC mappings
+    MAX_CC_MAPPINGS = 64  # Maximum number of CC mappings
     
     # Common CC numbers
     CC_MOD_WHEEL = 1

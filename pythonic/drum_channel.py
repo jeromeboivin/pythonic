@@ -8,6 +8,7 @@ from .oscillator import Oscillator, WaveformType, PitchModMode
 from .noise import NoiseGenerator, NoiseFilterMode, NoiseEnvelopeMode
 from .envelope import Envelope
 from .filter import EQFilter
+from .lfo import LFO, PumpSource, ModulationRouter, ModTarget, LFORetrigger
 from .vintage import VintageProcessor
 from .reverb import FastStereoReverb
 from .delay import FastStereoDelay, DelayTime
@@ -171,6 +172,19 @@ class DrumChannel:
         self._profile_reverb_ms = 0.0
         self._profile_count = 0
         
+        # Modulation: 2 LFOs + 1 pump source per channel
+        self.lfo1 = LFO(sample_rate)
+        self.lfo2 = LFO(sample_rate)
+        self.pump = PumpSource(sample_rate)
+        # Back-reference to synthesizer (set by PythonicSynthesizer after creation)
+        self._synthesizer = None
+        # Snapshot of base parameter values taken at _pre_mod / restored at _post_mod
+        self._mod_snapshots = {}
+        # Global mod offsets for synthesizer to read after processing
+        self._global_mod_offsets = {}
+        # Last computed mod offsets (for GUI visual feedback)
+        self._last_mod_offsets = {}
+
         # Initialize default drum sound
         self._init_defaults()
     
@@ -251,6 +265,13 @@ class DrumChannel:
         self.osc_envelope.trigger()
         self.noise_gen.trigger()
         self.vintage.reset()
+
+        # Modulation: retrigger LFOs and pump
+        if self.lfo1.retrigger == LFORetrigger.RETRIGGER:
+            self.lfo1.reset_phase()
+        if self.lfo2.retrigger == LFORetrigger.RETRIGGER:
+            self.lfo2.reset_phase()
+        self.pump.trigger()
         
         # Snap all smoothed parameters to their target values so the first
         # sample of every hit uses the exact current settings (no residual
@@ -295,6 +316,93 @@ class DrumChannel:
         smoothed_distortion = self._smoothed_distortion.get_next_value()
         smoothed_mix = self._smoothed_mix.get_next_value()
         
+        # ---------- LFO / Pump modulation ----------
+        _any_mod = ((self.lfo1.enabled and self.lfo1.target != ModTarget.NONE)
+                    or (self.lfo2.enabled and self.lfo2.target != ModTarget.NONE)
+                    or (self.pump.enabled and self.pump.target != ModTarget.NONE))
+        
+        if _any_mod:
+            _bpm = getattr(self._synthesizer, '_bpm', 120.0) if self._synthesizer else 120.0
+            _mod = {}  # ModTarget -> accumulated offset
+            for _src in (self.lfo1, self.lfo2, self.pump):
+                if _src.enabled and _src.target != ModTarget.NONE:
+                    _v = _src.process(num_samples, _bpm)
+                    if _v != 0.0:
+                        _mod[_src.target] = _mod.get(_src.target, 0.0) + _v
+            
+            # Offsets applied to local smoothed variables (no save/restore needed)
+            if ModTarget.OSC_FREQUENCY in _mod:
+                smoothed_osc_freq = max(20.0, min(20000.0, smoothed_osc_freq + _mod[ModTarget.OSC_FREQUENCY]))
+            if ModTarget.NOISE_FILTER_FREQ in _mod:
+                smoothed_noise_freq = max(20.0, min(20000.0, smoothed_noise_freq + _mod[ModTarget.NOISE_FILTER_FREQ]))
+            if ModTarget.NOISE_FILTER_Q in _mod:
+                smoothed_noise_q = max(0.1, min(100.0, smoothed_noise_q + _mod[ModTarget.NOISE_FILTER_Q]))
+            if ModTarget.EQ_FREQUENCY in _mod:
+                smoothed_eq_freq = max(20.0, min(20000.0, smoothed_eq_freq + _mod[ModTarget.EQ_FREQUENCY]))
+            if ModTarget.DISTORTION in _mod:
+                smoothed_distortion = max(0.0, min(1.0, smoothed_distortion + _mod[ModTarget.DISTORTION]))
+            if ModTarget.OSC_NOISE_MIX in _mod:
+                smoothed_mix = max(0.0, min(1.0, smoothed_mix + _mod[ModTarget.OSC_NOISE_MIX]))
+            
+            # Save & apply offsets to direct channel attributes
+            _saved_direct = {}
+            _DIRECT = {
+                ModTarget.PITCH_SEMITONES: ('pitch_semitones', -48.0, 48.0),
+                ModTarget.LEVEL_DB: ('level_db', -60.0, 40.0),
+                ModTarget.PAN: ('pan', -100.0, 100.0),
+                ModTarget.EQ_GAIN_DB: ('eq_gain_db', -40.0, 40.0),
+                ModTarget.VINTAGE_AMOUNT: ('vintage_amount', 0.0, 1.0),
+                ModTarget.REVERB_DECAY: ('reverb_decay', 0.0, 1.0),
+                ModTarget.REVERB_MIX: ('reverb_mix', 0.0, 1.0),
+                ModTarget.REVERB_WIDTH: ('reverb_width', 0.0, 2.0),
+                ModTarget.DELAY_FEEDBACK: ('delay_feedback', 0.0, 0.95),
+                ModTarget.DELAY_MIX: ('delay_mix', 0.0, 1.0),
+                ModTarget.OSC_VEL_SENSITIVITY: ('osc_vel_sensitivity', 0.0, 2.0),
+                ModTarget.NOISE_VEL_SENSITIVITY: ('noise_vel_sensitivity', 0.0, 2.0),
+                ModTarget.MOD_VEL_SENSITIVITY: ('mod_vel_sensitivity', 0.0, 2.0),
+            }
+            for _t, _o in _mod.items():
+                if _t in _DIRECT:
+                    _attr, _lo, _hi = _DIRECT[_t]
+                    _saved_direct[_attr] = getattr(self, _attr)
+                    setattr(self, _attr, max(_lo, min(_hi, _saved_direct[_attr] + _o)))
+            
+            # Save & apply component-level targets: list of (restore_callable, old_value)
+            _saved_comp = []
+            if ModTarget.PITCH_MOD_AMOUNT in _mod:
+                _saved_comp.append((self.oscillator.set_pitch_mod_amount, self.oscillator.pitch_mod_amount))
+                self.oscillator.set_pitch_mod_amount(self.oscillator.pitch_mod_amount + _mod[ModTarget.PITCH_MOD_AMOUNT])
+            if ModTarget.PITCH_MOD_RATE in _mod:
+                _saved_comp.append((self.oscillator.set_pitch_mod_rate, self.oscillator.pitch_mod_rate))
+                self.oscillator.set_pitch_mod_rate(max(0.1, self.oscillator.pitch_mod_rate + _mod[ModTarget.PITCH_MOD_RATE]))
+            if ModTarget.OSC_ATTACK in _mod:
+                _saved_comp.append((self.osc_envelope.set_attack, self.osc_envelope.attack_ms))
+                self.osc_envelope.set_attack(max(0.0, self.osc_envelope.attack_ms + _mod[ModTarget.OSC_ATTACK]))
+            if ModTarget.OSC_DECAY in _mod:
+                _saved_comp.append((self.osc_envelope.set_decay, self.osc_envelope.decay_ms))
+                self.osc_envelope.set_decay(max(1.0, self.osc_envelope.decay_ms + _mod[ModTarget.OSC_DECAY]))
+            if ModTarget.NOISE_ATTACK in _mod:
+                _saved_comp.append((self.noise_gen.set_attack, self.noise_gen.attack_ms))
+                self.noise_gen.set_attack(max(0.0, self.noise_gen.attack_ms + _mod[ModTarget.NOISE_ATTACK]))
+            if ModTarget.NOISE_DECAY in _mod:
+                _saved_comp.append((self.noise_gen.set_decay, self.noise_gen.decay_ms))
+                self.noise_gen.set_decay(max(1.0, self.noise_gen.decay_ms + _mod[ModTarget.NOISE_DECAY]))
+            
+            # Global target offsets – stored for synthesizer to aggregate
+            self._global_mod_offsets = {}
+            for _gt in (ModTarget.MASTER_VOLUME, ModTarget.MORPH):
+                if _gt in _mod:
+                    self._global_mod_offsets[_gt] = _mod[_gt]
+            
+            # Store offsets snapshot for GUI visual feedback
+            self._last_mod_offsets = dict(_mod)
+        else:
+            _saved_direct = None
+            _saved_comp = None
+            self._global_mod_offsets = {}
+            if self._last_mod_offsets:
+                self._last_mod_offsets = {}
+        
         # Apply smoothed values to components only when changed
         # (avoids expensive filter coefficient recomputation every block)
         # Apply pitch offset (semitones) as a frequency multiplier
@@ -312,9 +420,9 @@ class DrumChannel:
             pitch_ratio = 1.0
             effective_osc_freq = smoothed_osc_freq
             effective_noise_freq = smoothed_noise_freq
-        if not self._smoothed_osc_freq.is_settled() or pitch_ratio != 1.0:
+        if not self._smoothed_osc_freq.is_settled() or _any_mod or pitch_ratio != 1.0:
             self.oscillator.set_frequency(effective_osc_freq)
-        if not self._smoothed_noise_freq.is_settled() or not self._smoothed_noise_q.is_settled() or pitch_ratio != 1.0:
+        if not self._smoothed_noise_freq.is_settled() or not self._smoothed_noise_q.is_settled() or _any_mod or pitch_ratio != 1.0:
             self.noise_gen.set_filter_frequency(effective_noise_freq)
             self.noise_gen.set_filter_q(smoothed_noise_q)
         
@@ -413,7 +521,7 @@ class DrumChannel:
             _teq0 = _time.perf_counter()
         if abs(self.eq_gain_db) > 0.1:
             # Only update EQ params when smoothed frequency is still changing
-            if not self._smoothed_eq_freq.is_settled():
+            if not self._smoothed_eq_freq.is_settled() or _any_mod:
                 self.eq_filter_l.set_frequency(smoothed_eq_freq)
                 self.eq_filter_r.set_frequency(smoothed_eq_freq)
             
@@ -498,6 +606,14 @@ class DrumChannel:
             output = self._apply_pan_inplace(mixed)
         else:
             output = mixed
+        
+        # ---------- Restore modulated parameters ----------
+        if _saved_direct:
+            for _attr, _val in _saved_direct.items():
+                setattr(self, _attr, _val)
+        if _saved_comp:
+            for _setter, _val in _saved_comp:
+                _setter(_val)
         
         # Check if voice is done
         if not self.osc_envelope.is_active and not self.noise_gen.is_active:
@@ -869,6 +985,9 @@ class DrumChannel:
             'delay_feedback': self.delay_feedback,
             'delay_mix': self.delay_mix,
             'delay_ping_pong': self.delay_ping_pong,
+            'lfo1': self.lfo1.get_parameters(),
+            'lfo2': self.lfo2.get_parameters(),
+            'pump': self.pump.get_parameters(),
         }
     
     def set_parameters(self, params: dict, immediate: bool = True):
@@ -966,3 +1085,9 @@ class DrumChannel:
             self.delay_mix = np.clip(params['delay_mix'], 0.0, 1.0)
         if 'delay_ping_pong' in params:
             self.delay_ping_pong = bool(params['delay_ping_pong'])
+        if 'lfo1' in params:
+            self.lfo1.set_parameters(params['lfo1'])
+        if 'lfo2' in params:
+            self.lfo2.set_parameters(params['lfo2'])
+        if 'pump' in params:
+            self.pump.set_parameters(params['pump'])
