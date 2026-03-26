@@ -1,0 +1,2 @@
+drum_cvae_best.pt filter=lfs diff=lfs merge=lfs -text
+drum_patterns/pattern_cvae_best.pt filter=lfs diff=lfs merge=lfs -text
