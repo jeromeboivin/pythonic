@@ -20,7 +20,7 @@ from pythonic.drum_generator import (
 )
 from pythonic.preset_manager import convert_drum_patch_data, apply_drum_patch_to_channel
 from pythonic.synthesizer import PythonicSynthesizer
-from gui.drum_generator_dialog import BufferedPatternPreviewSource
+from pythonic.pattern_manager import PatternManager
 from pythonic.pattern_generator import PatternGenerator, _BUNDLED_CHECKPOINT
 
 
@@ -201,24 +201,235 @@ class TestLoopPreviewAudioPath:
         assert np.allclose(audio, 0.125, atol=1e-6)
         assert source.stop_called
 
-    def test_buffered_preview_renderer_prefills_audio(self):
-        preview_synth = PythonicSynthesizer(
-            44100,
-            parallel_channel_processing=True,
-        )
-        trigger_table = [[0]] + [[] for _ in range(15)]
-        source = BufferedPatternPreviewSource(
-            preview_synth,
-            [trigger_table],
-            bpm=120,
-        )
 
-        source.start(prefill_blocks=1)
-        audio = source.read(1050)
-        source.stop()
+# ─────────────────────────────────────────────
+# Dialog preview logic (no GUI required)
+# ─────────────────────────────────────────────
 
-        assert audio.shape == (1050, 2)
-        assert np.max(np.abs(audio)) > 0.0
+class _FakeWidget:
+    """Minimal widget stub for dialog tests."""
+    def config(self, **kw):
+        self._last_config = kw
+    def get(self):
+        return True
+
+
+def _make_dialog_headless():
+    """Build a DrumGeneratorDialog without Tk, by monkey-patching _build_dialog."""
+    from gui.drum_generator_dialog import DrumGeneratorDialog
+
+    synth = PythonicSynthesizer(44100)
+    pm = PatternManager()
+    # Setup a simple pattern: channel 0 triggers on steps 0, 4, 8, 12
+    pattern = pm.get_pattern(0)
+    for step in [0, 4, 8, 12]:
+        pattern.get_channel(0).set_trigger(step, True)
+    pattern.get_channel(0).set_accent(0, True)
+
+    class FakePrefs:
+        _data = {}
+        def get(self, key, default=None):
+            return self._data.get(key, default)
+        def set(self, key, value):
+            self._data[key] = value
+
+    transport_log = []
+
+    def start_transport():
+        pm.start_playback(pm.selected_pattern_index)
+        transport_log.append('start')
+
+    def stop_transport():
+        pm.stop_playback()
+        transport_log.append('stop')
+
+    # Patch out Tk UI construction
+    original_build = DrumGeneratorDialog._build_dialog
+    original_status = DrumGeneratorDialog._update_model_status
+    DrumGeneratorDialog._build_dialog = lambda self: None
+    DrumGeneratorDialog._update_model_status = lambda self: None
+    try:
+        dialog = DrumGeneratorDialog(
+            parent=None,
+            synth=synth,
+            pattern_manager=pm,
+            preferences_manager=FakePrefs(),
+            start_transport=start_transport,
+            stop_transport=stop_transport,
+        )
+    finally:
+        DrumGeneratorDialog._build_dialog = original_build
+        DrumGeneratorDialog._update_model_status = original_status
+
+    # Stub the UI widgets / Tk objects that methods reference
+    dialog.dialog = type('FakeToplevel', (), {'destroy': lambda self: None})()
+    dialog.preview_loop_btn = _FakeWidget()
+    dialog.preview_bank_btn = _FakeWidget()
+    dialog.model_status_label = _FakeWidget()
+    dialog.temp_var = type('V', (), {'get': lambda s: 1.0})()
+    dialog.pattern_temp_var = type('V', (), {'get': lambda s: 1.0})()
+
+    return dialog, synth, pm, transport_log
+
+
+class TestDialogOneShotPreview:
+    """One-shot preview must use the live synth at velocity 127 (like keys 1-8)."""
+
+    def test_preview_slot_triggers_live_synth_at_velocity_127(self):
+        dialog, synth, pm, _ = _make_dialog_headless()
+
+        # Inject a candidate patch into slot 0
+        raw_patch = {
+            "Name": "TestKick", "OscFreq": 55.0, "OscWave": "Sine",
+            "OscAtk": 0.0, "OscDcy": 500.0, "ModMode": "Decay",
+            "ModAmt": 12.0, "ModRate": 80.0, "NFilMod": "LP",
+            "NFilFrq": 3000.0, "NFilQ": 2.0, "NStereo": "Off",
+            "NEnvMod": "Exp", "NEnvAtk": 0.0, "NEnvDcy": 300.0,
+            "Mix": 50.0, "DistAmt": 10.0, "EQFreq": 1000.0,
+            "EQGain": 0.0, "Level": 0.0, "Pan": 0.0, "Output": "A",
+            "OscVel": 100.0, "NVel": 100.0, "ModVel": 0.0,
+        }
+        dialog.slot_state[0]['candidates'] = [raw_patch]
+
+        # Record trigger calls
+        trigger_log = []
+        orig_trigger = synth.trigger_drum
+        def spy_trigger(ch, velocity=127):
+            trigger_log.append((ch, velocity))
+            orig_trigger(ch, velocity)
+        synth.trigger_drum = spy_trigger
+
+        dialog._on_preview_slot(0)
+
+        # Must have triggered channel 0 at velocity 127
+        assert len(trigger_log) == 1
+        assert trigger_log[0] == (0, 127)
+
+        # The patch should now be on the live synth channel
+        assert synth.channels[0].name == "TestKick"
+
+    def test_preview_slot_noop_when_no_candidates(self):
+        dialog, synth, pm, _ = _make_dialog_headless()
+
+        trigger_log = []
+        orig_trigger = synth.trigger_drum
+        synth.trigger_drum = lambda ch, velocity=127: trigger_log.append((ch, velocity))
+
+        dialog._on_preview_slot(3)
+        assert len(trigger_log) == 0
+
+
+class TestDialogLoopPreview:
+    """Loop preview must use the real transport callbacks."""
+
+    def test_start_loop_invokes_transport(self):
+        dialog, synth, pm, log = _make_dialog_headless()
+        dialog._start_loop_preview()
+        assert 'start' in log
+        assert dialog.preview_playing is True
+
+    def test_stop_loop_invokes_transport_and_restores(self):
+        dialog, synth, pm, log = _make_dialog_headless()
+        # Save original frequency for channel 0
+        orig_freq = synth.channels[0].oscillator.frequency
+
+        dialog._start_loop_preview()
+        dialog._stop_loop_preview()
+
+        assert 'stop' in log
+        assert dialog.preview_playing is False
+        # Channel should be restored to original state
+        assert abs(synth.channels[0].oscillator.frequency - orig_freq) < 1e-6
+
+
+class TestDialogBankPreview:
+    """Bank preview must chain patterns and use the real transport."""
+
+    def test_bank_preview_chains_patterns(self):
+        dialog, synth, pm, log = _make_dialog_headless()
+        dialog._start_bank_preview()
+
+        # All patterns except last should be chained
+        for i in range(11):
+            assert pm.patterns[i].chained_to_next is True
+        assert pm.patterns[11].chained_to_next is False
+
+        assert 'start' in log
+        assert dialog.preview_playing is True
+
+    def test_bank_preview_restores_chain_state(self):
+        dialog, synth, pm, log = _make_dialog_headless()
+
+        # Ensure no patterns are chained initially
+        for p in pm.patterns:
+            assert p.chained_to_next is False
+
+        dialog._start_bank_preview()
+        dialog._stop_loop_preview()
+
+        # Patterns should be restored to unchained
+        for p in pm.patterns:
+            assert p.chained_to_next is False
+
+
+class TestDialogChannelRestore:
+    """Dialog must restore non-applied channels on close."""
+
+    def test_close_restores_unapplied_channels(self):
+        dialog, synth, pm, _ = _make_dialog_headless()
+        freq_before = synth.channels[0].oscillator.frequency
+
+        # Manually change channel 0
+        synth.channels[0].set_osc_frequency(9999.0)
+        assert abs(synth.channels[0].oscillator.frequency - 9999.0) < 1
+
+        # Close dialog (without having applied slot 0)
+        dialog._on_close()
+
+        # Channel 0 should be restored
+        assert abs(synth.channels[0].oscillator.frequency - freq_before) < 1e-6
+
+    def test_close_preserves_applied_channels(self):
+        dialog, synth, pm, _ = _make_dialog_headless()
+
+        # Mark slot 2 as applied
+        dialog._applied_slots.add(2)
+        dialog._saved_channel_states[2] = synth.channels[2].get_parameters()
+
+        # Change channel 2
+        synth.channels[2].set_osc_frequency(9999.0)
+
+        dialog._on_close()
+
+        # Channel 2 should NOT be restored (it was applied)
+        assert abs(synth.channels[2].oscillator.frequency - 9999.0) < 1
+
+    def test_close_restores_unapplied_patterns(self):
+        dialog, synth, pm, _ = _make_dialog_headless()
+
+        # Pattern A has triggers on steps 0,4,8,12
+        assert pm.patterns[0].channels[0].steps[0].trigger is True
+
+        # Simulate what loop preview does: save patterns, then modify
+        dialog._save_patterns()
+        pm.patterns[0].clear()
+        assert pm.patterns[0].channels[0].steps[0].trigger is False
+
+        dialog._on_close()
+
+        # Patterns should be restored
+        assert pm.patterns[0].channels[0].steps[0].trigger is True
+
+    def test_close_preserves_applied_patterns(self):
+        dialog, synth, pm, _ = _make_dialog_headless()
+
+        dialog._patterns_applied = True
+        pm.patterns[0].clear()
+
+        dialog._on_close()
+
+        # Patterns should stay cleared (they were applied)
+        assert pm.patterns[0].channels[0].steps[0].trigger is False
 
 
 # ─────────────────────────────────────────────
@@ -415,6 +626,10 @@ if __name__ == "__main__":
             TestSlotMap,
             TestConversionBridge,
             TestLoopPreviewAudioPath,
+            TestDialogOneShotPreview,
+            TestDialogLoopPreview,
+            TestDialogBankPreview,
+            TestDialogChannelRestore,
             TestPatchGenerator,
             TestPatternModelResolution,
         ]

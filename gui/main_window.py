@@ -3624,7 +3624,18 @@ class PythonicGUI:
         self._update_morph_ui()
     
     def _show_drum_generator(self):
-        """Open the AI Drum Generator dialog."""
+        """Open the AI Drum Generator dialog (modal).
+
+        Stops the main transport while the dialog is open and restores
+        playback state on close.  The dialog reuses the live synth and
+        transport so all previews sound identical to main-window playback.
+        """
+        # Save and stop transport
+        was_playing = self.pattern_manager.is_playing
+        saved_pattern_idx = self.pattern_manager.playing_pattern_index
+        if was_playing:
+            self._on_pattern_stop()
+
         def on_apply(mode='patches'):
             self._push_undo_state()
             self._update_ui_from_channel()
@@ -3632,15 +3643,37 @@ class PythonicGUI:
                 self._update_pattern_editors()
             self._update_morph_ui()
 
+        def start_transport():
+            selected_idx = self.pattern_manager.selected_pattern_index
+            self.pattern_manager.start_playback(selected_idx)
+            self.frames_since_last_step = 0
+
+        def stop_transport():
+            if self.pattern_manager.is_playing:
+                self.pattern_manager.stop_playback()
+                self.frames_since_last_step = 0
+
         dialog = DrumGeneratorDialog(
             parent=self.root,
             synth=self.synth,
             pattern_manager=self.pattern_manager,
             preferences_manager=self.preferences_manager,
             on_apply_callback=on_apply,
+            start_transport=start_transport,
+            stop_transport=stop_transport,
         )
         self.root.wait_window(dialog.dialog)
+
+        # Restore transport state
+        if was_playing:
+            self.pattern_manager.start_playback(saved_pattern_idx)
+            self.frames_since_last_step = 0
+            if hasattr(self, 'play_btn') and hasattr(self.play_btn, 'set_active'):
+                self.play_btn.set_active(True)
+                self.stop_btn.set_active(False)
+
         self._update_ui_from_channel()
+        self._update_pattern_editors()
     
     def _get_audio_output_devices(self):
         """Get list of available audio output devices"""

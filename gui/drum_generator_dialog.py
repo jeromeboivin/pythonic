@@ -9,14 +9,7 @@ selective apply back to the live kit.
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import threading
-from queue import Empty, Full, Queue
 import numpy as np
-
-try:
-    import sounddevice as sd
-    AUDIO_AVAILABLE = True
-except ImportError:
-    AUDIO_AVAILABLE = False
 
 from pythonic.drum_generator import (
     PatchGenerator, SLOT_MAP, DRUM_TYPES,
@@ -26,11 +19,6 @@ from pythonic.pattern_generator import PatternGenerator, PATTERN_NAMES
 from pythonic.preset_manager import (
     convert_drum_patch_data, apply_drum_patch_to_channel, channel_to_raw_patch,
 )
-
-
-SAMPLE_RATE = 44100
-PREVIEW_BLOCK_SIZE = 1050
-PREVIEW_QUEUE_BLOCKS = 8
 
 COLORS = {
     'bg_dark': '#2a2a3a',
@@ -51,141 +39,19 @@ COLORS = {
 }
 
 
-class BufferedPatternPreviewSource:
-    """Render preview audio off the real-time callback and feed the main stream."""
-
-    def __init__(self, synth, trigger_tables: list, bpm: float,
-                 sample_rate: int = SAMPLE_RATE,
-                 block_size: int = PREVIEW_BLOCK_SIZE,
-                 queue_blocks: int = PREVIEW_QUEUE_BLOCKS):
-        self.synth = synth
-        self.trigger_tables = trigger_tables or [[[] for _ in range(16)]]
-        self.sample_rate = sample_rate
-        self.block_size = block_size
-        self.step_samples = max(1, int((60.0 / bpm / 4.0) * sample_rate))
-
-        self._queue = Queue(maxsize=max(2, queue_blocks))
-        self._stop_event = threading.Event()
-        self._thread = None
-        self._current_block = None
-        self._current_offset = 0
-        self._read_buffer = np.zeros((block_size, 2), dtype=np.float32)
-
-        self._step = 0
-        self._frame_in_step = 0
-        self._table_idx = 0
-        self._needs_initial_trigger = True
-
-    def start(self, prefill_blocks: int = 2):
-        """Prime a few blocks synchronously, then keep rendering in the background."""
-        target_blocks = min(prefill_blocks, self._queue.maxsize)
-        while self._queue.qsize() < target_blocks:
-            self._queue.put_nowait(self._render_block())
-
-        self._thread = threading.Thread(
-            target=self._render_loop,
-            name="drum-preview-render",
-            daemon=True,
-        )
-        self._thread.start()
-
-    def read(self, num_samples: int) -> np.ndarray:
-        """Return the next preview block without blocking the audio callback."""
-        if num_samples > len(self._read_buffer):
-            self._read_buffer = np.zeros((num_samples, 2), dtype=np.float32)
-
-        output = self._read_buffer[:num_samples]
-        output.fill(0)
-
-        written = 0
-        while written < num_samples:
-            if self._current_block is None or self._current_offset >= len(self._current_block):
-                try:
-                    self._current_block = self._queue.get_nowait()
-                    self._current_offset = 0
-                except Empty:
-                    break
-
-            available = len(self._current_block) - self._current_offset
-            chunk = min(available, num_samples - written)
-            output[written:written + chunk] = self._current_block[
-                self._current_offset:self._current_offset + chunk
-            ]
-            written += chunk
-            self._current_offset += chunk
-
-            if self._current_offset >= len(self._current_block):
-                self._current_block = None
-                self._current_offset = 0
-
-        return output
-
-    def stop(self):
-        """Stop the background renderer and release queued audio blocks."""
-        self._stop_event.set()
-        if self._thread is not None and self._thread.is_alive():
-            self._thread.join(timeout=0.5)
-        self._thread = None
-        self._current_block = None
-        self._current_offset = 0
-
-        while True:
-            try:
-                self._queue.get_nowait()
-            except Empty:
-                break
-
-    def _render_loop(self):
-        while not self._stop_event.is_set():
-            try:
-                block = self._render_block()
-                self._queue.put(block, timeout=0.05)
-            except Full:
-                continue
-            except Exception as exc:
-                print(f"Preview render error: {exc}", flush=True)
-                self._stop_event.set()
-
-    def _render_block(self) -> np.ndarray:
-        output = np.zeros((self.block_size, 2), dtype=np.float32)
-
-        if self._needs_initial_trigger:
-            self._trigger_current_step()
-            self._needs_initial_trigger = False
-
-        written = 0
-        while written < self.block_size:
-            remaining_in_step = self.step_samples - self._frame_in_step
-            chunk = min(remaining_in_step, self.block_size - written)
-            output[written:written + chunk] = self.synth.process_audio(chunk)
-            self._frame_in_step += chunk
-            written += chunk
-
-            if self._frame_in_step >= self.step_samples:
-                self._frame_in_step = 0
-                self._step = (self._step + 1) % 16
-                if self._step == 0 and len(self.trigger_tables) > 1:
-                    self._table_idx = (self._table_idx + 1) % len(self.trigger_tables)
-                self._trigger_current_step()
-
-        return output
-
-    def _trigger_current_step(self):
-        table = self.trigger_tables[self._table_idx]
-        for drum_idx in table[self._step]:
-            self.synth.trigger_drum(drum_idx, velocity=100)
-
-
 class DrumGeneratorDialog:
     """TR-8-inspired 8-lane AI drum generator dialog."""
 
     def __init__(self, parent, synth, pattern_manager, preferences_manager,
-                 on_apply_callback=None):
+                 on_apply_callback=None, start_transport=None,
+                 stop_transport=None):
         self.parent = parent
         self.synth = synth
         self.pattern_manager = pattern_manager
         self.preferences_manager = preferences_manager
         self.on_apply_callback = on_apply_callback
+        self.start_transport = start_transport
+        self.stop_transport = stop_transport
 
         self.generator = PatchGenerator()
         self.pattern_gen = PatternGenerator()
@@ -204,8 +70,12 @@ class DrumGeneratorDialog:
 
         # Preview state
         self.preview_playing = False
-        self._preview_renderer = None
-        self.preview_stop_flag = threading.Event()
+
+        # Save original state for restore on close
+        self._saved_channel_states = [ch.get_parameters() for ch in synth.channels]
+        self._applied_slots = set()
+        self._saved_patterns = None
+        self._patterns_applied = False
 
         self._build_dialog()
         self._update_model_status()
@@ -222,6 +92,8 @@ class DrumGeneratorDialog:
         self.dialog.transient(self.parent)
         self.dialog.configure(bg=COLORS['bg_dark'])
         self.dialog.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.dialog.grab_set()
+        self.dialog.focus_set()
 
         # ── Top bar: model status + global controls ──
         self._build_top_bar()
@@ -815,65 +687,31 @@ class DrumGeneratorDialog:
                 patches.append(channel_to_raw_patch(self.synth.channels[i]))
         return patches
 
-    def _build_preview_synth(self):
-        """Create a preview synth with the tentative kit overlaid."""
-        from pythonic.synthesizer import PythonicSynthesizer
-        preview_synth = PythonicSynthesizer(
-            SAMPLE_RATE,
-            parallel_channel_processing=True,
-        )
-        kit_data = self.synth.get_preset_data()
-        preview_synth.load_preset_data(kit_data)
-
+    def _apply_tentative_kit_to_live_synth(self):
+        """Apply all tentative patches (generated candidates) to the live synth."""
         for i in range(8):
             st = self.slot_state[i]
             if st['candidates']:
                 patch = st['candidates'][st['selected_idx']]
                 channel_data = convert_drum_patch_data(patch)
-                apply_drum_patch_to_channel(preview_synth.channels[i], channel_data)
-        return preview_synth
+                apply_drum_patch_to_channel(self.synth.channels[i], channel_data)
 
-    def _build_trigger_table_from_pattern(self, pattern) -> list[list[int]]:
-        """Build a 16-step trigger table from a Pattern object."""
-        triggers_table = [[] for _ in range(16)]
-        for ch_idx in range(min(8, len(pattern.channels))):
-            for step_idx, step in enumerate(pattern.channels[ch_idx].steps):
-                if step.trigger and step_idx < 16:
-                    triggers_table[step_idx].append(ch_idx)
-        return triggers_table
+    def _save_patterns(self):
+        """Save pattern state for later restoration."""
+        if self._saved_patterns is None:
+            self._saved_patterns = [p.copy() for p in self.pattern_manager.patterns]
 
-    def _build_trigger_table_from_dict(self, pat_data: dict) -> list[list[int]]:
-        """Build a 16-step trigger table from a generated pattern dict."""
-        triggers_table = [[] for _ in range(16)]
-        for ch_idx in range(8):
-            ch_key = str(ch_idx + 1)
-            ch_data = pat_data.get(ch_key, {})
-            if isinstance(ch_data, dict):
-                triggers_str = ch_data.get("Triggers", "")
-                for step in range(min(16, len(triggers_str))):
-                    if triggers_str[step] == "#":
-                        triggers_table[step].append(ch_idx)
-        return triggers_table
+    def _restore_patterns(self):
+        """Restore saved pattern state."""
+        if self._saved_patterns is not None:
+            self.pattern_manager.patterns = self._saved_patterns
+            self._saved_patterns = None
 
-    def _get_preview_trigger_table(self) -> list[list[int]]:
-        """Get the trigger table for the current preview scope."""
-        if self._pattern_mode == 'generate' and self._cached_pattern_bank:
-            # Use the generated version of the current selected/playing pattern
-            pm = self.pattern_manager
-            pat_name = PATTERN_NAMES[pm.playing_pattern_index
-                                     if pm.playing_pattern_index >= 0
-                                     else pm.selected_pattern_index]
-            pat_data = self._cached_pattern_bank.get(pat_name)
-            if pat_data:
-                return self._build_trigger_table_from_dict(pat_data)
-
-        # Keep Current mode: use the real pattern from PatternManager
-        pm = self.pattern_manager
-        try:
-            pattern = pm.get_playing_pattern()
-        except Exception:
-            pattern = pm.get_selected_pattern()
-        return self._build_trigger_table_from_pattern(pattern)
+    def _restore_channels(self):
+        """Restore channels that weren't explicitly applied."""
+        for i in range(8):
+            if i not in self._applied_slots:
+                self.synth.channels[i].set_parameters(self._saved_channel_states[i])
 
     # ================================================================
     # Pattern bank generation
@@ -914,30 +752,19 @@ class DrumGeneratorDialog:
     # ================================================================
 
     def _on_preview_slot(self, slot_idx):
-        """Trigger a one-shot preview for the selected candidate on this slot."""
+        """Trigger a one-shot preview for the selected candidate on this slot.
+
+        Applies the candidate patch to the live synth channel and triggers it
+        at velocity 127, identical to pressing keys 1-8 in the main window.
+        """
         st = self.slot_state[slot_idx]
-        if not st['candidates'] or not AUDIO_AVAILABLE:
+        if not st['candidates']:
             return
 
         patch = st['candidates'][st['selected_idx']]
         channel_data = convert_drum_patch_data(patch)
-
-        from pythonic.synthesizer import PythonicSynthesizer
-        preview_synth = PythonicSynthesizer(
-            SAMPLE_RATE,
-            parallel_channel_processing=True,
-        )
-
-        apply_drum_patch_to_channel(preview_synth.channels[slot_idx], channel_data)
-        preview_synth.trigger_drum(slot_idx, velocity=100)
-
-        duration_samples = int(SAMPLE_RATE * 2.0)
-        audio = preview_synth.process_audio(duration_samples)
-
-        try:
-            sd.play(audio, samplerate=SAMPLE_RATE)
-        except Exception as e:
-            print(f"One-shot preview error: {e}", flush=True)
+        apply_drum_patch_to_channel(self.synth.channels[slot_idx], channel_data)
+        self.synth.trigger_drum(slot_idx, velocity=127)
 
     # ================================================================
     # Preview: pattern loop (current pattern)
@@ -950,14 +777,28 @@ class DrumGeneratorDialog:
             self._start_loop_preview()
 
     def _start_loop_preview(self):
-        """Loop the current selected/playing pattern with the tentative kit."""
-        if not AUDIO_AVAILABLE:
-            return
+        """Loop the current selected/playing pattern with the tentative kit.
 
-        preview_synth = self._build_preview_synth()
-        triggers_table = self._get_preview_trigger_table()
+        Uses the live synth and the main audio callback transport, so swing,
+        accents, fills, substeps, and probability all behave identically to
+        main-window playback.
+        """
+        self._apply_tentative_kit_to_live_synth()
 
-        self._start_preview_stream(preview_synth, [triggers_table])
+        if self._pattern_mode == 'generate' and self._cached_pattern_bank:
+            self._save_patterns()
+            pm = self.pattern_manager
+            pat_name = PATTERN_NAMES[pm.playing_pattern_index
+                                     if pm.playing_pattern_index >= 0
+                                     else pm.selected_pattern_index]
+            pat_data = self._cached_pattern_bank.get(pat_name)
+            if pat_data:
+                pat_idx = PATTERN_NAMES.index(pat_name)
+                self.pattern_manager.apply_single_pattern(pat_idx, pat_data)
+
+        if self.start_transport:
+            self.start_transport()
+        self.preview_playing = True
         self.preview_loop_btn.config(text="Stop Loop", bg='#884444')
 
     # ================================================================
@@ -971,63 +812,44 @@ class DrumGeneratorDialog:
             self._start_bank_preview()
 
     def _start_bank_preview(self):
-        """Sequence through generated pattern bank (or live patterns if keeping)."""
-        if not AUDIO_AVAILABLE:
-            return
+        """Sequence through all patterns with the tentative kit.
 
-        preview_synth = self._build_preview_synth()
+        Temporarily chains all 12 patterns so the main transport cycles
+        through them automatically, using the same playback engine as the
+        main window.
+        """
+        self._apply_tentative_kit_to_live_synth()
+        self._save_patterns()
 
-        # Build trigger tables for all 12 patterns
         if self._pattern_mode == 'generate' and self._cached_pattern_bank:
-            tables = []
-            for name in PATTERN_NAMES:
-                pat_data = self._cached_pattern_bank.get(name)
-                if pat_data:
-                    tables.append(self._build_trigger_table_from_dict(pat_data))
-                else:
-                    tables.append([[] for _ in range(16)])
-        else:
-            tables = []
-            for pat in self.pattern_manager.patterns:
-                tables.append(self._build_trigger_table_from_pattern(pat))
+            self.pattern_manager.apply_pattern_bank(self._cached_pattern_bank)
 
-        self._start_preview_stream(preview_synth, tables)
+        # Chain all patterns for sequential bank playback
+        for i, p in enumerate(self.pattern_manager.patterns):
+            p.chained_to_next = (i < len(self.pattern_manager.patterns) - 1)
+            p.chained_from_prev = (i > 0)
+
+        # Start from pattern A
+        self.pattern_manager.selected_pattern_index = 0
+        if self.start_transport:
+            self.start_transport()
+        self.preview_playing = True
         self.preview_bank_btn.config(text="Stop Bank", bg='#884444')
 
     # ================================================================
-    # Shared preview stream
+    # Stop preview
     # ================================================================
 
-    def _start_preview_stream(self, preview_synth, trigger_tables: list):
-        """Start buffered preview playback through the main audio stream."""
-        self._stop_loop_preview()
-        renderer = BufferedPatternPreviewSource(
-            preview_synth,
-            trigger_tables,
-            bpm=self.pattern_manager.bpm,
-        )
-
-        try:
-            renderer.start()
-        except Exception as e:
-            print(f"Preview error: {e}", flush=True)
-            renderer.stop()
-            return
-
-        self.synth.set_preview_source(renderer)
-        self._preview_renderer = renderer
-        self.preview_playing = True
-        self.preview_stop_flag.clear()
-
     def _stop_loop_preview(self):
+        """Stop any running loop/bank preview and restore state."""
+        if self.stop_transport:
+            self.stop_transport()
+        self._restore_patterns()
+        self._restore_channels()
+
         self.preview_playing = False
-        self.preview_stop_flag.set()
         self.preview_loop_btn.config(text="Loop Preview", bg=COLORS['bg_light'])
         self.preview_bank_btn.config(text="Preview Bank", bg=COLORS['bg_light'])
-
-        if self._preview_renderer is not None:
-            self.synth.clear_preview_source(self._preview_renderer)
-            self._preview_renderer = None
 
     # ================================================================
     # Apply
@@ -1044,6 +866,8 @@ class DrumGeneratorDialog:
                 channel_data = convert_drum_patch_data(patch)
                 apply_drum_patch_to_channel(self.synth.channels[i], channel_data)
                 applied.append(i)
+                self._applied_slots.add(i)
+                self._saved_channel_states[i] = self.synth.channels[i].get_parameters()
 
         if applied and self.on_apply_callback:
             self.on_apply_callback('patches')
@@ -1074,9 +898,13 @@ class DrumGeneratorDialog:
                 channel_data = convert_drum_patch_data(patch)
                 apply_drum_patch_to_channel(self.synth.channels[i], channel_data)
                 applied.append(i)
+                self._applied_slots.add(i)
+                self._saved_channel_states[i] = self.synth.channels[i].get_parameters()
 
         # Replace all patterns
         self.pattern_manager.apply_pattern_bank(self._cached_pattern_bank)
+        self._patterns_applied = True
+        self._saved_patterns = None
 
         if self.on_apply_callback:
             self.on_apply_callback('patches_and_patterns')
@@ -1090,14 +918,15 @@ class DrumGeneratorDialog:
     # ================================================================
 
     def _on_close(self):
-        self._stop_loop_preview()
+        if self.preview_playing:
+            self._stop_loop_preview()
         # Save temperature preferences
         self.preferences_manager.set('drum_generator_patch_temperature',
                                      self.temp_var.get())
         self.preferences_manager.set('drum_generator_pattern_temperature',
                                      self.pattern_temp_var.get())
-        try:
-            sd.stop()
-        except Exception:
-            pass
+        # Restore non-applied channels and patterns
+        self._restore_channels()
+        if not self._patterns_applied:
+            self._restore_patterns()
         self.dialog.destroy()

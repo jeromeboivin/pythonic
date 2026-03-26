@@ -35,7 +35,7 @@ import os
 # ── Paths — edit these ────────────────────────────────────────────────────────
 # Root folder that contains your drum-type subfolders (bd/, sd/, oh/, …)
 # PATCHES_DIR  = "/content/drum_patches"
-PATCHES_DIR  = "./drum_patches"  # current working dir (for non-Drive use)
+PATCHES_DIR  = "./drum_patches_knn"  # current working dir (for non-Drive use)
 
 # All outputs land here. Change to a Drive path to persist across sessions, e.g.
 #   "/content/drive/MyDrive/drum_cvae"
@@ -60,6 +60,7 @@ KL_FREE_BITS     = 0.01
 KL_CYCLICAL      = False
 KL_CYCLE_EPOCHS  = 200
 DROPOUT          = 0.0
+BALANCED_TYPE_SAMPLING = True
 EPOCHS           = 4000
 LOG_EVERY        = 5
 TARGET_LOSS      = None
@@ -71,12 +72,14 @@ EARLY_STOPPING_MIN_DELTA = 5e-6
 
 # %%
 import glob
+import math
 import numpy as np
+import re
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.amp import GradScaler, autocast
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 from sklearn.preprocessing import MinMaxScaler
 from tqdm.auto import tqdm   # auto picks the notebook progress bar in Colab
 
@@ -139,6 +142,8 @@ _CONT_PARAM_WEIGHTS = torch.tensor(
     [_PARAM_WEIGHT_MAP.get(p, 1.0) for p in CONTINUOUS_PARAMS], dtype=torch.float32
 )
 
+_NUMERIC_TOKEN_RE = re.compile(r"[-+]?(?:inf|(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)")
+
 # Clamp raw values to synth-usable ranges before any transform.
 # Prevents extreme outliers (e.g. ModRate up to 1.87 billion) from dominating scaler.
 PARAM_CLAMP = {
@@ -181,6 +186,54 @@ def infer_drum_type(name: str) -> str:
     folder = os.path.basename(os.path.dirname(name)).lower()
     return folder if folder in DRUM_TYPES else "other"
 
+
+def coerce_numeric_param(value) -> float:
+    """Convert parser outputs like tuples or unit-suffixed strings into floats."""
+    if isinstance(value, (tuple, list)):
+        value = value[0] if value else 0.0
+
+    if isinstance(value, (int, float, np.number)):
+        result = float(value)
+    elif isinstance(value, str):
+        match = _NUMERIC_TOKEN_RE.search(value.strip().lower().replace(",", ""))
+        if not match:
+            return 0.0
+        result = float(match.group(0))
+    else:
+        try:
+            result = float(value)
+        except Exception:
+            return 0.0
+
+    if math.isnan(result):
+        return 0.0
+    return result
+
+
+def clamp_continuous_param(param: str, value: float) -> float:
+    if param in PARAM_CLAMP:
+        lo, hi = PARAM_CLAMP[param]
+        value = max(lo, min(hi, value))
+    return value
+
+
+def build_type_balanced_sampler(types: list[str]) -> tuple[WeightedRandomSampler, dict[str, int]]:
+    """Sample each drum type with inverse-frequency probability."""
+    type_counts = {}
+    for drum_type in types:
+        type_counts[drum_type] = type_counts.get(drum_type, 0) + 1
+
+    sample_weights = torch.tensor(
+        [1.0 / type_counts[drum_type] for drum_type in types],
+        dtype=torch.double,
+    )
+    sampler = WeightedRandomSampler(
+        weights=sample_weights,
+        num_samples=len(types),
+        replacement=True,
+    )
+    return sampler, type_counts
+
 # ─────────────────────────────────────────────
 # Preprocessor
 # ─────────────────────────────────────────────
@@ -204,17 +257,8 @@ class PatchPreprocessor:
         """Extract, clamp, and log-transform continuous parameters."""
         vals = []
         for p in CONTINUOUS_PARAMS:
-            v = patch.get(p, 0.0)
-            if isinstance(v, (tuple, list)):
-                v = v[0]
-            try:
-                v = float(v)
-            except Exception:
-                v = 0.0
-            # Clamp to synth-usable range
-            if p in PARAM_CLAMP:
-                lo, hi = PARAM_CLAMP[p]
-                v = max(lo, min(hi, v))
+            v = coerce_numeric_param(patch.get(p, 0.0))
+            v = clamp_continuous_param(p, v)
             # Log-transform for perceptually logarithmic params
             if p in LOG_PARAMS:
                 v = np.log(v)
@@ -606,6 +650,7 @@ class CVAETrainer:
         kl_cyclical:       bool  = True,
         kl_cycle_epochs:   int   = 200,
         dropout:           float = 0.1,
+        balanced_type_sampling: bool = True,
         device:            torch.device = None,
     ):
         self.device           = device or DEVICE
@@ -614,13 +659,22 @@ class CVAETrainer:
         self.kl_free_bits     = kl_free_bits
         self.kl_cyclical      = kl_cyclical
         self.kl_cycle_epochs  = kl_cycle_epochs
+        self.balanced_type_sampling = balanced_type_sampling
         self.preprocessor     = preprocessor
         self.use_amp          = USE_AMP
         self.scaler_amp       = GradScaler("cuda", enabled=USE_AMP)
 
         pin = self.device.type == "cuda"
+        train_sampler = None
+        if balanced_type_sampling:
+            train_sampler, type_counts = build_type_balanced_sampler(train_dataset.types)
+            counts_summary = ", ".join(
+                f"{drum_type}: {count}" for drum_type, count in sorted(type_counts.items())
+            )
+            print(f"Using inverse-frequency type-balanced sampling. Counts: {counts_summary}")
         self.train_loader = DataLoader(
-            train_dataset, batch_size=batch_size, shuffle=True,
+            train_dataset, batch_size=batch_size,
+            shuffle=(train_sampler is None), sampler=train_sampler,
             drop_last=True, num_workers=NUM_WORKERS, pin_memory=pin,
             persistent_workers=(NUM_WORKERS > 0),
         )
@@ -792,6 +846,7 @@ class CVAETrainer:
                 "kl_free_bits": self.kl_free_bits,
                 "kl_cyclical": self.kl_cyclical,
                 "kl_cycle_epochs": self.kl_cycle_epochs,
+                "balanced_type_sampling": self.balanced_type_sampling,
             },
             "scaler": self.preprocessor.scaler_state_dict(),
         }, path)
@@ -967,14 +1022,7 @@ def round_trip_test(preprocessor, patches_dir, n_samples=20):
         rebuilt = preprocessor.decode_patch(vec, drum_type, name="roundtrip")
 
         for p in CONTINUOUS_PARAMS:
-            orig_v = orig.get(p, 0.0)
-            if isinstance(orig_v, (tuple, list)):
-                orig_v = orig_v[0]
-            orig_v = float(orig_v)
-            # apply same clamp as _extract_continuous
-            if p in PARAM_CLAMP:
-                lo, hi = PARAM_CLAMP[p]
-                orig_v = max(lo, min(hi, orig_v))
+            orig_v = clamp_continuous_param(p, coerce_numeric_param(orig.get(p, 0.0)))
             recon_v = rebuilt[p]
             err = abs(orig_v - recon_v) / max(abs(orig_v), 1e-6)
             max_err[p] = max(max_err[p], err)
@@ -1007,6 +1055,7 @@ trainer = CVAETrainer(
     kl_cyclical      = KL_CYCLICAL,
     kl_cycle_epochs  = KL_CYCLE_EPOCHS,
     dropout          = DROPOUT,
+    balanced_type_sampling = BALANCED_TYPE_SAMPLING,
 )
 
 history = trainer.train(
