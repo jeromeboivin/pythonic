@@ -223,6 +223,13 @@ Pythonic includes an optional AI-powered drum generator that uses a Conditional 
 
 The generator requires PyTorch, which is **not** included in the base install to keep the app lightweight.
 
+Pre-trained checkpoint files in this repository are stored with Git LFS. If you cloned without LFS enabled, install it and fetch the model payloads before using AI features:
+
+```bash
+git lfs install
+git lfs pull
+```
+
 **Option A — In-app install**: Open the generator dialog (Preset menu → *AI Drum Generator...*) and click **Install ML Support**. This runs `pip install -r requirements-ml.txt` in the current environment after confirmation.
 
 **Option B — Manual install**:
@@ -235,14 +242,16 @@ pip install -r requirements-ml.txt
 
 ### Loading a Model
 
-The repository includes two pre-trained checkpoints:
+The repository includes these pre-trained checkpoints:
 
 | File | Description |
 |------|-------------|
-| `drum_cvae_best.pt` | Best validation loss during training |
-| `drum_cvae_final.pt` | Final epoch checkpoint |
+| `drum_cvae_best.pt` | Bundled drum-patch CVAE checkpoint used by the AI Drum Generator |
+| `drum_patterns/pattern_cvae_best.pt` | Bundled pattern CVAE checkpoint used for AI pattern generation |
 
-Point the generator to either file via the **Load Model...** button. The path is saved in preferences for next time.
+Use the **Load Model...** button in the AI Drum Generator to select `drum_cvae_best.pt`. The selected path is saved in preferences for next time.
+
+AI pattern generation uses `drum_patterns/pattern_cvae_best.pt` automatically when present, or you can configure an alternate path via Preset menu → **AI Settings**.
 
 ### Generator Workflow
 
