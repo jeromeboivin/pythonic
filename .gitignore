@@ -136,5 +136,5 @@ Thumbs.db
 /test_patches
 /drum_patches
 /drum_patches_knn
-drum_cvae_best.pt
 drum_dataset_cache.pt
+pattern_dataset_cache.pt
