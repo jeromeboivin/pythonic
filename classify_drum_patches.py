@@ -42,6 +42,9 @@ from pythonic.preset_manager import (
 # Constants (mirrored from train.py)
 # ─────────────────────────────────────────────
 
+# KNN features. OscAtk is left out on purpose: most reference patches use the
+# V1 format, which has no OscAtk, so it would read as 0 for all of them.
+
 CONTINUOUS_PARAMS = [
     "OscFreq", "OscDcy", "ModAmt", "ModRate",
     "NFilFrq", "NFilQ", "NEnvAtk", "NEnvDcy",
@@ -201,6 +204,7 @@ def _internal_to_raw(drum: Dict[str, Any]) -> Dict[str, Any]:
         'Name':    drum.get('name', 'Untitled'),
         'OscWave': _WAVEFORM_NAMES[drum.get('osc_waveform', 0)],
         'OscFreq': drum.get('osc_frequency', 440.0),
+        'OscAtk':  drum.get('osc_attack', 0.0),
         'OscDcy':  drum.get('osc_decay', 316.0),
         'ModMode': _MOD_MODE_NAMES[mod_mode_idx],
         'ModAmt':  drum.get('pitch_mod_amount', 0.0),
@@ -219,6 +223,7 @@ def _internal_to_raw(drum: Dict[str, Any]) -> Dict[str, Any]:
         'Level':   drum.get('level_db', 0.0),
         'Pan':     drum.get('pan', 0.0),
         'Output':  drum.get('output_pair', 'A'),
+        'Choke':   drum.get('choke_enabled', False),
         'OscVel':  drum.get('osc_vel_sensitivity', 0.0) * 100.0,
         'NVel':    drum.get('noise_vel_sensitivity', 0.0) * 100.0,
         'ModVel':  drum.get('mod_vel_sensitivity', 0.0) * 100.0,

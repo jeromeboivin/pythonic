@@ -18,17 +18,24 @@ EMPIRICAL_JITTER_SCALE = 0.15
 # ─────────────────────────────────────────────
 
 CONTINUOUS_PARAMS = [
-    "OscFreq", "OscDcy", "ModAmt", "ModRate",
+    "OscFreq", "OscAtk", "OscDcy", "ModAmt", "ModRate",
     "NFilFrq", "NFilQ", "NEnvAtk", "NEnvDcy",
     "Mix", "DistAmt", "EQFreq", "EQGain",
     "Level", "OscVel", "NVel", "ModVel",
 ]
 
-LOG_PARAMS = {"OscFreq", "OscDcy", "ModRate", "NFilFrq", "NFilQ", "NEnvAtk", "NEnvDcy", "EQFreq"}
-_LOG_PARAM_INDICES = [i for i, p in enumerate(CONTINUOUS_PARAMS) if p in LOG_PARAMS]
+# Parameter list of checkpoints saved before OscAtk was added. Those
+# checkpoints carry no "continuous_params" key.
+LEGACY_CONTINUOUS_PARAMS = [p for p in CONTINUOUS_PARAMS if p != "OscAtk"]
+
+# Values for parameters a checkpoint does not model.
+MISSING_PARAM_DEFAULTS = {"OscAtk": 0.0}
+
+LOG_PARAMS = {"OscFreq", "OscAtk", "OscDcy", "ModRate", "NFilFrq", "NFilQ", "NEnvAtk", "NEnvDcy", "EQFreq"}
 
 PARAM_CLAMP = {
     "OscFreq": (20.0, 20_000.0),
+    "OscAtk":  (0.001, 10_000.0),
     "OscDcy":  (1.0, 10_000_000.0),
     "ModAmt":  (-96.0, 96.0),
     "ModRate": (0.001, 100_000.0),
@@ -147,11 +154,13 @@ class _MinMaxScaler:
 class PatchPreprocessor:
     """Lightweight preprocessor for inference: decode model output → patch dict."""
 
-    def __init__(self):
+    def __init__(self, continuous_params=None):
+        self.continuous_params = list(continuous_params or CONTINUOUS_PARAMS)
+        self._log_indices = [i for i, p in enumerate(self.continuous_params) if p in LOG_PARAMS]
         self.scaler = _MinMaxScaler()
         self.cat_sizes = {k: len(v) for k, v in CATEGORICAL_PARAMS.items()}
         self.type_to_idx = {t: i for i, t in enumerate(DRUM_TYPES)}
-        self.cont_dim = len(CONTINUOUS_PARAMS)
+        self.cont_dim = len(self.continuous_params)
         self.cat_dim = sum(self.cat_sizes.values())
         self.param_dim = self.cont_dim + self.cat_dim
         self.type_dim = len(DRUM_TYPES)
@@ -171,10 +180,12 @@ class PatchPreprocessor:
         cont = self.scaler.inverse_transform(cont_norm.reshape(1, -1))[0]
         cont = np.clip(cont, self.scaler.data_min_, self.scaler.data_max_)
 
-        for idx in _LOG_PARAM_INDICES:
+        for idx in self._log_indices:
             cont[idx] = np.exp(cont[idx])
 
-        patch = {param: float(cont[i]) for i, param in enumerate(CONTINUOUS_PARAMS)}
+        patch = {param: float(cont[i]) for i, param in enumerate(self.continuous_params)}
+        for param, default in MISSING_PARAM_DEFAULTS.items():
+            patch.setdefault(param, default)
 
         offset = self.cont_dim
         for param, vals in CATEGORICAL_PARAMS.items():
@@ -536,6 +547,13 @@ class PatchGenerator:
         model.load_state_dict(ckpt["model_state"])
         model.eval()
 
+        continuous_params = ckpt.get("continuous_params", LEGACY_CONTINUOUS_PARAMS)
+        if len(continuous_params) != cfg["cont_dim"]:
+            raise ValueError(
+                f"Checkpoint has {cfg['cont_dim']} continuous outputs but lists "
+                f"{len(continuous_params)} parameter names."
+            )
+        self._preprocessor = PatchPreprocessor(continuous_params)
         self._preprocessor.load_scaler_state(ckpt["scaler"])
         self._reset_sampling_support()
         self._training_config = ckpt.get("training_config", {})

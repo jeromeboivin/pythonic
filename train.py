@@ -6,6 +6,8 @@
 # 2. Upload your `.zip` of drum patch folders to Drive (or directly to Colab)
 # 3. Upload `pythonic/` (your custom parser package) to the Colab working dir,
 #    or install it via pip if you have a wheel: `!pip install your_package.whl`
+#    Steps 2 and 3 can be skipped by uploading a prebuilt `drum_dataset_cache.pt`
+#    to DRIVE_DIR: training then needs only this script and the cache.
 # 4. Run cells top to bottom. The dataset is preprocessed once and saved to a
 #    cache file — subsequent runs skip parsing entirely and load in seconds.
 #
@@ -98,9 +100,9 @@ EXCLUDED_PARAMS = {"Pan", "NStereo", "Output", "Name"}
 
 # "Pan" intentionally omitted — it's in EXCLUDED_PARAMS and always reset to 0.0
 # in decode_patch, so training on it would waste a model dimension.
-# NOTE: OscAtk removed — never present in .mtdrum files (phantom parameter).
 CONTINUOUS_PARAMS = [
     "OscFreq",   # Oscillator frequency (Hz)          — log-domain
+    "OscAtk",    # Oscillator envelope attack (ms)     — log-domain
     "OscDcy",    # Oscillator envelope decay (ms)      — log-domain
     "ModAmt",    # Pitch modulation amount (semitones)  — linear (signed!)
     "ModRate",   # Pitch modulation rate (ms or Hz)     — log-domain
@@ -120,7 +122,7 @@ CONTINUOUS_PARAMS = [
 
 # Parameters that live in logarithmic perceptual domains (frequencies, times, Q).
 # These are log-transformed before MinMaxScaler and exp-transformed on decode.
-LOG_PARAMS = {"OscFreq", "OscDcy", "ModRate", "NFilFrq", "NFilQ", "NEnvAtk", "NEnvDcy", "EQFreq"}
+LOG_PARAMS = {"OscFreq", "OscAtk", "OscDcy", "ModRate", "NFilFrq", "NFilQ", "NEnvAtk", "NEnvDcy", "EQFreq"}
 
 # Index lookup for fast numpy vectorised log-transform
 _LOG_PARAM_INDICES = [i for i, p in enumerate(CONTINUOUS_PARAMS) if p in LOG_PARAMS]
@@ -148,6 +150,7 @@ _NUMERIC_TOKEN_RE = re.compile(r"[-+]?(?:inf|(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?
 # Prevents extreme outliers (e.g. ModRate up to 1.87 billion) from dominating scaler.
 PARAM_CLAMP = {
     "OscFreq": (20.0,     20_000.0),
+    "OscAtk":  (0.001,    10_000.0),
     "OscDcy":  (1.0,      10_000_000.0),
     "ModAmt":  (-96.0,    96.0),
     "ModRate": (0.001,    100_000.0),
@@ -849,6 +852,9 @@ class CVAETrainer:
                 "balanced_type_sampling": self.balanced_type_sampling,
             },
             "scaler": self.preprocessor.scaler_state_dict(),
+            # Lets the inference runtime decode checkpoints trained on a
+            # different parameter list.
+            "continuous_params": list(CONTINUOUS_PARAMS),
         }, path)
 
     def load(self, path: str) -> int:
@@ -995,7 +1001,6 @@ print(f"Dataset: {len(train_ds)} samples")
 # %%
 def round_trip_test(preprocessor, patches_dir, n_samples=20):
     """Encode a few real patches and decode them back; print max error per param."""
-    from pythonic.preset_manager import DrumPatchParser
     import glob as _glob
 
     patch_files = []
@@ -1007,6 +1012,8 @@ def round_trip_test(preprocessor, patches_dir, n_samples=20):
         print("No patch files found for round-trip test.")
         return
 
+    # Imported here so a cache-only run (e.g. on Colab) does not need the package
+    from pythonic.preset_manager import DrumPatchParser
     parser = DrumPatchParser()
     rng = np.random.default_rng(42)
     indices = rng.choice(len(patch_files), size=min(n_samples, len(patch_files)), replace=False)

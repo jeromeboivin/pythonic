@@ -16,7 +16,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pythonic.drum_generator import (
     PatchGenerator, PatchPreprocessor, SLOT_MAP, DRUM_TYPES,
-    CONTINUOUS_PARAMS, CATEGORICAL_PARAMS, is_torch_available,
+    CONTINUOUS_PARAMS, CATEGORICAL_PARAMS, LEGACY_CONTINUOUS_PARAMS,
+    is_torch_available,
 )
 from pythonic.preset_manager import convert_drum_patch_data, apply_drum_patch_to_channel
 from pythonic.synthesizer import PythonicSynthesizer
@@ -73,6 +74,29 @@ class TestPatchPreprocessor:
         assert patch["Name"] == "TestKick"
         assert "Pan" in patch
         assert "Output" in patch
+
+    def test_decode_patch_reads_osc_attack(self):
+        pp = self._make_preprocessor()
+        vec = np.zeros(pp.param_dim, dtype=np.float32)
+        # Identity scaler fitted on [0, 1]: OscAtk decodes as exp(value)
+        vec[CONTINUOUS_PARAMS.index("OscAtk")] = 0.5
+        patch = pp.decode_patch(vec, "bass")
+        assert abs(patch["OscAtk"] - np.exp(0.5)) < 1e-6
+
+    def test_legacy_decode_defaults_osc_attack_to_zero(self):
+        pp = PatchPreprocessor(LEGACY_CONTINUOUS_PARAMS)
+        n = pp.cont_dim
+        pp.scaler.load_state({
+            "scale_": np.ones(n).tolist(),
+            "min_": np.zeros(n).tolist(),
+            "data_min_": np.zeros(n).tolist(),
+            "data_max_": np.ones(n).tolist(),
+        })
+        assert pp.cont_dim == len(CONTINUOUS_PARAMS) - 1
+        patch = pp.decode_patch(np.zeros(pp.param_dim, dtype=np.float32), "bd")
+        assert patch["OscAtk"] == 0.0
+        for p in CONTINUOUS_PARAMS:
+            assert p in patch
 
     def test_decode_patch_categorical_argmax(self):
         pp = self._make_preprocessor()
