@@ -168,7 +168,7 @@ class PythonicGUI:
         self.process_times = deque(maxlen=100)  # Time spent processing audio
         self.underrun_count = 0
         self.callback_count = 0
-        self.last_perf_report = time.time()
+        self.last_perf_report = time.perf_counter()
         
         # Audio buffer size from preferences
         buffer_ms = self.preferences_manager.get('audio_buffer_ms', 23.8)

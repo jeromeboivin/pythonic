@@ -72,6 +72,8 @@ pip install -r requirements.txt
 
 > **Note**: If you encounter issues with `mido` or `python-rtmidi`, they're only required for MIDI functionality. The synth works without them.
 
+> **Note**: The drum voice engine is compiled with `numba`. The first launch takes a few extra seconds while it compiles; the result is cached for later runs.
+
 ### Run the Application
 
 ```bash
