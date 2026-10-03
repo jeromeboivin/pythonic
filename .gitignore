@@ -137,6 +137,7 @@ Thumbs.db
 /drum_patches
 /drum_patches_knn
 drum_dataset_cache.pt
+drum_cvae_final.pt
 pattern_dataset_cache.pt
 # Local analysis toolkit
 /tools/local_analysis/
