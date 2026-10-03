@@ -57,7 +57,7 @@ BATCH_SIZE       = 256
 LR               = 3e-4
 BETA             = 1e-5   # KL is summed over latent dims while recon is a mean,
                           # so useful values are tiny in this script.
-KL_WARMUP_EPOCHS = 1000
+KL_WARMUP_EPOCHS = 200
 KL_FREE_BITS     = 0.01
 KL_CYCLICAL      = False
 KL_CYCLE_EPOCHS  = 200
