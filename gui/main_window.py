@@ -1,6 +1,6 @@
 """
 Main GUI Window for Pythonic
-Visual interface closely matching the original application
+Visual interface of the drum synthesizer
 """
 
 import tkinter as tk
@@ -18,6 +18,7 @@ from collections import deque
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from pythonic.sequencer import StepSequencer, STEP_TICKS
 from pythonic.synthesizer import PythonicSynthesizer
 from pythonic.oscillator import WaveformType, PitchModMode
 from pythonic.noise import NoiseFilterMode, NoiseEnvelopeMode
@@ -151,16 +152,15 @@ class PythonicGUI:
         self._pitchbend_center_threshold = 0.02  # Consider centered if within this range
         
         # Playback state (thread-safe)
-        self.last_triggered_step = -1  # Track last triggered step to avoid double triggers
-        self.frames_since_last_step = 0
         self.button_flash_state = False  # For flashing playing pattern button
         self.current_play_position = 0  # Atomic position for UI updates
         self.position_lock = threading.Lock()  # Protect position updates
         self.ui_update_timer = None  # Timer for UI updates
         
-        # Fill tracking: list of (frames_until_trigger, channel_id, velocity)
-        # Fills are triggered at sub-step intervals within the current step
-        self.pending_fills = []
+        # Pattern playback (steps, fills, sub-steps) is scheduled by the
+        # sample-accurate sequencer inside the audio callback
+        self.sequencer = None  # created once the synth sample rate is known
+        self._seq_generation = -1
         
         # Performance monitoring
         self.callback_times = deque(maxlen=100)  # Last 100 callback times
@@ -2117,7 +2117,6 @@ class PythonicGUI:
             # Not playing — reset position immediately
             self.pattern_manager.play_position = 0
             self.pattern_manager.current_step = 0
-            self.frames_since_last_step = 0
             if hasattr(self, 'pattern_editors'):
                 for editor in self.pattern_editors:
                     editor.set_current_position(0)
@@ -2204,7 +2203,6 @@ class PythonicGUI:
         """Start pattern playback"""
         selected_idx = self.pattern_manager.selected_pattern_index
         self.pattern_manager.start_playback(selected_idx)
-        self.frames_since_last_step = 0  # Reset frame counter
         self._last_playing_pattern_idx = selected_idx  # Track for chaining detection
         self._update_pattern_button_states()
         # Update circular transport buttons
@@ -2215,7 +2213,6 @@ class PythonicGUI:
     def _on_pattern_stop(self):
         """Stop pattern playback and reset to beginning"""
         self.pattern_manager.stop_playback()
-        self.frames_since_last_step = 0
         self._last_playing_pattern_idx = -1  # Reset tracking
         self._update_pattern_button_states()
         # Reset position display to beginning (step 0)
@@ -2530,8 +2527,9 @@ class PythonicGUI:
             # Calculate total samples needed
             # Use synth sample rate for offline rendering
             render_sr = self.synth_sample_rate
-            step_duration_samples = int((render_sr * self.pattern_manager.step_duration_ms) / 1000.0)
-            pattern_duration_samples = step_duration_samples * pattern.length
+            pm = self.pattern_manager
+            ticks = pattern.length * STEP_TICKS.get(pm.step_rate, 480)
+            pattern_duration_samples = int(np.ceil(ticks / (pm.bpm * 32.0 / render_sr)))
             
             # Add tail handling
             if tail_option.get() == "append":
@@ -2545,29 +2543,30 @@ class PythonicGUI:
             
             total_samples = pattern_duration_samples + tail_samples
             
-            # Render audio
-            audio_buffer = np.zeros((total_samples, 2), dtype=np.float32)
-            
             # Temporarily enable playback and render
-            old_playing_state = self.pattern_manager.is_playing
-            old_playing_idx = self.pattern_manager.playing_pattern_index
+            old_playing_state = pm.is_playing
+            old_playing_idx = pm.playing_pattern_index
             
-            self.pattern_manager.playing_pattern_index = pattern_idx
-            self.pattern_manager.is_playing = True
-            self.pattern_manager.play_position = 0
+            pm.playing_pattern_index = pattern_idx
+            pm.is_playing = True
+            pm.play_position = 0
             
-            sample_position = 0
-            for step_idx in range(pattern.length + (1 if tail_option.get() == "loop" else 0)):
-                # Trigger step
-                self._trigger_pattern_step(step_idx % pattern.length)
-                
-                # Render audio for this step
-                step_audio = self.synth.process_audio(step_duration_samples)
-                
-                end_pos = min(sample_position + step_duration_samples, total_samples)
-                chunk_size = end_pos - sample_position
-                audio_buffer[sample_position:end_pos] = step_audio[:chunk_size]
-                sample_position = end_pos
+            seq = StepSequencer(pm, render_sr)
+            seq.start(None, synth_clock=self.synth.sample_clock)
+            # Sequence one pass (two with "loop"), then let the tail ring out
+            seq_limit = pattern_duration_samples * (2 if tail_option.get() == "loop" else 1)
+            chunks = []
+            pos = 0
+            while pos < total_samples:
+                n = min(1024, total_samples - pos)
+                if pos < seq_limit:
+                    n = min(n, seq_limit - pos)
+                    events = seq.advance(n)
+                else:
+                    events = []
+                chunks.append(self.synth.process_audio_events(n, events))
+                pos += n
+            audio_buffer = np.concatenate(chunks, axis=0)
             
             # Restore playback state
             self.pattern_manager.is_playing = old_playing_state
@@ -2998,6 +2997,30 @@ class PythonicGUI:
                                 btn.config(bg=self.COLORS['highlight'])
                             else:
                                 btn.config(bg=self.COLORS['bg_light'])
+
+                    # Swing, fill rate and master volume are part of the sound
+                    if 'swing' in preset_data:
+                        self.pattern_manager.set_swing(float(preset_data['swing']))
+                        if hasattr(self, 'global_swing_slider'):
+                            self.global_swing_slider.set(int(round(self.pattern_manager.swing * 100)))
+                    if 'fill_rate' in preset_data:
+                        rate = float(preset_data['fill_rate'])
+                        self.pattern_manager.set_fill_rate(rate)
+                        if hasattr(self, 'fill_rate_buttons'):
+                            for r, btn in self.fill_rate_buttons:
+                                btn.config(bg=self.COLORS['highlight'] if r == round(rate)
+                                           else self.COLORS['bg_light'])
+                    if 'master_volume_db' in preset_data:
+                        self.synth.set_master_volume(float(preset_data['master_volume_db']))
+                        if hasattr(self, 'master_knob'):
+                            self.master_knob.set_value(self.synth.master_volume_db)
+                    for i, muted in enumerate(preset_data.get('mutes') or []):
+                        if i < len(self.synth.channels):
+                            self.synth.mute_channel(i, bool(muted))
+                            if hasattr(self, 'channel_buttons'):
+                                self.channel_buttons[i].set_muted(bool(muted))
+                            if hasattr(self, 'mute_buttons') and i < len(self.mute_buttons):
+                                self.mute_buttons[i].set_value(bool(muted))
                     
                     # Initialize morph endpoints from loaded state
                     # (mtpreset Morph block has Time/AB but we use the loaded
@@ -3191,7 +3214,6 @@ class PythonicGUI:
         selected_idx = self.pattern_manager.selected_pattern_index
         self.pattern_manager.stop_playback()  # Reset position
         self.pattern_manager.start_playback(selected_idx)
-        self.frames_since_last_step = 0
         self._last_playing_pattern_idx = selected_idx
         self._update_pattern_button_states()
         if hasattr(self, 'play_btn') and hasattr(self.play_btn, 'set_active'):
@@ -3646,12 +3668,10 @@ class PythonicGUI:
         def start_transport():
             selected_idx = self.pattern_manager.selected_pattern_index
             self.pattern_manager.start_playback(selected_idx)
-            self.frames_since_last_step = 0
 
         def stop_transport():
             if self.pattern_manager.is_playing:
                 self.pattern_manager.stop_playback()
-                self.frames_since_last_step = 0
 
         dialog = DrumGeneratorDialog(
             parent=self.root,
@@ -3667,7 +3687,6 @@ class PythonicGUI:
         # Restore transport state
         if was_playing:
             self.pattern_manager.start_playback(saved_pattern_idx)
-            self.frames_since_last_step = 0
             if hasattr(self, 'play_btn') and hasattr(self.play_btn, 'set_active'):
                 self.play_btn.set_active(True)
                 self.stop_btn.set_active(False)
@@ -4858,76 +4877,31 @@ class PythonicGUI:
                 if self.dropped_callback_count <= 3:
                     print(f"[Callback #{self.callback_count}] DROPPING audio processing to prevent cascade", flush=True)
         
-        # Update pattern playback position (always do this, even when dropping)
-        if self.pattern_manager.is_playing:
-            pattern_length = self.pattern_manager.get_playing_pattern().length
-            
-            # Convert frames to milliseconds for swing calculation
-            ms_per_frame = 1000.0 / self.sample_rate
-            old_time_ms = self.frames_since_last_step * ms_per_frame
-            self.frames_since_last_step += frames
-            new_time_ms = self.frames_since_last_step * ms_per_frame
-            
-            # Calculate pattern duration with swing (last step time + step duration)
-            pattern_duration_ms = self.pattern_manager.get_step_time_ms(pattern_length - 1) + self.pattern_manager.step_duration_ms
-            
-            # Check if pattern has finished first (before step changes)
-            pattern_finished = new_time_ms >= pattern_duration_ms
-            
-            if pattern_finished and not drop_this_callback:
-                # Pattern ended - check for chaining
-                advanced = self.pattern_manager.advance_to_next_pattern()
-                if advanced:
-                    # Switched to a new pattern - reset frame counter
-                    self.frames_since_last_step = 0
-                else:
-                    # Loop the current pattern - reset to start
-                    self.frames_since_last_step = new_time_ms - pattern_duration_ms
-                
-                # Update time for step calculation
-                new_time_ms = self.frames_since_last_step * ms_per_frame
-                pattern_length = self.pattern_manager.get_playing_pattern().length
-                
-                # Trigger step 0 of new/looped pattern
-                self._trigger_pattern_step(0)
-                self.pattern_manager.play_position = 0
-                
-                # Update position for UI thread
+        # Sample-accurate pattern sequencing
+        if self._resample_ratio == 1.0:
+            synth_frames = frames
+        else:
+            synth_frames = max(1, int(round(frames / self._resample_ratio)))
+        events = []
+        if self.sequencer is None:
+            self.sequencer = StepSequencer(self.pattern_manager, self.synth.sr)
+        pm = self.pattern_manager
+        if pm.is_playing:
+            generation = getattr(pm, 'playback_generation', 0)
+            if not self.sequencer.running or generation != self._seq_generation:
+                self._seq_generation = generation
+                self.sequencer.start(None, synth_clock=self.synth.sample_clock)
+            trigger_start = time.perf_counter()
+            events = self.sequencer.advance(synth_frames)
+            if drop_this_callback:
+                events = []
+            if events:
                 with self.position_lock:
-                    self.current_play_position = 0
-            elif not drop_this_callback:
-                # Check which steps we've crossed (accounting for swing)
-                # Find current step by checking swing-adjusted times
-                old_step = -1
-                new_step = -1
-                
-                for step_idx in range(pattern_length):
-                    step_time = self.pattern_manager.get_step_time_ms(step_idx)
-                    if step_time <= old_time_ms:
-                        old_step = step_idx
-                    if step_time <= new_time_ms:
-                        new_step = step_idx
-                
-                # Only trigger on step change
-                if new_step != old_step and new_step >= 0:
-                    trigger_start = time.perf_counter()
-                    
-                    # Update pattern manager position
-                    self.pattern_manager.play_position = new_step
-                    
-                    # Trigger channels at this step
-                    self._trigger_pattern_step(new_step)
-                    
-                    # Update position for UI thread (thread-safe)
-                    with self.position_lock:
-                        self.current_play_position = new_step
-                    
-                    trigger_time = (time.perf_counter() - trigger_start) * 1000  # ms
-        
-        # Process any pending fill triggers
-        if self.pending_fills and not drop_this_callback:
-            self._process_pending_fills(frames)
-        
+                    self.current_play_position = pm.play_position
+                trigger_time = (time.perf_counter() - trigger_start) * 1000  # ms
+        elif self.sequencer.running:
+            self.sequencer.stop()
+
         # Generate audio from synthesizer (skip if dropping)
         if drop_this_callback:
             # Return last good audio or silence
@@ -4940,10 +4914,9 @@ class PythonicGUI:
         process_start = time.perf_counter()
         # Synthesize at internal rate, then upsample if needed
         if self._resample_ratio == 1.0:
-            audio = self.synth.process_audio(frames)
+            audio = self.synth.process_audio_events(frames, events)
         else:
-            synth_frames = max(1, int(round(frames / self._resample_ratio)))
-            synth_audio = self.synth.process_audio(synth_frames)
+            synth_audio = self.synth.process_audio_events(synth_frames, events)
             audio = self._upsample_linear(synth_audio, synth_frames, frames)
         process_time = (time.perf_counter() - process_start) * 1000  # ms
         
@@ -5118,6 +5091,9 @@ class PythonicGUI:
         self._resample_ratio = self.sample_rate / self.synth_sample_rate
         # Reset resampling cache
         self._resample_out_frames = 0
+        # Sequencer timing depends on the synth rate; rebuild it (restarts in sync)
+        self.sequencer = None
+        self._seq_generation = -1
     
     def _upsample_linear(self, audio, in_frames, out_frames):
         """Upsample stereo audio using linear interpolation (lo-fi preserving)."""
@@ -5145,134 +5121,6 @@ class PythonicGUI:
         if self.ui_update_timer:
             self.root.after_cancel(self.ui_update_timer)
             self.ui_update_timer = None
-    
-    def _trigger_pattern_step(self, step_index):
-        """Trigger all active channels at a pattern step"""
-        pattern = self.pattern_manager.get_playing_pattern()
-        
-        for channel_id in range(self.pattern_manager.num_channels):
-            channel = pattern.get_channel(channel_id)
-            if channel:
-                step = channel.get_step(step_index)
-                
-                if step.trigger:
-                    drum_channel = self.synth.channels[channel_id]
-                    step_prob = step.probability  # Per-step probability (0-100)
-                    
-                    # Check probability (0-100, true random)
-                    if step_prob < 100:
-                        if random.randint(1, 100) > step_prob:
-                            continue  # Skip this trigger
-                    
-                    # Calculate velocity based on accent
-                    # Accent = 127, Normal = 64 (per spec)
-                    velocity = 127 if step.accent else 64
-                    
-                    # Check if substeps are defined
-                    if step.substeps and len(step.substeps) > 0:
-                        # Use substeps to determine which subdivisions to trigger
-                        self._schedule_substep_triggers(channel_id, step.substeps, velocity)
-                    else:
-                        # Normal single trigger at step start
-                        self.synth.trigger_drum(channel_id, velocity)
-                    
-                    # Handle fills if enabled (fills work normally with substeps)
-                    if step.fill:
-                        self._schedule_fill_triggers(channel_id, step.accent)
-    
-    def _schedule_substep_triggers(self, channel_id: int, substep_pattern: str, velocity: int):
-        """
-        Schedule substep triggers for a channel.
-        
-        Substeps divide a step into multiple subdivisions where each can be on or off.
-        Format: 'o' = trigger, '-' = no trigger
-        Examples: 'oo-' = 3 subdivisions, first two trigger
-                  'o-o-' = 4 subdivisions, alternating triggers
-        
-        Args:
-            channel_id: Channel to trigger
-            substep_pattern: String pattern like 'oo-' or 'o-o-'
-            velocity: MIDI velocity for all substep triggers
-        """
-        if not substep_pattern:
-            return
-        
-        num_substeps = len(substep_pattern)
-        if num_substeps == 0:
-            return
-        
-        step_duration_ms = self.pattern_manager.step_duration_ms
-        substep_interval_ms = step_duration_ms / num_substeps
-        substep_interval_frames = int((substep_interval_ms / 1000.0) * self.sample_rate)
-        
-        # Schedule triggers for each substep
-        for i, substep_char in enumerate(substep_pattern):
-            if substep_char == 'o' or substep_char == 'O':
-                # This substep should trigger
-                frames_until_trigger = substep_interval_frames * i
-                
-                if i == 0:
-                    # First substep: trigger immediately
-                    self.synth.trigger_drum(channel_id, velocity)
-                else:
-                    # Later substeps: schedule for future
-                    self.pending_fills.append((frames_until_trigger, channel_id, velocity))
-    
-    def _schedule_fill_triggers(self, channel_id: int, accented: bool):
-        """
-        Schedule fill triggers for a channel.
-        
-        Fills create rapid drum rolls at the fill rate (2-8 hits per step).
-        Velocities decay from the initial velocity to simulate natural rolling.
-        
-        Per spec:
-        - Accented fills: velocity 127 -> 64 over the roll
-        - Normal fills: velocity 64 -> 0 over the roll
-        """
-        fill_rate = self.pattern_manager.fill_rate
-        step_duration_ms = self.pattern_manager.step_duration_ms
-        
-        # Calculate time between fill hits in frames
-        hit_interval_ms = step_duration_ms / fill_rate
-        hit_interval_frames = int((hit_interval_ms / 1000.0) * self.sample_rate)
-        
-        # Determine velocity range
-        if accented:
-            start_velocity = 127
-            end_velocity = 64
-        else:
-            start_velocity = 64
-            end_velocity = 0
-        
-        # Schedule fill hits (skip first one since it's already triggered)
-        for i in range(1, fill_rate):
-            # Calculate velocity with linear decay
-            progress = i / (fill_rate - 1) if fill_rate > 1 else 0
-            velocity = int(start_velocity - (start_velocity - end_velocity) * progress)
-            velocity = max(1, velocity)  # Ensure at least velocity 1
-            
-            # Schedule the trigger (frames from now)
-            frames_until_trigger = hit_interval_frames * i
-            self.pending_fills.append((frames_until_trigger, channel_id, velocity))
-    
-    def _process_pending_fills(self, frames: int):
-        """
-        Process and trigger any pending fill hits that fall within this audio buffer.
-        Updates remaining frames for fills that haven't triggered yet.
-        """
-        triggered = []
-        remaining = []
-        
-        for frames_until, channel_id, velocity in self.pending_fills:
-            if frames_until <= frames:
-                # This fill should trigger in this buffer
-                self.synth.trigger_drum(channel_id, velocity)
-                triggered.append((frames_until, channel_id, velocity))
-            else:
-                # Still waiting - reduce frame count
-                remaining.append((frames_until - frames, channel_id, velocity))
-        
-        self.pending_fills = remaining
     
     def _start_ui_update_timer(self):
         """Start timer for UI updates (runs on main thread)"""

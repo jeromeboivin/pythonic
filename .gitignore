@@ -1,4 +1,4 @@
-# Byte-compiled / optimized / DLL files
+# Byte-compiled / optimized files
 __pycache__/
 *.py[cod]
 *$py.class
@@ -138,3 +138,8 @@ Thumbs.db
 /drum_patches_knn
 drum_dataset_cache.pt
 pattern_dataset_cache.pt
+# Local analysis toolkit
+/tools/local_analysis/
+
+# Local research material
+/audio_transfer/

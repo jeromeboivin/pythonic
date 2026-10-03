@@ -125,10 +125,9 @@ On first launch, Pythonic automatically creates:
 - macOS: `~/Documents/Pythonic Presets`
 - Linux: `~/Documents/Pythonic Presets`
 
-**Microtonic Compatibility**:
-- Pythonic can import `.mtpreset` files from Soniccharge Microtonic
-- Load drums and patterns directly from Microtonic presets
-- Provides an open-source alternative workflow for Microtonic users
+**Preset Compatibility**:
+- Pythonic can import `.mtpreset` presets and load and save `.mtdrum` drum patches
+- Load drums and patterns directly from these presets
 
 > **Note**: Pythonic uses its own synthesis engine. While it can read Microtonic presets, the resulting sounds may differ from the original due to differences in DSP implementation. Pythonic is an independent project and is not affiliated with, endorsed by, or sponsored by Sonic Charge or NuEdge Development. Microtonic™ is a trademark of Sonic Charge/NuEdge Development.
 

@@ -570,6 +570,8 @@ class PatternManager:
         self.play_position = 0
         self.current_step = 0
         self.is_playing = True
+        # Lets the audio thread's sequencer notice every (re)start
+        self.playback_generation = getattr(self, 'playback_generation', 0) + 1
 
     def stop_playback(self):
         """Stop playback"""

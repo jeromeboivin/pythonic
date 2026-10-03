@@ -64,6 +64,7 @@ def convert_drum_patch_data(patch: Dict) -> Dict:
         'osc_vel_sensitivity': patch.get('OscVel', 0.0) / 100.0,
         'noise_vel_sensitivity': patch.get('NVel', 0.0) / 100.0,
         'mod_vel_sensitivity': patch.get('ModVel', 0.0) / 100.0,
+        **({'choke_enabled': bool(patch['Choke'])} if 'Choke' in patch else {}),
     }
 
 
@@ -84,9 +85,8 @@ def channel_to_raw_patch(channel) -> Dict:
         'OscFreq': channel.oscillator.frequency,
         'OscDcy': channel.osc_envelope.decay_ms,
         'ModMode': mod_mode_names[channel.oscillator.pitch_mod_mode.value],
-        'ModRate': (channel.oscillator.pitch_mod_rate * 1000.0
-                    if channel.oscillator.pitch_mod_mode.value == 0
-                    else channel.oscillator.pitch_mod_rate),
+        # The channel stores the rate in display units (ms for Decay, Hz otherwise)
+        'ModRate': channel.oscillator.pitch_mod_rate,
         'ModAmt': channel.oscillator.pitch_mod_amount,
         'NFilMod': filter_mode_names[channel.noise_gen.filter_mode.value],
         'NFilFrq': channel.noise_gen.filter_frequency,
@@ -114,35 +114,34 @@ def apply_drum_patch_to_channel(channel, data: Dict):
     from .noise import NoiseFilterMode, NoiseEnvelopeMode
 
     channel.name = data.get('name', 'Untitled')
-    channel.pitch_semitones = data.get('pitch_semitones', 0.0)
+    channel.set_pitch_semitones(data.get('pitch_semitones', 0.0))
 
-    channel.oscillator.frequency = data.get('osc_frequency', 440.0)
-    waveform_int = data.get('osc_waveform', 0)
-    channel.oscillator.waveform = WaveformType(waveform_int)
-
-    channel.osc_envelope.set_attack(data.get('osc_attack', 0.0) * 1000.0)
-    channel.osc_envelope.set_decay(data.get('osc_decay', 0.316) * 1000.0)
+    channel.set_osc_frequency(data.get('osc_frequency', 440.0))
+    channel.set_osc_waveform(WaveformType(data.get('osc_waveform', 0)))
+    channel.set_osc_attack(data.get('osc_attack', 0.0) * 1000.0)
+    channel.set_osc_decay(data.get('osc_decay', 0.316) * 1000.0)
 
     pitch_mod_int = data.get('pitch_mod_mode', 0)
-    channel.oscillator.pitch_mod_mode = PitchModMode(pitch_mod_int)
-    channel.oscillator.pitch_mod_amount = data.get('pitch_mod_amount', 0.0)
-    channel.oscillator.pitch_mod_rate = data.get('pitch_mod_rate', 0.1)
+    channel.set_pitch_mod_mode(PitchModMode(pitch_mod_int))
+    channel.set_pitch_mod_amount(data.get('pitch_mod_amount', 0.0))
+    # convert_drum_patch_data gives the Decay rate in seconds; the channel uses ms
+    rate = data.get('pitch_mod_rate', 0.1)
+    if pitch_mod_int == 0:
+        rate = rate * 1000.0
+    channel.set_pitch_mod_rate(rate)
 
-    filter_mode_int = data.get('noise_filter_mode', 0)
-    channel.noise_gen.filter_mode = NoiseFilterMode(filter_mode_int)
-    channel.noise_gen.filter_frequency = data.get('noise_filter_freq', 20000.0)
-    channel.noise_gen.filter_q = data.get('noise_filter_q', 0.707)
-    channel.noise_gen.stereo = data.get('noise_stereo', False)
+    channel.set_noise_filter_mode(NoiseFilterMode(data.get('noise_filter_mode', 0)))
+    channel.set_noise_filter_freq(data.get('noise_filter_freq', 20000.0))
+    channel.set_noise_filter_q(data.get('noise_filter_q', 0.707))
+    channel.set_noise_stereo(data.get('noise_stereo', False))
+    channel.set_noise_envelope_mode(NoiseEnvelopeMode(data.get('noise_envelope_mode', 0)))
+    channel.set_noise_attack(data.get('noise_attack', 0.0) * 1000.0)
+    channel.set_noise_decay(data.get('noise_decay', 0.316) * 1000.0)
 
-    envelope_mode_int = data.get('noise_envelope_mode', 0)
-    channel.noise_gen.envelope_mode = NoiseEnvelopeMode(envelope_mode_int)
-    channel.noise_gen.set_attack(data.get('noise_attack', 0.0) * 1000.0)
-    channel.noise_gen.set_decay(data.get('noise_decay', 0.316) * 1000.0)
-
-    channel.osc_noise_mix = data.get('osc_noise_mix', 0.5)
-    channel.distortion = data.get('distortion', 0.0)
-    channel.eq_frequency = data.get('eq_frequency', 1000.0)
-    channel.eq_gain_db = data.get('eq_gain_db', 0.0)
+    channel.set_osc_noise_mix(data.get('osc_noise_mix', 0.5))
+    channel.set_distortion(data.get('distortion', 0.0))
+    channel.set_eq_frequency(data.get('eq_frequency', 1000.0))
+    channel.set_eq_gain(data.get('eq_gain_db', 0.0))
     channel.level_db = data.get('level_db', 0.0)
     channel.pan = data.get('pan', 0.0)
     channel.output_pair = data.get('output_pair', 'A')
@@ -150,12 +149,8 @@ def apply_drum_patch_to_channel(channel, data: Dict):
     channel.osc_vel_sensitivity = data.get('osc_vel_sensitivity', 0.0)
     channel.noise_vel_sensitivity = data.get('noise_vel_sensitivity', 0.0)
     channel.mod_vel_sensitivity = data.get('mod_vel_sensitivity', 0.0)
-
-    channel.eq_filter_l.set_frequency(channel.eq_frequency)
-    channel.eq_filter_l.set_gain(channel.eq_gain_db)
-    channel.eq_filter_r.set_frequency(channel.eq_frequency)
-    channel.eq_filter_r.set_gain(channel.eq_gain_db)
-
+    if 'choke_enabled' in data:
+        channel.choke_enabled = bool(data['choke_enabled'])
 
 class PythonicPresetParser:
     """
@@ -447,13 +442,13 @@ class PythonicPresetParser:
     def convert_to_synth_format(self, preset_data: Dict) -> Dict:
         result = {
             'name': preset_data.get('Name', 'Untitled'),
-            'master_volume_db': preset_data.get('MastVol', 0.0),
-            'tempo': preset_data.get('Tempo', 120),
+            'master_volume_db': self._to_float(preset_data.get('MastVol', 0.0)),
+            'tempo': self._to_float(preset_data.get('Tempo', 120), 120.0),
             'step_rate': preset_data.get('StepRate', '1/16'),
-            'swing': preset_data.get('Swing', 0.5),  # 0.5 = no swing, range 0-1
-            'fill_rate': preset_data.get('FillRate', 4.0),
+            'swing': self._to_swing_value(preset_data.get('Swing', 0.0)),
+            'fill_rate': self._to_float(preset_data.get('FillRate', 4.0), 4.0),
             'drums': [],
-            'mutes': preset_data.get('Mutes', [False] * 8),
+            'mutes': [self._to_bool(mute) for mute in preset_data.get('Mutes', [False] * 8)],
             'patterns': None,
             'morph_position': None,
         }
@@ -504,7 +499,7 @@ class PythonicPresetParser:
             'noise_filter_mode': self.FILTER_MODE_MAP.get(patch.get('NFilMod', 'LP'), 0),
             'noise_filter_freq': self._to_float(patch.get('NFilFrq', 20000.0)),
             'noise_filter_q': self._to_float(patch.get('NFilQ', 0.707)),
-            'noise_stereo': patch.get('NStereo', False),
+            'noise_stereo': self._to_bool(patch.get('NStereo', False)),
             'noise_envelope_mode': self.ENV_MODE_MAP.get(patch.get('NEnvMod', 'Exp'), 0),
             'noise_attack': self._to_float(patch.get('NEnvAtk', 0.0)),
             'noise_decay': self._to_float(patch.get('NEnvDcy', 316.0)),
@@ -518,6 +513,7 @@ class PythonicPresetParser:
             'osc_vel_sensitivity': self._to_float(patch.get('OscVel', 0.0)) / 100.0,
             'noise_vel_sensitivity': self._to_float(patch.get('NVel', 0.0)) / 100.0,
             'mod_vel_sensitivity': self._to_float(patch.get('ModVel', 0.0)) / 100.0,
+            'choke_enabled': self._to_bool(patch.get('Choke', False)),
         }
 
     @staticmethod
@@ -532,6 +528,30 @@ class PythonicPresetParser:
             if match:
                 return float(match.group(1))
         return float(default)
+
+    @classmethod
+    def _to_swing_value(cls, val, default=0.0) -> float:
+        """Convert preset/GUI swing values to PatternManager's 0-1 range."""
+        if isinstance(val, str) and '%' in val:
+            return max(0.0, min(1.0, cls._to_float(val, default) / 100.0))
+
+        numeric = cls._to_float(val, default)
+        if numeric > 1.0:
+            numeric /= 100.0
+        return max(0.0, min(1.0, numeric))
+
+    @staticmethod
+    def _to_bool(val, default=False) -> bool:
+        """Convert On/Off style fields to bool."""
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, str):
+            normalized = val.strip().lower()
+            if normalized in {'on', 'true', 'yes', '1'}:
+                return True
+            if normalized in {'off', 'false', 'no', '0'}:
+                return False
+        return bool(default)
 
     def _default_channel(self) -> Dict:
         return {
@@ -680,6 +700,8 @@ class PresetManager:
         
         # Parse the drum patch file
         drum_data = self.drum_parser.parse_file(filepath)
+        # Patches without a Name line are named after the file
+        drum_data.setdefault('Name', os.path.splitext(os.path.basename(filepath))[0])
         
         # Convert to channel format
         channel_data = self._convert_drum_patch_data(drum_data)
@@ -748,7 +770,12 @@ class PresetManager:
 
 class DrumPatchParser:
     """
-    Parser for .mtdrum drum patch files
+    Parser for .mtdrum drum patch files.
+
+    Reads every .mtdrum format version: V1 ``{ Key=value }``, V2 ``{ Key = value }``
+    and V3 ``{ Key: value }``, with bare or quoted values. Numbers (with or without a unit, including
+    ``inf``) become floats, Mix becomes an (osc, noise) tuple and On/Off,
+    true/false become booleans.
     """
 
     WAVEFORM_MAP = WAVEFORM_MAP
@@ -756,246 +783,88 @@ class DrumPatchParser:
     FILTER_MODE_MAP = FILTER_MODE_MAP
     ENV_MODE_MAP = ENV_MODE_MAP
 
-    def __init__(self):
-        self.content = ""
-        self.pos = 0
+    TEXT_KEYS = {'Name', 'Path'}
+    _HEADER = re.compile(r'DrumPatchV\d\s*[=:]\s*\{', re.IGNORECASE)
+    _ENTRY = re.compile(r'([A-Za-z][\w-]*)\s*[=:]\s*(.*?)\s*$')
+    _NUMBER = re.compile(r'([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?|[+-]?inf)\s*(?:Hz|ms|dB|sm|%)?$',
+                         re.IGNORECASE)
 
     def parse_file(self, filepath: str) -> Dict[str, Any]:
-        """Parse a .mtdrum file and return drum patch parameters"""
-        with open(filepath, 'r', encoding='utf-8') as f:
-            self.content = f.read()
-        self.pos = 0
-        return self._parse_drum_patch()
+        """Parse a .mtdrum file and return the drum patch parameters"""
+        with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+            return self.parse_string(f.read())
 
-    def _skip_whitespace(self):
-        """Skip whitespace and comments"""
-        while self.pos < len(self.content):
-            if self.content[self.pos].isspace():
-                self.pos += 1
-            elif self.content[self.pos:self.pos+2] == '//':
-                # Single-line comment
-                while self.pos < len(self.content) and self.content[self.pos] != '\n':
-                    self.pos += 1
-            elif self.content[self.pos:self.pos+2] == '/*':
-                # Block comment
-                self.pos += 2
-                while self.pos < len(self.content) - 1:
-                    if self.content[self.pos:self.pos+2] == '*/':
-                        self.pos += 2
-                        break
-                    self.pos += 1
-            else:
-                break
-
-    def _parse_drum_patch(self) -> Dict[str, Any]:
-        """Parse the drum patch root structure"""
-        self._skip_whitespace()
-        
-        # Find "DrumPatchV1=" in the content
-        remaining = self.content[self.pos:]
-        match = re.search(r'DrumPatchV1\s*=', remaining, re.IGNORECASE)
-        if not match:
-            raise ValueError("Invalid drum patch format: expected DrumPatchV1")
-        
-        self.pos += match.end()
-        self._skip_whitespace()
-        return self._parse_block()
-
-    def _parse_block(self) -> Dict[str, Any]:
-        """Parse a block enclosed in braces"""
-        self._skip_whitespace()
-        if self.content[self.pos] != '{':
-            raise ValueError(f"Expected '{{' at position {self.pos}")
-        self.pos += 1
+    def parse_string(self, content: str) -> Dict[str, Any]:
+        header = self._HEADER.search(content)
+        if not header:
+            raise ValueError("Invalid drum patch format: expected DrumPatchV1/V2/V3")
         result = {}
-        
-        while True:
-            self._skip_whitespace()
-            if self.pos >= len(self.content):
+        for line in content[header.end():].splitlines():
+            line = line.strip()
+            if line.startswith('}'):
                 break
-            if self.content[self.pos] == '}':
-                self.pos += 1
-                break
-            
-            key = self._parse_key()
-            self._skip_whitespace()
-            
-            if self.content[self.pos] == '=':
-                self.pos += 1
-                self._skip_whitespace()
-                result[key] = self._parse_value()
-            else:
-                raise ValueError(f"Expected '=' after key '{key}' at position {self.pos}")
-        
+            if not line or line.startswith('//'):
+                continue
+            entry = self._ENTRY.match(line)
+            if not entry:
+                raise ValueError(f"Invalid drum patch line: {line!r}")
+            key, text = entry.groups()
+            result[key] = self._parse_value(key, text)
         return result
 
-    def _parse_key(self) -> str:
-        """Parse a parameter key"""
-        self._skip_whitespace()
-        start = self.pos
-        while self.pos < len(self.content) and (self.content[self.pos].isalnum() or self.content[self.pos] in '_-'):
-            self.pos += 1
-        return self.content[start:self.pos]
-
-    def _parse_value(self) -> Any:
-        """Parse a parameter value"""
-        self._skip_whitespace()
-        
-        if self.content[self.pos] == '"':
-            return self._parse_string()
-        elif self.content[self.pos:self.pos+2] == 'On' and (self.pos + 2 >= len(self.content) or not self.content[self.pos+2].isalnum()):
-            self.pos += 2
+    def _parse_value(self, key: str, text: str) -> Any:
+        if len(text) >= 2 and text[0] == '"' and text[-1] == '"':
+            text = text[1:-1]
+        if key in self.TEXT_KEYS:
+            return text
+        lowered = text.lower()
+        if lowered in ('on', 'true'):
             return True
-        elif self.content[self.pos:self.pos+3] == 'Off' and (self.pos + 3 >= len(self.content) or not self.content[self.pos+3].isalnum()):
-            self.pos += 3
+        if lowered in ('off', 'false'):
             return False
-        elif self.content[self.pos:self.pos+4] == 'true':
-            self.pos += 4
-            return True
-        elif self.content[self.pos:self.pos+5] == 'false':
-            self.pos += 5
-            return False
-        else:
-            return self._parse_number_or_identifier()
-
-    def _parse_string(self) -> str:
-        """Parse a quoted string"""
-        if self.content[self.pos] != '"':
-            raise ValueError(f'Expected \'"\' at position {self.pos}')
-        self.pos += 1
-        start = self.pos
-        while self.pos < len(self.content) and self.content[self.pos] != '"':
-            if self.content[self.pos] == '\\':
-                self.pos += 2
-            else:
-                self.pos += 1
-        result = self.content[start:self.pos]
-        self.pos += 1
-        return result
-
-    def _parse_number_or_identifier(self) -> Any:
-        """Parse a number with optional unit or identifier"""
-        self._skip_whitespace()
-        start = self.pos
-        
-        # Handle sign
-        if self.pos < len(self.content) and self.content[self.pos] in '-+':
-            self.pos += 1
-        
-        # Parse numeric part
-        while self.pos < len(self.content) and (self.content[self.pos].isdigit() or self.content[self.pos] == '.'):
-            self.pos += 1
-        
-        value_str = self.content[start:self.pos].strip()
-        
-        # Skip inline whitespace before checking for units
-        while self.pos < len(self.content) and self.content[self.pos] in ' \t':
-            self.pos += 1
-        
-        # Check for Mix format: "50.00/50.00"
-        if self.pos < len(self.content) and self.content[self.pos] == '/':
-            self.pos += 1
-            while self.pos < len(self.content) and self.content[self.pos] in ' \t':
-                self.pos += 1
-            
-            second_start = self.pos
-            if self.pos < len(self.content) and self.content[self.pos] in '-+':
-                self.pos += 1
-            while self.pos < len(self.content) and (self.content[self.pos].isdigit() or self.content[self.pos] == '.'):
-                self.pos += 1
-            
-            second_value_str = self.content[second_start:self.pos].strip()
-            # Return as tuple for Mix parameter
-            return (float(value_str), float(second_value_str))
-        
-        # Check for unit suffix (Hz, ms, dB, sm, %)
-        unit_start = self.pos
-        while self.pos < len(self.content) and (self.content[self.pos].isalpha() or self.content[self.pos] in '%'):
-            self.pos += 1
-        unit = self.content[unit_start:self.pos]
-        
-        # Try to parse as number
-        try:
-            if '.' in value_str:
-                return float(value_str)
-            else:
-                return int(value_str)
-        except ValueError:
-            # If not a number, return as identifier (e.g., waveform name)
-            # Continue parsing identifier
-            while self.pos < len(self.content) and (self.content[self.pos].isalnum() or self.content[self.pos] in '_-'):
-                self.pos += 1
-            return self.content[start:self.pos].strip()
+        if '/' in text:
+            osc, noise = text.split('/', 1)
+            try:
+                return (float(osc), float(noise))
+            except ValueError:
+                return text
+        number = self._NUMBER.match(text)
+        return float(number.group(1)) if number else text
 
 
 class DrumPatchWriter:
     """
-    Writer for .mtdrum drum patch files
+    Writer for .mtdrum drum patch files (format version 3, quoted values at
+    full precision).
     """
 
-    @staticmethod
-    def format_value(key: str, value: Any) -> str:
-        """Format a value based on the parameter type"""
-        if isinstance(value, bool):
-            return "On" if value else "Off"
-        elif isinstance(value, str):
-            # Don't quote single-letter outputs or waveform/mode names
-            if key in ['Output'] or value in ['Sine', 'Triangle', 'Saw', 'Decay', 'Sine', 'Noise', 'LP', 'BP', 'HP', 'Exp', 'Linear', 'Mod']:
-                return value
-            return f'"{value}"'
-        elif isinstance(value, tuple) and len(value) == 2:
-            # Mix parameter format
-            return f"{value[0]:.8f}/{value[1]:.8f}"
-        elif isinstance(value, float):
-            # Determine unit based on key
-            if key in ['OscFreq', 'NFilFrq', 'EQFreq']:
-                return f"{value:.8f}Hz"
-            elif key in ['OscDcy', 'ModRate', 'NEnvAtk', 'NEnvDcy']:
-                return f"{value:.8f}ms"
-            elif key in ['EQGain', 'Level']:
-                sign = '+' if value >= 0 else ''
-                return f"{sign}{value:.8f}dB"
-            elif key in ['ModAmt']:
-                sign = '+' if value >= 0 else ''
-                return f"{sign}{value:.8f}sm"
-            elif key in ['OscVel', 'NVel', 'ModVel']:
-                return f"{value:.8f}%"
-            else:
-                return f"{value:.8f}"
-        elif isinstance(value, int):
-            return str(value)
-        else:
-            return str(value)
+    UNITS = {
+        'OscFreq': ' Hz', 'OscAtk': ' ms', 'OscDcy': ' ms', 'ModAmt': ' sm',
+        'NFilFrq': ' Hz', 'NEnvAtk': ' ms', 'NEnvDcy': ' ms', 'EQFreq': ' Hz',
+        'EQGain': ' dB', 'Level': ' dB', 'OscVel': '%', 'NVel': '%', 'ModVel': '%',
+    }
 
     @staticmethod
-    def write_drum_patch(filepath: str, channel, name: Optional[str] = None):
-        """Write a drum channel to a .mtdrum file"""
-        if name is None:
-            name = channel.name
-        
-        # Map internal values to drum patch format
-        waveform_names = ['Sine', 'Triangle', 'Saw']
-        mod_mode_names = ['Decay', 'Sine', 'Noise']
-        filter_mode_names = ['LP', 'BP', 'HP']
-        env_mode_names = ['Exp', 'Linear', 'Mod']
-        
-        # Build drum patch data
-        data = {
-            'Name': name,
-            'Modified': True,
-            'OscWave': waveform_names[channel.oscillator.waveform.value],
-            'OscFreq': channel.oscillator.frequency,
-            'OscDcy': channel.osc_envelope.decay_ms,  # already in ms
-            'ModMode': mod_mode_names[channel.oscillator.pitch_mod_mode.value],
-            'ModRate': channel.oscillator.pitch_mod_rate * 1000.0 if channel.oscillator.pitch_mod_mode.value == 0 else channel.oscillator.pitch_mod_rate,
-            'ModAmt': channel.oscillator.pitch_mod_amount,
-            'NFilMod': filter_mode_names[channel.noise_gen.filter_mode.value],
-            'NFilFrq': channel.noise_gen.filter_frequency,
-            'NFilQ': channel.noise_gen.filter_q,
-            'NStereo': channel.noise_gen.stereo,
-            'NEnvMod': env_mode_names[channel.noise_gen.envelope_mode.value],
-            'NEnvAtk': channel.noise_gen.attack_ms,  # already in ms
-            'NEnvDcy': channel.noise_gen.decay_ms,  # already in ms
+    def patch_from_channel(channel, name: Optional[str] = None) -> Dict[str, Any]:
+        """Display values of a drum channel, keyed and ordered as in a .mtdrum file."""
+        osc, noise = channel.oscillator, channel.noise_gen
+        return {
+            'Name': channel.name if name is None else name,
+            'Modified': False,
+            'OscWave': ['Sine', 'Triangle', 'Saw'][osc.waveform.value],
+            'OscFreq': osc.frequency,
+            'OscAtk': channel.osc_envelope.attack_ms,
+            'OscDcy': channel.osc_envelope.decay_ms,
+            'ModMode': ['Decay', 'Sine', 'Noise'][osc.pitch_mod_mode.value],
+            'ModRate': osc.pitch_mod_rate,  # ms (Decay) or Hz, as displayed
+            'ModAmt': osc.pitch_mod_amount,
+            'NFilMod': ['LP', 'BP', 'HP'][noise.filter_mode.value],
+            'NFilFrq': noise.filter_frequency,
+            'NFilQ': noise.filter_q,
+            'NStereo': noise.stereo,
+            'NEnvMod': ['Exp', 'Linear', 'Mod'][noise.envelope_mode.value],
+            'NEnvAtk': noise.attack_ms,
+            'NEnvDcy': noise.decay_ms,
             'Mix': (channel.osc_noise_mix * 100.0, (1.0 - channel.osc_noise_mix) * 100.0),
             'DistAmt': channel.distortion * 100.0,
             'EQFreq': channel.eq_frequency,
@@ -1003,15 +872,48 @@ class DrumPatchWriter:
             'Level': channel.level_db,
             'Pan': channel.pan,
             'Output': channel.output_pair,
+            'Choke': channel.choke_enabled,
             'OscVel': channel.osc_vel_sensitivity * 100.0,
             'NVel': channel.noise_vel_sensitivity * 100.0,
             'ModVel': channel.mod_vel_sensitivity * 100.0,
         }
-        
-        # Write to file
+
+    @staticmethod
+    def _number(value) -> str:
+        """Shortest round-trip decimal."""
+        value = float(value)
+        if np.isinf(value):
+            return 'inf' if value > 0 else '-inf'
+        return np.format_float_positional(value, unique=True, trim='0')
+
+    @classmethod
+    def format_value(cls, key: str, value: Any, patch: Optional[Dict[str, Any]] = None) -> str:
+        """Format one patch value (without the surrounding quotes)."""
+        if isinstance(value, bool):
+            return 'On' if value else 'Off'
+        if isinstance(value, str):
+            return value.replace('"', "'")
+        if isinstance(value, (tuple, list)):
+            return f'{cls._number(value[0])} / {cls._number(value[1])}'
+        if key == 'ModRate':
+            decay = (patch or {}).get('ModMode', 'Decay') == 'Decay'
+            unit = ' ms' if decay or np.isinf(float(value)) else ' Hz'
+            return cls._number(value) + unit
+        return cls._number(value) + cls.UNITS.get(key, '')
+
+    @classmethod
+    def format_patch(cls, patch: Dict[str, Any]) -> str:
+        lines = ['MicrotonicDrumPatchV3: {']
+        for key, value in patch.items():
+            if key == 'Modified':
+                lines.append(f'\t{key}: {"true" if value else "false"}')
+            else:
+                lines.append(f'\t{key}: "{cls.format_value(key, value, patch)}"')
+        lines.append('}')
+        return '\n'.join(lines) + '\n'
+
+    @classmethod
+    def write_drum_patch(cls, filepath: str, channel, name: Optional[str] = None):
+        """Write a drum channel to a .mtdrum file"""
         with open(filepath, 'w', encoding='utf-8') as f:
-            f.write('DrumPatchV1={\n')
-            for key, value in data.items():
-                formatted_value = DrumPatchWriter.format_value(key, value)
-                f.write(f'\t{key}={formatted_value}\n')
-            f.write('}\n')
+            f.write(cls.format_patch(cls.patch_from_channel(channel, name)))

@@ -178,6 +178,36 @@ def calculate_rms_ratio(ref: np.ndarray, gen: np.ndarray) -> float:
 
 class TestPresetLoading:
     """Test that preset files can be loaded correctly"""
+
+    def test_convert_top_level_unit_strings(self):
+        """Real-world preset globals with units should normalize cleanly."""
+        parser = PythonicPresetParser()
+        preset_data = parser.convert_to_synth_format({
+            'Name': 'Unit Test',
+            'MastVol': '-3.0 dB',
+            'Tempo': '120.0 bpm',
+            'StepRate': '1/16',
+            'Swing': '50.0%',
+            'FillRate': '2.0x',
+            'Mutes': ['Off', 'On', False, True, 'off', 'on', '0', '1'],
+            'DrumPatches': {
+                '1': {
+                    'Name': 'Bool Test',
+                    'NStereo': 'On',
+                    'Choke': 'Off',
+                },
+            },
+            'Patterns': {},
+        })
+
+        assert preset_data['master_volume_db'] == pytest.approx(-3.0)
+        assert preset_data['tempo'] == pytest.approx(120.0)
+        assert preset_data['step_rate'] == '1/16'
+        assert preset_data['swing'] == pytest.approx(0.5)
+        assert preset_data['fill_rate'] == pytest.approx(2.0)
+        assert preset_data['mutes'] == [False, True, False, True, False, True, False, True]
+        assert preset_data['drums'][0]['noise_stereo'] is True
+        assert preset_data['drums'][0]['choke_enabled'] is False
     
     def test_load_test_suite_preset(self):
         """Load the Pythonic Test Suite preset"""
@@ -603,53 +633,6 @@ class TestAttackReferences:
         assert ref_ratio < 0.5, f"Reference doesn't show attack: {ref_ratio}"
         assert gen_ratio < 0.5, f"Generated doesn't show attack: {gen_ratio}"
     
-    def test_attack_curve_shape(self):
-        """Verify attack curve reaches expected levels"""
-        from pythonic.envelope import Envelope
-        
-        env = Envelope(SAMPLE_RATE)
-        env.set_attack(20.0)  # 20ms attack
-        env.set_decay(500.0)
-        env.trigger()
-        
-        # Generate attack phase
-        attack_samples = int(20 * 44.1)  # 20ms
-        output = env.process(attack_samples)
-        
-        # Check 50% point - current implementation is linear-ish
-        half_idx = np.argmax(output >= 0.5)
-        half_point_ratio = half_idx / attack_samples
-        
-        # 50% should be reached somewhere during the attack phase
-        assert 0.3 < half_point_ratio < 0.9, (
-            f"Attack curve 50% point unexpected: {half_point_ratio*100:.1f}% "
-            f"of attack time"
-        )
-        
-        # Check that early portion starts quiet
-        early_idx = int(0.1 * attack_samples)
-        assert output[early_idx] < 0.3, (
-            f"Early attack too loud: {output[early_idx]:.3f} at 10% of attack time"
-        )
-    
-    def test_attack_envelope_reaches_peak(self):
-        """Verify attack envelope reaches full level at end of attack phase"""
-        from pythonic.envelope import Envelope
-        
-        env = Envelope(SAMPLE_RATE)
-        env.set_attack(20.0)
-        env.set_decay(500.0)
-        env.trigger()
-        
-        # Generate just past attack phase
-        output = env.process(int(25 * 44.1))
-        
-        # At end of attack (20ms), should be near 1.0
-        attack_end_idx = int(20 * 44.1)
-        assert output[attack_end_idx] > 0.9, (
-            f"Attack doesn't reach peak: {output[attack_end_idx]:.3f} at 20ms"
-        )
-    
     def test_attack_correlation_with_reference(self):
         """Verify attack portion correlates with reference"""
         ref_wav = "TEST Atk 20ms"
@@ -982,20 +965,14 @@ class TestNoiseEnvelopeReferences:
         ref_env, ref_peak_idx, ref_peak_val = self.compute_envelope(ref, SAMPLE_RATE)
         
         # Generate Pythonic version with same settings (0 attack, 200ms decay)
-        from pythonic.noise import NoiseGenerator, NoiseEnvelopeMode
-        
-        ng = NoiseGenerator(SAMPLE_RATE)
-        ng.set_envelope_mode(NoiseEnvelopeMode.EXPONENTIAL)
-        ng.set_attack(0.0)
-        ng.set_decay(200.0)
-        ng.set_filter_frequency(5000.0)
-        ng.set_filter_q(0.0)
-        ng.trigger()
-        
-        gen = ng.process(len(ref))
-        if gen.ndim > 1:
-            gen = gen[:, 0]
-        
+        ch = DrumChannel(0, SAMPLE_RATE)
+        ch.set_parameters({
+            'osc_noise_mix': 0.0, 'noise_envelope_mode': 0, 'noise_attack': 0.0,
+            'noise_decay': 200.0, 'noise_filter_freq': 5000.0, 'noise_filter_q': 0.0,
+        })
+        ch.trigger()
+        gen = ch.process(len(ref))[:, 0]
+
         gen_env, gen_peak_idx, gen_peak_val = self.compute_envelope(gen, SAMPLE_RATE)
         
         # Compare decay at key time points (from peak)

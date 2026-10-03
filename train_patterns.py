@@ -2,7 +2,7 @@
 # # Drum Pattern CVAE — Training Script
 #
 # Trains a CVAE to generate 8-channel × 16-step drum patterns (triggers,
-# accents, fills) from the MicrotonicPatternarium dataset (~29k presets,
+# accents, fills) from the Patternarium dataset (~29k presets,
 # 12 patterns each → up to ~348k samples).
 #
 # The model is **conditioned on a kit fingerprint** — a compact summary of the
@@ -26,9 +26,8 @@
 import os
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-PATTERNARIUM_DIR = os.path.expanduser(
-    "~/Documents/dev/MicrotonicPatternarium/patterns"
-)
+# Set PATTERNARIUM_DIR to the Patternarium "patterns" folder (contains gen_0*/)
+PATTERNARIUM_DIR = os.path.expanduser(os.environ.get("PATTERNARIUM_DIR", "./patternarium/patterns"))
 DRIVE_DIR  = "./drum_patterns"
 CACHE_PATH = os.path.join(DRIVE_DIR, "pattern_dataset_cache.pt")
 BEST_CKPT  = os.path.join(DRIVE_DIR, "pattern_cvae_best.pt")

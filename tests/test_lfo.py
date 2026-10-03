@@ -723,6 +723,8 @@ class TestAllModTargetsAudible:
         ch.delay_feedback = 0.3
         ch.delay_mix = 0.3
         ch.distortion = 0.3
+        # Pitch-mod rate is only audible with a non-zero amount
+        ch.set_pitch_mod_amount(12.0)
 
         # Determine depth from range table if not given
         # depth is now a percentage (0-100) scaled by target's max range
@@ -754,6 +756,7 @@ class TestAllModTargetsAudible:
         ch.delay_feedback = 0.3
         ch.delay_mix = 0.3
         ch.distortion = 0.3
+        ch.set_pitch_mod_amount(12.0)
         return ch
 
     def _audio_differs(self, target, depth=None, blocks=4):
@@ -832,7 +835,8 @@ class TestAllModTargetsAudible:
         assert self._audio_differs(ModTarget.REVERB_WIDTH)
 
     def test_delay_feedback(self):
-        assert self._audio_differs(ModTarget.DELAY_FEEDBACK)
+        # Feedback is only heard from the second echo on
+        assert self._audio_differs(ModTarget.DELAY_FEEDBACK, blocks=200)
 
     def test_delay_mix(self):
         assert self._audio_differs(ModTarget.DELAY_MIX)

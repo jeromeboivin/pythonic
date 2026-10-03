@@ -209,9 +209,8 @@ def serialize_pattern(pattern, mute_mask=None) -> bytes:
     - Each step stores trigger, accent, fill info
     - We encode as: 8 channels × 16 steps, packed as nibbles or bytes
     
-    Since the exact PO-32 pattern binary format is proprietary and not
-    fully reverse-engineered, we use a best-effort encoding based on
-    the observed 210-byte structure from reference files.
+    The exact PO-32 pattern format is not documented, so we use a
+    best-effort encoding based on the 210-byte structure of reference files.
     
     Known structure from reference analysis:
     - Byte 0: pattern number (prefix, added separately)
@@ -283,8 +282,7 @@ def build_state_data(pattern_manager=None) -> bytes:
     """Build state TLV data from pattern manager settings.
     
     State data contains global settings like tempo, swing, step rate, etc.
-    This is a 37-byte block. The exact format is partially known from
-    reverse engineering.
+    This is a 37-byte block whose exact format is only partially known.
     """
     # For now, use the default state (all zeros = factory defaults)
     # The PO-32 will use its own tempo/swing settings

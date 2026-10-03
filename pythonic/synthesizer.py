@@ -73,6 +73,12 @@ class PythonicSynthesizer:
         
         # Choke group tracking
         self._choke_group: List[int] = []
+
+        # Sample clock (samples rendered) and per-channel trigger stamps, used
+        # for choke priority: when two choked channels trigger at the same
+        # time, only the lower channel number is heard.
+        self.sample_clock = 0
+        self._trigger_clock = [-1] * self.NUM_CHANNELS
         
         # Initialize with factory presets
         self._init_factory_sounds()
@@ -197,16 +203,34 @@ class PythonicSynthesizer:
             
             # Handle choke groups
             if channel.choke_enabled:
+                for i in range(channel_idx):
+                    if (self.channels[i].choke_enabled
+                            and self._trigger_clock[i] == self.sample_clock):
+                        return  # a lower choked channel wins this instant
                 self._apply_choke(channel_idx)
             
-            # Trigger the drum
+            self._trigger_clock[channel_idx] = self.sample_clock
             channel.trigger(velocity)
     
     def _apply_choke(self, triggering_channel: int):
-        """Apply choke to other choke-enabled channels"""
+        """Fade out (10 ms) the other choke-enabled channels."""
         for i, channel in enumerate(self.channels):
             if i != triggering_channel and channel.choke_enabled:
-                channel.is_active = False
+                channel.choke()
+
+    def process_audio_events(self, num_samples: int, events) -> np.ndarray:
+        """Render `num_samples`, triggering (offset, channel, velocity) events sample-accurately."""
+        out = np.empty((num_samples, 2), dtype=np.float32)
+        pos = 0
+        for offset, channel_idx, velocity in sorted(events):
+            offset = max(0, min(num_samples, int(offset)))
+            if offset > pos:
+                out[pos:offset] = self.process_audio(offset - pos)
+                pos = offset
+            self.trigger_drum(channel_idx, velocity)
+        if pos < num_samples:
+            out[pos:] = self.process_audio(num_samples - pos)
+        return out
     
     def process_audio(self, num_samples: int) -> np.ndarray:
         """
@@ -239,10 +263,14 @@ class PythonicSynthesizer:
         preview_source = self._preview_source
 
         # Build the active channel list once so the render path can stay lean.
-        active_channels = [
-            channel for channel in self.channels
-            if channel.is_active and not channel.muted
-        ]
+        # Idle channels still advance their voice clock (4-sample trigger grid).
+        active_channels = []
+        for channel in self.channels:
+            if channel.is_active and not channel.muted:
+                active_channels.append(channel)
+            else:
+                channel.voice.idle(num_samples)
+        self.sample_clock += num_samples
 
         if not active_channels and preview_source is None:
             return output
@@ -315,16 +343,14 @@ class PythonicSynthesizer:
         if effective_gain != 1.0:
             np.multiply(output, effective_gain, out=output)
         
-        # Note: Channel-level headroom is already applied in DrumChannel.INTERNAL_HEADROOM_LINEAR
-        # No additional headroom reduction needed here for accurate reproduction
-        
         # Allow peaks up to 1.0
         # Only apply soft clipping if we exceed 1.0 to prevent harsh digital clipping
+        # Soft-clip only the samples above 0.9 so everything below stays exact.
         peak = np.max(np.abs(output))
-        if peak > 1.0:
-            # Soft clip using tanh for peaks above 1.0
-            # This preserves more RMS energy than linear scaling
-            np.tanh(output, out=output)
+        if peak > 0.9:
+            over = np.abs(output) > 0.9
+            x = output[over]
+            output[over] = np.sign(x) * (0.9 + 0.1 * np.tanh((np.abs(x) - 0.9) / 0.1))
         
         # Mono downmix: average L+R, duplicate to both channels
         if self.mono:

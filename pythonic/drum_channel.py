@@ -1,86 +1,56 @@
 """
 Drum Channel for Pythonic
-Complete drum voice with oscillator, noise, mixing, and effects
+Complete drum voice with oscillator, noise, mixing, and effects.
+
+The sound itself is produced by :class:`pythonic.voice.DrumVoice`. The oscillator / noise / envelope
+objects hold the parameters so the GUI, presets and the
+drum generator keep working against the same attributes.
+
+Pythonic extras (LFO/pump modulation, vintage, delay, reverb) are applied
+around the voice.
 """
 
 import numpy as np
+
 from .oscillator import Oscillator, WaveformType, PitchModMode
 from .noise import NoiseGenerator, NoiseFilterMode, NoiseEnvelopeMode
 from .envelope import Envelope
-from .filter import EQFilter
-from .lfo import LFO, PumpSource, ModulationRouter, ModTarget, LFORetrigger
+from .lfo import LFO, PumpSource, ModTarget, LFORetrigger
 from .vintage import VintageProcessor
 from .reverb import FastStereoReverb
 from .delay import FastStereoDelay, DelayTime
-from .smoothed_parameter import SmoothedParameter, LogSmoothedParameter
-import time as _time
+from .voice import DrumVoice, VoiceParams
 
 
 class DrumChannel:
-    """
-    Complete drum synthesis channel
-    Combines oscillator, noise generator, mixing, distortion, and EQ
-    
-    Parameter Smoothing:
-    Frequency and filter parameters use smoothed values to prevent
-    clicks and zippering artifacts when adjusting in real-time.
-    """
-    
-    # EQ Q — base Q value for the peaking EQ filter.
-    # Gain-adaptive: for extreme gains (>15dB), Q increases to narrow the
-    # boost and prevent excessive gain spillover to distant frequencies.
-    EQ_BASE_Q = 1.5
-    EQ_GAIN_ADAPTIVE_THRESHOLD = 15.0  # dB — above this, Q scales up
-    INTERNAL_HEADROOM_DB = 0.0
-    INTERNAL_HEADROOM_LINEAR = 10.0 ** (INTERNAL_HEADROOM_DB / 20.0)  # 1.0
-    
-    # Oscillator level scaling relative to noise
-    # Oscillator level is lower than a full-scale waveform
-    # Calibrated from reference peak amplitude ratios (presets 01, 08, 14, 20)
-    OSC_LEVEL_SCALING = 0.314
-    
-    # Default smoothing time constant (ms)
+    """One of the 8 drum channels."""
+
     DEFAULT_SMOOTHING_MS = 30.0
-    
-    # Per-component timing (set True for diagnostics, False for production)
-    PROFILE_COMPONENTS = False
-    
+
     def __init__(self, channel_id: int, sample_rate: int = 44100):
         self.channel_id = channel_id
         self.sr = sample_rate
-        
-        # Smoothing time constant (can be changed globally)
-        self._smoothing_ms = self.DEFAULT_SMOOTHING_MS
-        
-        # Components
-        self.oscillator = Oscillator(sample_rate)
-        self.noise_gen = NoiseGenerator(sample_rate)
-        self.osc_envelope = Envelope(sample_rate, attack_shape='exponential')
-        self.eq_filter_l = EQFilter(sample_rate)
-        self.eq_filter_r = EQFilter(sample_rate)
+
+        # Parameter holders
+        self.oscillator = Oscillator()
+        self.noise_gen = NoiseGenerator()
+        self.osc_envelope = Envelope()
+
+        # Voice engine
+        self.voice = DrumVoice(sample_rate, seed=channel_id + 1)
+
+        # Pythonic extras
         self.vintage = VintageProcessor(sample_rate)
-        
-        # Per-channel stereo reverb effect (using FastStereoReverb for real-time performance)
         self.reverb = FastStereoReverb(sample_rate)
-        
-        # Per-channel tempo-synced delay/echo effect
         self.delay = FastStereoDelay(sample_rate)
-        
-        # Vintage amount (0.0 to 1.0) - simulates analog circuit behavior
         self.vintage_amount = 0.0
-        
-        # Reverb parameters (per-channel decay/reverb stereo effect)
-        self.reverb_decay = 0.0   # 0.0 to 1.0 (reverb time)
-        self.reverb_mix = 0.0     # 0.0 to 1.0 (dry/wet)
-        self.reverb_width = 1.0   # 0.0 to 2.0 (stereo width)
-        
-        # Delay/echo parameters (tempo-synced)
-        self.delay_time = DelayTime.EIGHTH  # Default to 1/8 note
-        self.delay_feedback = 0.3           # 0.0 to 0.95
-        self.delay_mix = 0.0                # 0.0 to 1.0 (dry/wet)
-        self.delay_ping_pong = False        # Stereo ping-pong mode
-        
-        # Cached previous FX parameter values to skip redundant setter calls
+        self.reverb_decay = 0.0
+        self.reverb_mix = 0.0
+        self.reverb_width = 1.0
+        self.delay_time = DelayTime.EIGHTH
+        self.delay_feedback = 0.3
+        self.delay_mix = 0.0
+        self.delay_ping_pong = False
         self._prev_delay_time = None
         self._prev_delay_feedback = None
         self._prev_delay_mix = None
@@ -88,867 +58,356 @@ class DrumChannel:
         self._prev_reverb_decay = None
         self._prev_reverb_mix = None
         self._prev_reverb_width = None
-        
+
         # Mixing parameters
-        self.osc_noise_mix = 0.5  # 0 = all noise, 1 = all oscillator
-        self.level_db = 0.0  # Output level in dB (-inf to +10)
-        self.pan = 0.0  # Stereo pan (-100 to +100)
-        
-        # Distortion
-        self.distortion = 0.0  # 0 to 1
-        
-        # EQ (raw target values - smoothing applied in process)
-        self.eq_frequency = 632.46  # Hz
-        
-        # Mono mode flag (set by synthesizer)
+        self.osc_noise_mix = 0.5   # 0 = all noise, 1 = all oscillator
+        self.level_db = 0.0
+        self.pan = 0.0             # -100..100
+        self.distortion = 0.0      # 0..1
+        self.eq_frequency = 632.46
+        self.eq_gain_db = 0.0
+        self._osc_attack_base_ms = 0.0
+        self._noise_filter_freq_base = 20000.0
+        self._noise_attack_base_ms = 0.0
+        self._smoothing_ms = self.DEFAULT_SMOOTHING_MS
+
         self.mono = False
-        self.eq_gain_db = 0.0  # dB (-40 to +40)
-        
-        # Smoothed parameters for click-free real-time control
-        self._smoothed_osc_freq = LogSmoothedParameter(
-            initial_value=440.0, time_constant_ms=self._smoothing_ms,
-            sample_rate=sample_rate, min_val=20.0, max_val=20000.0
-        )
-        self._smoothed_noise_freq = LogSmoothedParameter(
-            initial_value=20000.0, time_constant_ms=self._smoothing_ms,
-            sample_rate=sample_rate, min_val=20.0, max_val=20000.0
-        )
-        self._smoothed_noise_q = LogSmoothedParameter(
-            initial_value=0.707, time_constant_ms=self._smoothing_ms,
-            sample_rate=sample_rate, min_val=0.5, max_val=20.0
-        )
-        self._smoothed_eq_freq = LogSmoothedParameter(
-            initial_value=632.46, time_constant_ms=self._smoothing_ms,
-            sample_rate=sample_rate, min_val=20.0, max_val=20000.0
-        )
-        self._smoothed_distortion = SmoothedParameter(
-            initial_value=0.0, time_constant_ms=self._smoothing_ms,
-            sample_rate=sample_rate, min_val=0.0, max_val=1.0
-        )
-        self._smoothed_mix = SmoothedParameter(
-            initial_value=0.5, time_constant_ms=self._smoothing_ms,
-            sample_rate=sample_rate, min_val=0.0, max_val=1.0
-        )
-        
-        # Choke and output
         self.choke_enabled = False
-        self.output_pair = 'A'  # 'A' or 'B'
+        self.output_pair = 'A'
         self.muted = False
-        
-        # Velocity sensitivity (0 to 2.0, where 1.0 = 100%)
+
+        # Velocity sensitivity (0..2, 1.0 = 100 %)
         self.osc_vel_sensitivity = 0.0
         self.noise_vel_sensitivity = 0.0
         self.mod_vel_sensitivity = 0.0
-        
-        # Pitch offset in semitones (-24 to +24, applied to oscillator frequency)
+
+        # Pitch offset in semitones (scales oscillator, noise filter and EQ)
         self.pitch_semitones = 0.0
-        self._cached_pitch_ratio = 1.0  # Cached 2^(pitch_semitones/12)
-        self._cached_pitch_semitones = 0.0  # Value used to compute cached ratio
-        
-        # Cached distortion coefficients
-        self._cached_dist_val = -1.0
-        self._cached_dist_n = 0.0
-        self._cached_dist_v = 0.0
-        self._cached_dist_p = 0.0
-        self._cached_dist_dc = 0.0
-        self._cached_dist_hard = False
-        
-        # State
+
         self.is_active = False
         self.current_velocity = 1.0
         self.name = f"Channel {channel_id + 1}"
-        
-        # Pre-allocated buffers for performance
-        self._output_buffer = np.zeros((8192, 2), dtype=np.float32)
-        self._osc_stereo_buffer = np.zeros((8192, 2), dtype=np.float32)
-        self._mixed_buffer = np.zeros((8192, 2), dtype=np.float32)
-        
-        # Per-component timing accumulators (only populated when PROFILE_COMPONENTS is True)
-        self._profile_osc_ms = 0.0
-        self._profile_noise_ms = 0.0
-        self._profile_distortion_ms = 0.0
-        self._profile_eq_ms = 0.0
-        self._profile_delay_ms = 0.0
-        self._profile_reverb_ms = 0.0
-        self._profile_count = 0
-        
+
+        self._zeros = np.zeros((8192, 2), dtype=np.float32)
+
         # Modulation: 2 LFOs + 1 pump source per channel
         self.lfo1 = LFO(sample_rate)
         self.lfo2 = LFO(sample_rate)
         self.pump = PumpSource(sample_rate)
-        # Back-reference to synthesizer (set by PythonicSynthesizer after creation)
         self._synthesizer = None
-        # Snapshot of base parameter values taken at _pre_mod / restored at _post_mod
-        self._mod_snapshots = {}
-        # Global mod offsets for synthesizer to read after processing
         self._global_mod_offsets = {}
-        # Last computed mod offsets (for GUI visual feedback)
         self._last_mod_offsets = {}
 
-        # Initialize default drum sound
         self._init_defaults()
-    
+
     def _init_defaults(self):
-        """Set default parameters for a basic drum sound"""
-        # Oscillator defaults
         self.oscillator.set_frequency(200.0)
         self.oscillator.set_waveform(WaveformType.SINE)
         self.oscillator.set_pitch_mod_mode(PitchModMode.DECAYING)
         self.oscillator.set_pitch_mod_amount(0.0)
         self.oscillator.set_pitch_mod_rate(100.0)
-        
-        # Envelope defaults
-        self.osc_envelope.set_attack(0.0)
+        self.set_osc_attack(0.0)
         self.osc_envelope.set_decay(316.23)
-        
-        # Noise defaults
         self.noise_gen.set_filter_mode(NoiseFilterMode.LOW_PASS)
-        self.noise_gen.set_filter_frequency(20000.0)
+        self.set_noise_filter_freq_immediate(20000.0)
         self.noise_gen.set_filter_q(0.707)
         self.noise_gen.set_stereo(False)
-        self.noise_gen.set_attack(0.0)
+        self.set_noise_attack(0.0)
         self.noise_gen.set_decay(316.23)
-        
-        # EQ defaults — Q=1.5 base, with gain-adaptive scaling for
-        # extreme gains to narrow the boost and reduce spillover
-        self.eq_filter_l.set_frequency(632.46)
-        self.eq_filter_l.set_gain(0.0)
-        self.eq_filter_l.set_q(self.EQ_BASE_Q)
-        self.eq_filter_r.set_frequency(632.46)
-        self.eq_filter_r.set_gain(0.0)
-        self.eq_filter_r.set_q(self.EQ_BASE_Q)
-    
-    @staticmethod
-    def _velocity_to_gain(velocity: int, sensitivity: float) -> float:
-        """Velocity-to-gain conversion.
-        
-        Uses compound linear + dB curve with -37dB maximum attenuation.
-        
-        Args:
-            velocity: MIDI velocity (0-127)
-            sensitivity: Velocity sensitivity (0.0-2.0, where 1.0 = 100%)
-        
-        Returns:
-            Gain factor (0.0 to 1.0)
-        """
-        if sensitivity <= 0:
-            return 1.0
-        inv_velocity = (127.0 - velocity) / 63.0
-        x = max(1.0 - inv_velocity * sensitivity, 0.0)
-        if x <= 0:
-            return 0.0
-        return x * (10.0 ** ((37.0 * x - 37.0) / 20.0))
-    
+
+    # ------------------------------------------------------------------ voice params
+    def _voice_params(self, mod=None) -> VoiceParams:
+        """Snapshot of the channel parameters (with modulation offsets) for the voice."""
+        osc = self.oscillator
+        noise = self.noise_gen
+        osc_freq = osc.frequency
+        noise_freq = self._noise_filter_freq_base
+        noise_q = noise.filter_q
+        eq_freq = self.eq_frequency
+        eq_gain = self.eq_gain_db
+        dist = self.distortion
+        mix = self.osc_noise_mix
+        level = self.level_db
+        pan = self.pan
+        pitch = self.pitch_semitones
+        mod_amt = osc.pitch_mod_amount
+        mod_rate = osc.pitch_mod_rate
+        osc_atk = self._osc_attack_base_ms
+        osc_dcy = self.osc_envelope.decay_ms
+        n_atk = self._noise_attack_base_ms
+        n_dcy = noise.decay_ms
+        ovel, nvel, mvel = self.osc_vel_sensitivity, self.noise_vel_sensitivity, self.mod_vel_sensitivity
+        if mod:
+            g = mod.get
+            if ModTarget.OSC_FREQUENCY in mod:
+                osc_freq = min(20000.0, max(20.0, osc_freq + g(ModTarget.OSC_FREQUENCY)))
+            if ModTarget.NOISE_FILTER_FREQ in mod:
+                noise_freq = min(20000.0, max(20.0, noise_freq + g(ModTarget.NOISE_FILTER_FREQ)))
+            if ModTarget.NOISE_FILTER_Q in mod:
+                noise_q = min(10000.0, max(0.1, noise_q + g(ModTarget.NOISE_FILTER_Q)))
+            if ModTarget.EQ_FREQUENCY in mod:
+                eq_freq = min(20000.0, max(20.0, eq_freq + g(ModTarget.EQ_FREQUENCY)))
+            if ModTarget.EQ_GAIN_DB in mod:
+                eq_gain = min(40.0, max(-40.0, eq_gain + g(ModTarget.EQ_GAIN_DB)))
+            if ModTarget.DISTORTION in mod:
+                dist = min(1.0, max(0.0, dist + g(ModTarget.DISTORTION)))
+            if ModTarget.OSC_NOISE_MIX in mod:
+                mix = min(1.0, max(0.0, mix + g(ModTarget.OSC_NOISE_MIX)))
+            if ModTarget.LEVEL_DB in mod:
+                level = min(40.0, max(-60.0, level + g(ModTarget.LEVEL_DB)))
+            if ModTarget.PAN in mod:
+                pan = min(100.0, max(-100.0, pan + g(ModTarget.PAN)))
+            if ModTarget.PITCH_SEMITONES in mod:
+                pitch = min(48.0, max(-48.0, pitch + g(ModTarget.PITCH_SEMITONES)))
+            if ModTarget.PITCH_MOD_AMOUNT in mod:
+                mod_amt = mod_amt + g(ModTarget.PITCH_MOD_AMOUNT)
+            if ModTarget.PITCH_MOD_RATE in mod:
+                mod_rate = max(0.1, mod_rate + g(ModTarget.PITCH_MOD_RATE))
+            if ModTarget.OSC_ATTACK in mod:
+                osc_atk = max(0.0, osc_atk + g(ModTarget.OSC_ATTACK))
+            if ModTarget.OSC_DECAY in mod:
+                osc_dcy = max(1.0, osc_dcy + g(ModTarget.OSC_DECAY))
+            if ModTarget.NOISE_ATTACK in mod:
+                n_atk = max(0.0, n_atk + g(ModTarget.NOISE_ATTACK))
+            if ModTarget.NOISE_DECAY in mod:
+                n_dcy = max(1.0, n_dcy + g(ModTarget.NOISE_DECAY))
+            if ModTarget.OSC_VEL_SENSITIVITY in mod:
+                ovel = min(2.0, max(0.0, ovel + g(ModTarget.OSC_VEL_SENSITIVITY)))
+            if ModTarget.NOISE_VEL_SENSITIVITY in mod:
+                nvel = min(2.0, max(0.0, nvel + g(ModTarget.NOISE_VEL_SENSITIVITY)))
+            if ModTarget.MOD_VEL_SENSITIVITY in mod:
+                mvel = min(2.0, max(0.0, mvel + g(ModTarget.MOD_VEL_SENSITIVITY)))
+        return VoiceParams(
+            wave=osc.waveform.value,
+            osc_freq=float(osc_freq),
+            osc_attack_ms=float(osc_atk),
+            osc_decay_ms=float(osc_dcy),
+            mod_mode=osc.pitch_mod_mode.value,
+            mod_rate=float(mod_rate),
+            mod_amount=float(mod_amt),
+            noise_filter=noise.filter_mode.value,
+            noise_freq=float(noise_freq),
+            noise_q=float(noise_q),
+            noise_stereo=bool(noise.stereo),
+            noise_env=noise.envelope_mode.value,
+            noise_attack_ms=float(n_atk),
+            noise_decay_ms=float(n_dcy),
+            osc_mix=float(mix),
+            distortion=float(dist),
+            eq_freq=float(eq_freq),
+            eq_gain_db=float(eq_gain),
+            level_db=float(level),
+            pan=float(pan),
+            osc_vel=float(ovel),
+            noise_vel=float(nvel),
+            mod_vel=float(mvel),
+            pitch_ratio=float(2.0 ** (pitch / 12.0)),
+            mono=bool(self.mono),
+        )
+
+    # ------------------------------------------------------------------ playback
     def trigger(self, velocity: int = 127, note: int = 60):
-        """
-        Trigger the drum channel
-        
-        Args:
-            velocity: MIDI velocity (0-127)
-            note: MIDI note number (for pitched mode)
-        """
+        """Trigger the drum (velocity 0..127)."""
         self.is_active = True
         self.current_velocity = velocity / 127.0
-        
-        # Velocity gains
-        osc_vel_gain = self._velocity_to_gain(velocity, self.osc_vel_sensitivity)
-        self.oscillator.set_velocity_gain(osc_vel_gain)
-        
-        noise_vel_gain = self._velocity_to_gain(velocity, self.noise_vel_sensitivity)
-        self.noise_gen.set_velocity_gain(noise_vel_gain)
-        
-        mod_vel_scale = self._velocity_to_gain(velocity, self.mod_vel_sensitivity)
-        self.oscillator.set_velocity_mod_scale(mod_vel_scale)
-        
-        # Reset and trigger components
-        self.oscillator.reset_phase()
-        self.osc_envelope.trigger()
-        self.noise_gen.trigger()
+        self.voice.set_params(self._voice_params(self._last_mod_offsets or None))
+        self.voice.trigger(velocity)
         self.vintage.reset()
-
-        # Modulation: retrigger LFOs and pump
         if self.lfo1.retrigger == LFORetrigger.RETRIGGER:
             self.lfo1.reset_phase()
         if self.lfo2.retrigger == LFORetrigger.RETRIGGER:
             self.lfo2.reset_phase()
         self.pump.trigger()
-        
-        # Snap all smoothed parameters to their target values so the first
-        # sample of every hit uses the exact current settings (no residual
-        # smoothing transition from a previous parameter change)
-        self._smoothed_osc_freq.set_immediate(self._smoothed_osc_freq.get_target())
-        self._smoothed_noise_freq.set_immediate(self._smoothed_noise_freq.get_target())
-        self._smoothed_noise_q.set_immediate(self._smoothed_noise_q.get_target())
-        self._smoothed_eq_freq.set_immediate(self._smoothed_eq_freq.get_target())
-        self._smoothed_distortion.set_immediate(self._smoothed_distortion.get_target())
-        self._smoothed_mix.set_immediate(self._smoothed_mix.get_target())
-        
-        # Reset EQ filters so no state leaks between hits
-        self.eq_filter_l.reset()
-        self.eq_filter_r.reset()
-        
-        # Reset time-based FX so tails from previous hits don't bleed in
         self.reverb.reset()
         self.delay.reset()
-    
+
+    def choke(self):
+        """Fade the voice out over 10 ms (choke group)."""
+        if self.is_active:
+            self.voice.choke()
+
     def process(self, num_samples: int) -> np.ndarray:
-        """
-        Process and generate audio
-        
-        Args:
-            num_samples: Number of samples to generate
-            
-        Returns:
-            Stereo output array [num_samples, 2]
-        """
+        """Render `num_samples` stereo samples."""
         if not self.is_active or self.muted:
-            # Return slice of pre-allocated zero buffer
-            result = self._output_buffer[:num_samples]
-            result.fill(0)
-            return result
-        
-        # Update smoothed parameters (get current smoothed values)
-        # These advance the smoothing filters per-block for efficiency
-        smoothed_osc_freq = self._smoothed_osc_freq.get_next_value()
-        smoothed_noise_freq = self._smoothed_noise_freq.get_next_value()
-        smoothed_noise_q = self._smoothed_noise_q.get_next_value()
-        smoothed_eq_freq = self._smoothed_eq_freq.get_next_value()
-        smoothed_distortion = self._smoothed_distortion.get_next_value()
-        smoothed_mix = self._smoothed_mix.get_next_value()
-        
-        # ---------- LFO / Pump modulation ----------
-        _any_mod = ((self.lfo1.enabled and self.lfo1.target != ModTarget.NONE)
-                    or (self.lfo2.enabled and self.lfo2.target != ModTarget.NONE)
-                    or (self.pump.enabled and self.pump.target != ModTarget.NONE))
-        
-        if _any_mod:
-            _bpm = getattr(self._synthesizer, '_bpm', 120.0) if self._synthesizer else 120.0
-            _mod = {}  # ModTarget -> accumulated offset
-            for _src in (self.lfo1, self.lfo2, self.pump):
-                if _src.enabled and _src.target != ModTarget.NONE:
-                    _v = _src.process(num_samples, _bpm)
-                    if _v != 0.0:
-                        _mod[_src.target] = _mod.get(_src.target, 0.0) + _v
-            
-            # Offsets applied to local smoothed variables (no save/restore needed)
-            if ModTarget.OSC_FREQUENCY in _mod:
-                smoothed_osc_freq = max(20.0, min(20000.0, smoothed_osc_freq + _mod[ModTarget.OSC_FREQUENCY]))
-            if ModTarget.NOISE_FILTER_FREQ in _mod:
-                smoothed_noise_freq = max(20.0, min(20000.0, smoothed_noise_freq + _mod[ModTarget.NOISE_FILTER_FREQ]))
-            if ModTarget.NOISE_FILTER_Q in _mod:
-                smoothed_noise_q = max(0.1, min(100.0, smoothed_noise_q + _mod[ModTarget.NOISE_FILTER_Q]))
-            if ModTarget.EQ_FREQUENCY in _mod:
-                smoothed_eq_freq = max(20.0, min(20000.0, smoothed_eq_freq + _mod[ModTarget.EQ_FREQUENCY]))
-            if ModTarget.DISTORTION in _mod:
-                smoothed_distortion = max(0.0, min(1.0, smoothed_distortion + _mod[ModTarget.DISTORTION]))
-            if ModTarget.OSC_NOISE_MIX in _mod:
-                smoothed_mix = max(0.0, min(1.0, smoothed_mix + _mod[ModTarget.OSC_NOISE_MIX]))
-            
-            # Save & apply offsets to direct channel attributes
-            _saved_direct = {}
-            _DIRECT = {
-                ModTarget.PITCH_SEMITONES: ('pitch_semitones', -48.0, 48.0),
-                ModTarget.LEVEL_DB: ('level_db', -60.0, 40.0),
-                ModTarget.PAN: ('pan', -100.0, 100.0),
-                ModTarget.EQ_GAIN_DB: ('eq_gain_db', -40.0, 40.0),
-                ModTarget.VINTAGE_AMOUNT: ('vintage_amount', 0.0, 1.0),
-                ModTarget.REVERB_DECAY: ('reverb_decay', 0.0, 1.0),
-                ModTarget.REVERB_MIX: ('reverb_mix', 0.0, 1.0),
-                ModTarget.REVERB_WIDTH: ('reverb_width', 0.0, 2.0),
-                ModTarget.DELAY_FEEDBACK: ('delay_feedback', 0.0, 0.95),
-                ModTarget.DELAY_MIX: ('delay_mix', 0.0, 1.0),
-                ModTarget.OSC_VEL_SENSITIVITY: ('osc_vel_sensitivity', 0.0, 2.0),
-                ModTarget.NOISE_VEL_SENSITIVITY: ('noise_vel_sensitivity', 0.0, 2.0),
-                ModTarget.MOD_VEL_SENSITIVITY: ('mod_vel_sensitivity', 0.0, 2.0),
-            }
-            for _t, _o in _mod.items():
-                if _t in _DIRECT:
-                    _attr, _lo, _hi = _DIRECT[_t]
-                    _saved_direct[_attr] = getattr(self, _attr)
-                    setattr(self, _attr, max(_lo, min(_hi, _saved_direct[_attr] + _o)))
-            
-            # Save & apply component-level targets: list of (restore_callable, old_value)
-            _saved_comp = []
-            if ModTarget.PITCH_MOD_AMOUNT in _mod:
-                _saved_comp.append((self.oscillator.set_pitch_mod_amount, self.oscillator.pitch_mod_amount))
-                self.oscillator.set_pitch_mod_amount(self.oscillator.pitch_mod_amount + _mod[ModTarget.PITCH_MOD_AMOUNT])
-            if ModTarget.PITCH_MOD_RATE in _mod:
-                _saved_comp.append((self.oscillator.set_pitch_mod_rate, self.oscillator.pitch_mod_rate))
-                self.oscillator.set_pitch_mod_rate(max(0.1, self.oscillator.pitch_mod_rate + _mod[ModTarget.PITCH_MOD_RATE]))
-            if ModTarget.OSC_ATTACK in _mod:
-                _saved_comp.append((self.osc_envelope.set_attack, self.osc_envelope.attack_ms))
-                self.osc_envelope.set_attack(max(0.0, self.osc_envelope.attack_ms + _mod[ModTarget.OSC_ATTACK]))
-            if ModTarget.OSC_DECAY in _mod:
-                _saved_comp.append((self.osc_envelope.set_decay, self.osc_envelope.decay_ms))
-                self.osc_envelope.set_decay(max(1.0, self.osc_envelope.decay_ms + _mod[ModTarget.OSC_DECAY]))
-            if ModTarget.NOISE_ATTACK in _mod:
-                _saved_comp.append((self.noise_gen.set_attack, self.noise_gen.attack_ms))
-                self.noise_gen.set_attack(max(0.0, self.noise_gen.attack_ms + _mod[ModTarget.NOISE_ATTACK]))
-            if ModTarget.NOISE_DECAY in _mod:
-                _saved_comp.append((self.noise_gen.set_decay, self.noise_gen.decay_ms))
-                self.noise_gen.set_decay(max(1.0, self.noise_gen.decay_ms + _mod[ModTarget.NOISE_DECAY]))
-            
-            # Global target offsets – stored for synthesizer to aggregate
-            self._global_mod_offsets = {}
-            for _gt in (ModTarget.MASTER_VOLUME, ModTarget.MORPH):
-                if _gt in _mod:
-                    self._global_mod_offsets[_gt] = _mod[_gt]
-            
-            # Store offsets snapshot for GUI visual feedback
-            self._last_mod_offsets = dict(_mod)
+            self.voice.idle(num_samples)
+            if num_samples <= len(self._zeros):
+                return self._zeros[:num_samples]
+            return np.zeros((num_samples, 2), dtype=np.float32)
+
+        # LFO / pump modulation (block rate)
+        mod = {}
+        if ((self.lfo1.enabled and self.lfo1.target != ModTarget.NONE)
+                or (self.lfo2.enabled and self.lfo2.target != ModTarget.NONE)
+                or (self.pump.enabled and self.pump.target != ModTarget.NONE)):
+            bpm = getattr(self._synthesizer, '_bpm', 120.0) if self._synthesizer else 120.0
+            for src in (self.lfo1, self.lfo2, self.pump):
+                if src.enabled and src.target != ModTarget.NONE:
+                    v = src.process(num_samples, bpm)
+                    if v != 0.0:
+                        mod[src.target] = mod.get(src.target, 0.0) + v
+        self._global_mod_offsets = {t: mod[t] for t in (ModTarget.MASTER_VOLUME, ModTarget.MORPH) if t in mod}
+        self._last_mod_offsets = dict(mod)
+
+        vintage = self.vintage_amount
+        if ModTarget.VINTAGE_AMOUNT in mod:
+            vintage = min(1.0, max(0.0, vintage + mod[ModTarget.VINTAGE_AMOUNT]))
+        if vintage > 0.001:
+            self.vintage.set_amount(vintage)
+            self.voice.pitch_drift = self.vintage.get_pitch_multiplier()
         else:
-            _saved_direct = None
-            _saved_comp = None
-            self._global_mod_offsets = {}
-            if self._last_mod_offsets:
-                self._last_mod_offsets = {}
-        
-        # Apply smoothed values to components only when changed
-        # (avoids expensive filter coefficient recomputation every block)
-        # Apply pitch offset (semitones) as a frequency multiplier
-        # Shifts both oscillator and noise filter frequency so the entire
-        # drum character moves (important for noise-heavy sounds like snares)
-        if self.pitch_semitones != 0.0:
-            # Cache pitch_ratio to avoid 2^x every block
-            if self.pitch_semitones != self._cached_pitch_semitones:
-                self._cached_pitch_semitones = self.pitch_semitones
-                self._cached_pitch_ratio = 2.0 ** (self.pitch_semitones / 12.0)
-            pitch_ratio = self._cached_pitch_ratio
-            effective_osc_freq = smoothed_osc_freq * pitch_ratio
-            effective_noise_freq = np.clip(smoothed_noise_freq * pitch_ratio, 20.0, 20000.0)
-        else:
-            pitch_ratio = 1.0
-            effective_osc_freq = smoothed_osc_freq
-            effective_noise_freq = smoothed_noise_freq
-        if not self._smoothed_osc_freq.is_settled() or _any_mod or pitch_ratio != 1.0:
-            self.oscillator.set_frequency(effective_osc_freq)
-        if not self._smoothed_noise_freq.is_settled() or not self._smoothed_noise_q.is_settled() or _any_mod or pitch_ratio != 1.0:
-            self.noise_gen.set_filter_frequency(effective_noise_freq)
-            self.noise_gen.set_filter_q(smoothed_noise_q)
-        
-        # Scale pitch modulation time with pitch ratio so higher-pitched
-        # drums have faster pitch sweeps (natural drum behavior)
-        self.oscillator.mod_time_scale = pitch_ratio
-        
-        # Apply vintage pitch drift if enabled
-        if self.vintage_amount > 0.001:
-            self.vintage.set_amount(self.vintage_amount)
-            pitch_drift_mult = self.vintage.get_pitch_multiplier()
-            self.oscillator.set_pitch_drift(pitch_drift_mult)
-        else:
-            self.oscillator.set_pitch_drift(1.0)
-        
-        # Generate oscillator signal
-        if self.PROFILE_COMPONENTS:
-            _t0 = _time.perf_counter()
-        osc_raw = self.oscillator.process(num_samples)
-        osc_env = self.osc_envelope.process(num_samples)
-        osc_signal = osc_raw * osc_env
-        osc_signal *= self.OSC_LEVEL_SCALING
-        
-        # Generate noise signal (already stereo)
-        # In mono mode, force mono noise to avoid phase cancellation when summed
-        if self.mono and self.noise_gen.stereo:
-            self.noise_gen.stereo = False
-            _restore_noise_stereo = True
-        else:
-            _restore_noise_stereo = False
-        if self.PROFILE_COMPONENTS:
-            _t1 = _time.perf_counter()
-        noise_signal = self.noise_gen.process(num_samples)
-        if _restore_noise_stereo:
-            self.noise_gen.stereo = True
-        if self.PROFILE_COMPONENTS:
-            _t2 = _time.perf_counter()
-            self._profile_osc_ms += (_t1 - _t0) * 1000
-            self._profile_noise_ms += (_t2 - _t1) * 1000
-        
-        # In Mod (handclap) mode with noise-dominant mix, gate the oscillator
-        # by the noise envelope so the osc decays with the noise burst instead
-        # of ringing independently.  In the original 808, both tone and noise
-        # share the same VCA.  Only apply when noise is dominant (mix < 0.5)
-        # to avoid affecting osc-dominant patches like cowbell/rimshot.
-        if (self.noise_gen.envelope_mode == NoiseEnvelopeMode.MODULATED
-                and smoothed_mix < 0.5
-                and self.noise_gen._last_envelope is not None):
-            osc_signal *= self.noise_gen._last_envelope
-        
-        # Mix oscillator (mono) with noise (stereo)
-        # Use pre-allocated buffer
-        if num_samples <= len(self._osc_stereo_buffer):
-            osc_stereo = self._osc_stereo_buffer[:num_samples]
-        else:
-            osc_stereo = np.empty((num_samples, 2), dtype=np.float32)
-        
-        osc_stereo[:, 0] = osc_signal
-        osc_stereo[:, 1] = osc_signal
-        
-        # Shaped equal-power oscillator/noise crossfade.
-        # 0.0 = pure noise, 1.0 = pure oscillator, 0.5 = equal power.
-        # A smoothstep control taper keeps the midpoint balanced while
-        # reducing the minority source more aggressively near the extremes.
-        mix = smoothed_mix
-        if mix > 0.999:
-            # Pure oscillator
-            mixed = osc_stereo
-        elif mix < 0.001:
-            # Pure noise
-            mixed = noise_signal
-        else:
-            shaped_mix = mix * mix * (3.0 - 2.0 * mix)
-            osc_gain = np.sin(0.5 * np.pi * shaped_mix)
-            noise_gain = np.cos(0.5 * np.pi * shaped_mix)
-            # Use pre-allocated buffer for mixed output
-            if num_samples <= len(self._mixed_buffer):
-                mixed = self._mixed_buffer[:num_samples]
-            else:
-                mixed = np.empty((num_samples, 2), dtype=np.float32)
-            np.multiply(osc_stereo, osc_gain, out=mixed)
-            mixed += noise_signal * noise_gain
-        
-        # Apply smoothed distortion
-        if self.PROFILE_COMPONENTS:
-            _td0 = _time.perf_counter()
-        if smoothed_distortion > 0.001:
-            self.distortion = smoothed_distortion  # Update for _apply_distortion
-            mixed = self._apply_distortion(mixed)
-        if self.PROFILE_COMPONENTS:
-            _td1 = _time.perf_counter()
-            self._profile_distortion_ms += (_td1 - _td0) * 1000
-        
-        # Apply EQ with smoothed frequency (process left and right separately)
-        if self.PROFILE_COMPONENTS:
-            _teq0 = _time.perf_counter()
-        if abs(self.eq_gain_db) > 0.1:
-            # Only update EQ params when smoothed frequency is still changing
-            if not self._smoothed_eq_freq.is_settled() or _any_mod:
-                self.eq_filter_l.set_frequency(smoothed_eq_freq)
-                self.eq_filter_r.set_frequency(smoothed_eq_freq)
-            
-            # Process left channel
-            mixed[:, 0] = self.eq_filter_l.process(mixed[:, 0])
-            
-            # Process right channel (skip in mono — L=R)
-            if not self.mono:
-                mixed[:, 1] = self.eq_filter_r.process(mixed[:, 1])
-            else:
-                mixed[:, 1] = mixed[:, 0]
-        if self.PROFILE_COMPONENTS:
-            _teq1 = _time.perf_counter()
-            self._profile_eq_ms += (_teq1 - _teq0) * 1000
-        
-        # Post-EQ soft limiter — prevents clipping from extreme EQ boost
-        # and adds subtle saturation. Transparent below ±1.0, gently
-        # compresses peaks above that.
-        peak = np.max(np.abs(mixed))
-        if peak > 0.9:
-            np.tanh(mixed, out=mixed)
-        
-        # Apply level (dB to linear) with internal headroom
-        if self.level_db <= -60:
-            level_linear = 0.0
-        else:
-            level_linear = 10.0 ** (self.level_db / 20.0)
-        # Apply internal headroom (in-place)
-        gain = level_linear * self.INTERNAL_HEADROOM_LINEAR
-        np.multiply(mixed, gain, out=mixed)
-        
-        # Apply vintage analog simulation (after level, before pan)
-        if self.vintage_amount > 0.001:
-            self.vintage.set_amount(self.vintage_amount)
-            mixed = self.vintage.process(mixed)
-        
-        # Apply per-channel tempo-synced delay/echo (after vintage)
-        if self.PROFILE_COMPONENTS:
-            _tdl0 = _time.perf_counter()
-        if self.delay_mix > 0.001:
-            # Only update delay parameters when they change (avoids
-            # recalculating delay samples every block)
-            if (self.delay_time != self._prev_delay_time
-                    or self.delay_feedback != self._prev_delay_feedback
-                    or self.delay_mix != self._prev_delay_mix
-                    or self.delay_ping_pong != self._prev_delay_pp):
+            self.voice.pitch_drift = 1.0
+
+        self.voice.set_params(self._voice_params(mod or None))
+        out = self.voice.process(num_samples)
+
+        if vintage > 0.001:
+            out = self.vintage.process(out)
+
+        delay_mix = self.delay_mix
+        delay_fb = self.delay_feedback
+        if ModTarget.DELAY_MIX in mod:
+            delay_mix = min(1.0, max(0.0, delay_mix + mod[ModTarget.DELAY_MIX]))
+        if ModTarget.DELAY_FEEDBACK in mod:
+            delay_fb = min(0.95, max(0.0, delay_fb + mod[ModTarget.DELAY_FEEDBACK]))
+        if delay_mix > 0.001:
+            if (self.delay_time != self._prev_delay_time or delay_fb != self._prev_delay_feedback
+                    or delay_mix != self._prev_delay_mix or self.delay_ping_pong != self._prev_delay_pp):
                 self.delay.set_delay_time(self.delay_time)
-                self.delay.set_feedback(self.delay_feedback)
-                self.delay.set_mix(self.delay_mix)
+                self.delay.set_feedback(delay_fb)
+                self.delay.set_mix(delay_mix)
                 self.delay.set_ping_pong(self.delay_ping_pong)
                 self._prev_delay_time = self.delay_time
-                self._prev_delay_feedback = self.delay_feedback
-                self._prev_delay_mix = self.delay_mix
+                self._prev_delay_feedback = delay_fb
+                self._prev_delay_mix = delay_mix
                 self._prev_delay_pp = self.delay_ping_pong
-            mixed = self.delay.process(mixed)
-        if self.PROFILE_COMPONENTS:
-            _tdl1 = _time.perf_counter()
-            self._profile_delay_ms += (_tdl1 - _tdl0) * 1000
-        
-        # Apply per-channel stereo reverb (after delay, before pan)
-        if self.PROFILE_COMPONENTS:
-            _trv0 = _time.perf_counter()
-        if self.reverb_mix > 0.001:
-            effective_width = 0.0 if self.mono else self.reverb_width
-            if (self.reverb_decay != self._prev_reverb_decay
-                    or self.reverb_mix != self._prev_reverb_mix
-                    or effective_width != self._prev_reverb_width):
-                self.reverb.set_decay(self.reverb_decay)
-                self.reverb.set_mix(self.reverb_mix)
-                self.reverb.set_width(effective_width)
-                self._prev_reverb_decay = self.reverb_decay
-                self._prev_reverb_mix = self.reverb_mix
-                self._prev_reverb_width = effective_width
-            mixed = self.reverb.process(mixed)
-        if self.PROFILE_COMPONENTS:
-            _trv1 = _time.perf_counter()
-            self._profile_reverb_ms += (_trv1 - _trv0) * 1000
-            self._profile_count += 1
-        
-        # Apply pan (in-place where possible) — skip in mono mode
-        if not self.mono:
-            output = self._apply_pan_inplace(mixed)
-        else:
-            output = mixed
-        
-        # ---------- Restore modulated parameters ----------
-        if _saved_direct:
-            for _attr, _val in _saved_direct.items():
-                setattr(self, _attr, _val)
-        if _saved_comp:
-            for _setter, _val in _saved_comp:
-                _setter(_val)
-        
-        # Check if voice is done
-        if not self.osc_envelope.is_active and not self.noise_gen.is_active:
+            out = self.delay.process(out)
+
+        rv_mix = self.reverb_mix
+        rv_decay = self.reverb_decay
+        rv_width = self.reverb_width
+        if ModTarget.REVERB_MIX in mod:
+            rv_mix = min(1.0, max(0.0, rv_mix + mod[ModTarget.REVERB_MIX]))
+        if ModTarget.REVERB_DECAY in mod:
+            rv_decay = min(1.0, max(0.0, rv_decay + mod[ModTarget.REVERB_DECAY]))
+        if ModTarget.REVERB_WIDTH in mod:
+            rv_width = min(2.0, max(0.0, rv_width + mod[ModTarget.REVERB_WIDTH]))
+        if rv_mix > 0.001:
+            width = 0.0 if self.mono else rv_width
+            if (rv_decay != self._prev_reverb_decay or rv_mix != self._prev_reverb_mix
+                    or width != self._prev_reverb_width):
+                self.reverb.set_decay(rv_decay)
+                self.reverb.set_mix(rv_mix)
+                self.reverb.set_width(width)
+                self._prev_reverb_decay = rv_decay
+                self._prev_reverb_mix = rv_mix
+                self._prev_reverb_width = width
+            out = self.reverb.process(out)
+
+        if self.mono:
+            m = (out[:, 0] + out[:, 1]) * 0.5
+            out[:, 0] = m
+            out[:, 1] = m
+
+        if not self.voice.is_active:
             self.is_active = False
-        
-        return output
-    
-    def get_profile_snapshot(self):
-        """Return accumulated per-component timing and reset counters.
-        
-        Only meaningful when PROFILE_COMPONENTS is True.
-        Returns dict with component names -> average ms per block,
-        or empty dict if no data collected.
-        """
-        n = self._profile_count
-        if n == 0:
-            return {}
-        result = {
-            'oscillator': self._profile_osc_ms / n,
-            'noise': self._profile_noise_ms / n,
-            'distortion': self._profile_distortion_ms / n,
-            'eq': self._profile_eq_ms / n,
-            'delay': self._profile_delay_ms / n,
-            'reverb': self._profile_reverb_ms / n,
-            'blocks': n,
-        }
-        self._profile_osc_ms = 0.0
-        self._profile_noise_ms = 0.0
-        self._profile_distortion_ms = 0.0
-        self._profile_eq_ms = 0.0
-        self._profile_delay_ms = 0.0
-        self._profile_reverb_ms = 0.0
-        self._profile_count = 0
-        return result
-    
-    def _apply_distortion(self, signal: np.ndarray) -> np.ndarray:
-        """
-        Apply polynomial waveshaper distortion.
-        
-        Uses cubic drive curve (n = 200 * dist^3) with three regions:
-        - Bypass (n ~ 0): no distortion
-        - Soft (n < 1): polynomial waveshaper with mild compression
-        - Hard (n >= 1): polynomial hard-clip with gain compensation
-        
-        The odd-symmetry formula (shape(x) - shape(-x)) / 2 removes DC
-        offset and preserves odd harmonics.
-        
-        Args:
-            signal: Input stereo signal
-            
-        Returns:
-            Distorted signal
-        """
-        if self.distortion < 0.001:
-            return signal
-        
-        dist = self.distortion
-        
-        # Cache distortion coefficients (avoid recomputing every block)
-        if dist != self._cached_dist_val:
-            self._cached_dist_val = dist
-            n = 200.0 * dist * dist * dist
-            self._cached_dist_n = n
-            if n < 0.001:
-                self._cached_dist_v = 0.0
-            elif n < 1.0:
-                self._cached_dist_v = 1.0 - n / 30.0
-                self._cached_dist_p = (1.0 + np.sqrt((n + 3.0) / n)) / 3.0
-                self._cached_dist_dc = -2.0 * n / 27.0 - 9.0 / 27.0
-                self._cached_dist_hard = False
-            else:
-                self._cached_dist_v = 0.2 / (n - 0.95894909 + 0.47619048) + 0.58
-                self._cached_dist_dc = -11.0 / 27.0
-                self._cached_dist_hard = True
-        
-        n = self._cached_dist_n
-        if n < 0.001:
-            return signal
-        
-        v = self._cached_dist_v
-        dc = self._cached_dist_dc
-        
-        if not self._cached_dist_hard:
-            p = self._cached_dist_p
-            # Inline soft shape to avoid closure + function call overhead
-            xc_pos = np.clip(signal - 1.0 / 3.0, -p, p)
-            shaped_pos = xc_pos * (n * (np.abs(xc_pos) - xc_pos * xc_pos) + 1.0) - dc
-            xc_neg = np.clip(-signal - 1.0 / 3.0, -p, p)
-            shaped_neg = xc_neg * (n * (np.abs(xc_neg) - xc_neg * xc_neg) + 1.0) - dc
-        else:
-            # Inline hard shape
-            xc_pos = np.clip(signal * n - 1.0 / 3.0, -1.0, 1.0)
-            shaped_pos = xc_pos * (np.abs(xc_pos) - xc_pos * xc_pos + 1.0) - dc
-            xc_neg = np.clip(-signal * n - 1.0 / 3.0, -1.0, 1.0)
-            shaped_neg = xc_neg * (np.abs(xc_neg) - xc_neg * xc_neg + 1.0) - dc
-        
-        return (shaped_pos - shaped_neg) * (0.5 * v)
-    
-    def _apply_pan(self, stereo_signal: np.ndarray) -> np.ndarray:
-        """
-        Apply stereo panning using linear pan law
-        
-        Args:
-            stereo_signal: Input stereo signal [samples, 2]
-            
-        Returns:
-            Panned stereo signal
-        """
-        # Convert pan (-100 to +100) to normalized (-1 to 1)
-        pan_normalized = self.pan / 100.0
-        
-        # Linear pan law: at center (0), both channels at 1.0
-        # At full left (-1), left=1.0, right=0.0
-        # At full right (+1), left=0.0, right=1.0
-        if pan_normalized <= 0:
-            # Panning left
-            left_gain = 1.0
-            right_gain = 1.0 + pan_normalized  # 0 at full left, 1 at center
-        else:
-            # Panning right
-            left_gain = 1.0 - pan_normalized  # 1 at center, 0 at full right
-            right_gain = 1.0
-        
-        output = np.zeros_like(stereo_signal)
-        output[:, 0] = stereo_signal[:, 0] * left_gain
-        output[:, 1] = stereo_signal[:, 1] * right_gain
-        
-        return output
-    
-    def _apply_pan_inplace(self, stereo_signal: np.ndarray) -> np.ndarray:
-        """
-        Apply stereo panning in-place using linear pan law
-        
-        Args:
-            stereo_signal: Input stereo signal [samples, 2] - MODIFIED IN PLACE
-            
-        Returns:
-            Panned stereo signal (same array)
-        """
-        # Convert pan (-100 to +100) to normalized (-1 to 1)
-        pan_normalized = self.pan / 100.0
-        
-        # Linear pan law
-        if pan_normalized <= 0:
-            right_gain = 1.0 + pan_normalized
-            if right_gain != 1.0:
-                stereo_signal[:, 1] *= right_gain
-        else:
-            left_gain = 1.0 - pan_normalized
-            if left_gain != 1.0:
-                stereo_signal[:, 0] *= left_gain
-        
-        return stereo_signal
-        
-        output = np.zeros_like(stereo_signal)
-        output[:, 0] = stereo_signal[:, 0] * left_gain
-        output[:, 1] = stereo_signal[:, 1] * right_gain
-        
-        return output
-    
-    # Smoothing configuration
+        return out
+
+    # ------------------------------------------------------------------ smoothing (API compat)
     def set_smoothing_time(self, time_ms: float):
-        """Set the smoothing time constant for all smoothed parameters.
-        
-        Args:
-            time_ms: Smoothing time in milliseconds (20-50 recommended)
-        """
+        """Kept for API compatibility; the voice smooths gains internally."""
         self._smoothing_ms = max(0.0, time_ms)
-        self._smoothed_osc_freq.set_time_constant(self._smoothing_ms)
-        self._smoothed_noise_freq.set_time_constant(self._smoothing_ms)
-        self._smoothed_noise_q.set_time_constant(self._smoothing_ms)
-        self._smoothed_eq_freq.set_time_constant(self._smoothing_ms)
-        self._smoothed_distortion.set_time_constant(self._smoothing_ms)
-        self._smoothed_mix.set_time_constant(self._smoothing_ms)
-    
+
     def get_smoothing_time(self) -> float:
-        """Get the current smoothing time constant in milliseconds."""
         return self._smoothing_ms
-    
-    # Parameter setters for GUI binding
+
+    # ------------------------------------------------------------------ setters
     def set_pitch_semitones(self, semitones: float):
-        """Set pitch offset in semitones (-24 to +24)
-        
-        Applies a musical pitch shift to the oscillator frequency.
-        Does not affect the noise generator.
-        """
-        self.pitch_semitones = np.clip(semitones, -24.0, 24.0)
-    
+        """Pitch offset in semitones (-24..24); shifts osc, noise filter and EQ."""
+        self.pitch_semitones = float(np.clip(semitones, -24.0, 24.0))
+
     def set_osc_frequency(self, freq: float):
-        """Set oscillator frequency (smoothed)"""
-        self._smoothed_osc_freq.set_target(freq)
-        # Also set immediately for non-realtime use
         self.oscillator.set_frequency(freq)
-    
+
     def set_osc_frequency_immediate(self, freq: float):
-        """Set oscillator frequency immediately (no smoothing)"""
-        self._smoothed_osc_freq.set_immediate(freq)
         self.oscillator.set_frequency(freq)
-    
+
     def set_osc_waveform(self, waveform: WaveformType):
-        """Set oscillator waveform"""
         self.oscillator.set_waveform(waveform)
-    
+
     def set_pitch_mod_mode(self, mode: PitchModMode):
-        """Set pitch modulation mode"""
         self.oscillator.set_pitch_mod_mode(mode)
-    
+
     def set_pitch_mod_amount(self, amount: float):
-        """Set pitch modulation amount"""
         self.oscillator.set_pitch_mod_amount(amount)
-    
+
     def set_pitch_mod_rate(self, rate: float):
-        """Set pitch modulation rate"""
+        """Pitch modulation rate: ms in Decay mode, Hz in Sine / Noise mode."""
         self.oscillator.set_pitch_mod_rate(rate)
-    
+
     def set_osc_attack(self, attack_ms: float):
-        """Set oscillator envelope attack"""
-        self.osc_envelope.set_attack(attack_ms)
-    
+        self._osc_attack_base_ms = float(np.clip(attack_ms, 0.0, 10000.0))
+        self.osc_envelope.set_attack(self._osc_attack_base_ms)
+
     def set_osc_decay(self, decay_ms: float):
-        """Set oscillator envelope decay"""
         self.osc_envelope.set_decay(decay_ms)
-    
+
     def set_noise_filter_mode(self, mode: NoiseFilterMode):
-        """Set noise filter mode"""
         self.noise_gen.set_filter_mode(mode)
-    
+
     def set_noise_filter_freq(self, freq: float):
-        """Set noise filter frequency (smoothed)"""
-        self._smoothed_noise_freq.set_target(freq)
-        # Also set immediately for non-realtime use
-        self.noise_gen.set_filter_frequency(freq)
-    
+        self._noise_filter_freq_base = float(np.clip(freq, 20.0, 20000.0))
+        self.noise_gen.set_filter_frequency(self._noise_filter_freq_base)
+
     def set_noise_filter_freq_immediate(self, freq: float):
-        """Set noise filter frequency immediately (no smoothing)"""
-        self._smoothed_noise_freq.set_immediate(freq)
-        self.noise_gen.set_filter_frequency(freq)
-    
+        self.set_noise_filter_freq(freq)
+
     def set_noise_filter_q(self, q: float):
-        """Set noise filter Q (smoothed)"""
-        self._smoothed_noise_q.set_target(q)
-        # Also set immediately for non-realtime use
         self.noise_gen.set_filter_q(q)
-    
+
     def set_noise_filter_q_immediate(self, q: float):
-        """Set noise filter Q immediately (no smoothing)"""
-        self._smoothed_noise_q.set_immediate(q)
         self.noise_gen.set_filter_q(q)
-    
+
     def set_noise_stereo(self, enabled: bool):
-        """Set noise stereo mode"""
         self.noise_gen.set_stereo(enabled)
-    
+
     def set_noise_envelope_mode(self, mode: NoiseEnvelopeMode):
-        """Set noise envelope mode"""
         self.noise_gen.set_envelope_mode(mode)
-    
+
     def set_noise_attack(self, attack_ms: float):
-        """Set noise envelope attack"""
-        self.noise_gen.set_attack(attack_ms)
-    
+        self._noise_attack_base_ms = float(np.clip(attack_ms, 0.0, 10000.0))
+        self.noise_gen.set_attack(self._noise_attack_base_ms)
+
     def set_noise_decay(self, decay_ms: float):
-        """Set noise envelope decay"""
         self.noise_gen.set_decay(decay_ms)
-    
+
     def set_osc_noise_mix(self, mix: float):
-        """Set oscillator/noise mix (smoothed)
-        
-        Args:
-            mix: 0.0 = all noise, 1.0 = all oscillator
-        """
-        mix = np.clip(mix, 0.0, 1.0)
-        self.osc_noise_mix = mix
-        self._smoothed_mix.set_target(mix)
-    
+        """0.0 = all noise, 1.0 = all oscillator."""
+        self.osc_noise_mix = float(np.clip(mix, 0.0, 1.0))
+
     def set_osc_noise_mix_immediate(self, mix: float):
-        """Set oscillator/noise mix immediately (no smoothing)"""
-        mix = np.clip(mix, 0.0, 1.0)
-        self.osc_noise_mix = mix
-        self._smoothed_mix.set_immediate(mix)
-    
+        self.set_osc_noise_mix(mix)
+
     def set_eq_frequency(self, freq: float):
-        """Set EQ frequency (smoothed)"""
-        self.eq_frequency = np.clip(freq, 20.0, 20000.0)
-        self._smoothed_eq_freq.set_target(self.eq_frequency)
-    
+        self.eq_frequency = float(np.clip(freq, 20.0, 20000.0))
+
     def set_eq_frequency_immediate(self, freq: float):
-        """Set EQ frequency immediately (no smoothing)"""
-        self.eq_frequency = np.clip(freq, 20.0, 20000.0)
-        self._smoothed_eq_freq.set_immediate(self.eq_frequency)
-        # Also update the actual filter objects (smoothed path only updates when not settled)
-        self.eq_filter_l.set_frequency(self.eq_frequency)
-        self.eq_filter_r.set_frequency(self.eq_frequency)
-    
+        self.set_eq_frequency(freq)
+
     def set_eq_gain(self, gain_db: float):
-        """Set EQ gain in dB and update filter objects.
-        
-        Uses gain-adaptive Q: for extreme gains (>15dB), the Q is increased
-        proportionally to narrow the boost and reduce spillover to distant
-        frequencies (e.g. prevents a +28dB boost at 981Hz from adding +5dB
-        at 2460Hz where an oscillator might be ringing).
-        """
-        self.eq_gain_db = np.clip(gain_db, -40.0, 40.0)
-        self.eq_filter_l.set_gain(self.eq_gain_db)
-        self.eq_filter_r.set_gain(self.eq_gain_db)
-        
-        # Gain-adaptive Q: scale Q up for extreme gains to narrow the peak
-        abs_gain = abs(self.eq_gain_db)
-        if abs_gain > self.EQ_GAIN_ADAPTIVE_THRESHOLD:
-            # Q scales linearly with excess gain above threshold
-            q_scale = abs_gain / self.EQ_GAIN_ADAPTIVE_THRESHOLD
-            effective_q = self.EQ_BASE_Q * q_scale
-        else:
-            effective_q = self.EQ_BASE_Q
-        self.eq_filter_l.set_q(effective_q)
-        self.eq_filter_r.set_q(effective_q)
-    
+        self.eq_gain_db = float(np.clip(gain_db, -40.0, 40.0))
+
     def set_distortion(self, amount: float):
-        """Set distortion amount (smoothed)"""
-        amount = np.clip(amount, 0.0, 1.0)
-        self.distortion = amount
-        self._smoothed_distortion.set_target(amount)
-    
+        self.distortion = float(np.clip(amount, 0.0, 1.0))
+
     def set_distortion_immediate(self, amount: float):
-        """Set distortion amount immediately (no smoothing)"""
-        amount = np.clip(amount, 0.0, 1.0)
-        self.distortion = amount
-        self._smoothed_distortion.set_immediate(amount)
-    
+        self.set_distortion(amount)
+
     def set_bpm(self, bpm: float):
-        """Set BPM for tempo-synced delay effect"""
+        """Set BPM for the tempo-synced delay effect."""
         self.delay.set_bpm(bpm)
-    
+
+    # ------------------------------------------------------------------ (de)serialisation
     def get_parameters(self) -> dict:
-        """Get all parameters as a dictionary"""
         return {
             'name': self.name,
             'pitch_semitones': self.pitch_semitones,
@@ -957,14 +416,14 @@ class DrumChannel:
             'pitch_mod_mode': self.oscillator.pitch_mod_mode.value,
             'pitch_mod_amount': self.oscillator.pitch_mod_amount,
             'pitch_mod_rate': self.oscillator.pitch_mod_rate,
-            'osc_attack': self.osc_envelope.attack_ms,
+            'osc_attack': self._osc_attack_base_ms,
             'osc_decay': self.osc_envelope.decay_ms,
             'noise_filter_mode': self.noise_gen.filter_mode.value,
-            'noise_filter_freq': self.noise_gen.filter_frequency,
+            'noise_filter_freq': self._noise_filter_freq_base,
             'noise_filter_q': self.noise_gen.filter_q,
             'noise_stereo': self.noise_gen.stereo,
             'noise_envelope_mode': self.noise_gen.envelope_mode.value,
-            'noise_attack': self.noise_gen.attack_ms,
+            'noise_attack': self._noise_attack_base_ms,
             'noise_decay': self.noise_gen.decay_ms,
             'osc_noise_mix': self.osc_noise_mix,
             'distortion': self.distortion,
@@ -989,23 +448,15 @@ class DrumChannel:
             'lfo2': self.lfo2.get_parameters(),
             'pump': self.pump.get_parameters(),
         }
-    
+
     def set_parameters(self, params: dict, immediate: bool = True):
-        """Set all parameters from a dictionary
-        
-        Args:
-            params: Dictionary of parameter values
-            immediate: If True, set values immediately without smoothing (for preset loading)
-        """
+        """Set all parameters from a dictionary (preset loading)."""
         if 'name' in params:
             self.name = params['name']
         if 'pitch_semitones' in params:
             self.set_pitch_semitones(params['pitch_semitones'])
         if 'osc_frequency' in params:
-            if immediate:
-                self.set_osc_frequency_immediate(params['osc_frequency'])
-            else:
-                self.set_osc_frequency(params['osc_frequency'])
+            self.set_osc_frequency(params['osc_frequency'])
         if 'osc_waveform' in params:
             self.set_osc_waveform(WaveformType(params['osc_waveform']))
         if 'pitch_mod_mode' in params:
@@ -1021,15 +472,9 @@ class DrumChannel:
         if 'noise_filter_mode' in params:
             self.set_noise_filter_mode(NoiseFilterMode(params['noise_filter_mode']))
         if 'noise_filter_freq' in params:
-            if immediate:
-                self.set_noise_filter_freq_immediate(params['noise_filter_freq'])
-            else:
-                self.set_noise_filter_freq(params['noise_filter_freq'])
+            self.set_noise_filter_freq(params['noise_filter_freq'])
         if 'noise_filter_q' in params:
-            if immediate:
-                self.set_noise_filter_q_immediate(params['noise_filter_q'])
-            else:
-                self.set_noise_filter_q(params['noise_filter_q'])
+            self.set_noise_filter_q(params['noise_filter_q'])
         if 'noise_stereo' in params:
             self.set_noise_stereo(params['noise_stereo'])
         if 'noise_envelope_mode' in params:
@@ -1039,50 +484,41 @@ class DrumChannel:
         if 'noise_decay' in params:
             self.set_noise_decay(params['noise_decay'])
         if 'osc_noise_mix' in params:
-            if immediate:
-                self.set_osc_noise_mix_immediate(params['osc_noise_mix'])
-            else:
-                self.set_osc_noise_mix(params['osc_noise_mix'])
+            self.set_osc_noise_mix(params['osc_noise_mix'])
         if 'distortion' in params:
-            if immediate:
-                self.set_distortion_immediate(params['distortion'])
-            else:
-                self.set_distortion(params['distortion'])
+            self.set_distortion(params['distortion'])
         if 'eq_frequency' in params:
-            if immediate:
-                self.set_eq_frequency_immediate(params['eq_frequency'])
-            else:
-                self.set_eq_frequency(params['eq_frequency'])
+            self.set_eq_frequency(params['eq_frequency'])
         if 'eq_gain_db' in params:
             self.set_eq_gain(params['eq_gain_db'])
         if 'level_db' in params:
-            self.level_db = np.clip(params['level_db'], -60.0, 40.0)
+            self.level_db = float(np.clip(params['level_db'], -60.0, 40.0))
         if 'pan' in params:
-            self.pan = np.clip(params['pan'], -100.0, 100.0)
+            self.pan = float(np.clip(params['pan'], -100.0, 100.0))
         if 'choke_enabled' in params:
-            self.choke_enabled = params['choke_enabled']
+            self.choke_enabled = bool(params['choke_enabled'])
         if 'output_pair' in params:
             self.output_pair = params['output_pair']
         if 'osc_vel_sensitivity' in params:
-            self.osc_vel_sensitivity = np.clip(params['osc_vel_sensitivity'], 0.0, 2.0)
+            self.osc_vel_sensitivity = float(np.clip(params['osc_vel_sensitivity'], 0.0, 2.0))
         if 'noise_vel_sensitivity' in params:
-            self.noise_vel_sensitivity = np.clip(params['noise_vel_sensitivity'], 0.0, 2.0)
+            self.noise_vel_sensitivity = float(np.clip(params['noise_vel_sensitivity'], 0.0, 2.0))
         if 'mod_vel_sensitivity' in params:
-            self.mod_vel_sensitivity = np.clip(params['mod_vel_sensitivity'], 0.0, 2.0)
+            self.mod_vel_sensitivity = float(np.clip(params['mod_vel_sensitivity'], 0.0, 2.0))
         if 'vintage_amount' in params:
-            self.vintage_amount = np.clip(params['vintage_amount'], 0.0, 1.0)
+            self.vintage_amount = float(np.clip(params['vintage_amount'], 0.0, 1.0))
         if 'reverb_decay' in params:
-            self.reverb_decay = np.clip(params['reverb_decay'], 0.0, 1.0)
+            self.reverb_decay = float(np.clip(params['reverb_decay'], 0.0, 1.0))
         if 'reverb_mix' in params:
-            self.reverb_mix = np.clip(params['reverb_mix'], 0.0, 1.0)
+            self.reverb_mix = float(np.clip(params['reverb_mix'], 0.0, 1.0))
         if 'reverb_width' in params:
-            self.reverb_width = np.clip(params['reverb_width'], 0.0, 2.0)
+            self.reverb_width = float(np.clip(params['reverb_width'], 0.0, 2.0))
         if 'delay_time' in params:
             self.delay_time = DelayTime(int(params['delay_time']))
         if 'delay_feedback' in params:
-            self.delay_feedback = np.clip(params['delay_feedback'], 0.0, 0.95)
+            self.delay_feedback = float(np.clip(params['delay_feedback'], 0.0, 0.95))
         if 'delay_mix' in params:
-            self.delay_mix = np.clip(params['delay_mix'], 0.0, 1.0)
+            self.delay_mix = float(np.clip(params['delay_mix'], 0.0, 1.0))
         if 'delay_ping_pong' in params:
             self.delay_ping_pong = bool(params['delay_ping_pong'])
         if 'lfo1' in params:

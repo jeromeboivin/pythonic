@@ -42,7 +42,8 @@ class MockOscillator:
 
 class MockEnvelope:
     def __init__(self, data):
-        self.decay_ms = data['osc_decay'] * 1000.0  # Convert seconds to ms
+        self.attack_ms = data['osc_attack']  # already in ms
+        self.decay_ms = data['osc_decay']
 
 class MockNoiseGen:
     def __init__(self, data):
@@ -51,8 +52,8 @@ class MockNoiseGen:
         self.filter_q = data['noise_filter_q']
         self.stereo = data['noise_stereo']
         self.envelope_mode = MockMode(data['noise_envelope_mode'])
-        self.attack_ms = data['noise_attack'] * 1000.0  # Convert seconds to ms
-        self.decay_ms = data['noise_decay'] * 1000.0  # Convert seconds to ms
+        self.attack_ms = data['noise_attack']  # already in ms
+        self.decay_ms = data['noise_decay']
 
 class MockChannel:
     def __init__(self, data):
@@ -67,6 +68,7 @@ class MockChannel:
         self.level_db = data['level_db']
         self.pan = data['pan']
         self.output_pair = data['output_pair']
+        self.choke_enabled = data.get('choke_enabled', False)
         self.osc_vel_sensitivity = data['osc_vel_sensitivity']
         self.noise_vel_sensitivity = data['noise_vel_sensitivity']
         self.mod_vel_sensitivity = data['mod_vel_sensitivity']
