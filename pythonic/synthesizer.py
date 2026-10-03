@@ -13,9 +13,26 @@ from .noise import NoiseFilterMode, NoiseEnvelopeMode
 from .lfo import ModTarget
 
 
-def _render_channel_audio(channel: DrumChannel, num_samples: int):
-    """Render one channel block for optional parallel processing."""
-    return channel, channel.process(num_samples)
+def _render_channel_audio(channel: DrumChannel, num_samples: int, actions=None):
+    """Render one channel block, applying its (offset, velocity) actions on the way.
+
+    A velocity of None is a choke.  Without actions the block is rendered in one call.
+    """
+    if not actions:
+        return channel, channel.process(num_samples)
+    out = np.empty((num_samples, 2), dtype=np.float32)
+    pos = 0
+    for offset, velocity in actions:
+        if offset > pos:
+            out[pos:offset] = channel.process(offset - pos)
+            pos = offset
+        if velocity is None:
+            channel.choke()
+        else:
+            channel.trigger(velocity)
+    if pos < num_samples:
+        out[pos:] = channel.process(num_samples - pos)
+    return channel, out
 
 
 class PythonicSynthesizer:
@@ -219,20 +236,30 @@ class PythonicSynthesizer:
                 channel.choke()
 
     def process_audio_events(self, num_samples: int, events) -> np.ndarray:
-        """Render `num_samples`, triggering (offset, channel, velocity) events sample-accurately."""
-        out = np.empty((num_samples, 2), dtype=np.float32)
-        pos = 0
+        """Render `num_samples`, triggering (offset, channel, velocity) events sample-accurately.
+
+        Only the channels that receive a trigger or a choke are split at the event
+        offsets; every other channel renders the whole block in one call.
+        """
+        start = self.sample_clock
+        actions = {}
         for offset, channel_idx, velocity in sorted(events):
+            if not 0 <= channel_idx < self.NUM_CHANNELS:
+                continue
             offset = max(0, min(num_samples, int(offset)))
-            if offset > pos:
-                out[pos:offset] = self.process_audio(offset - pos)
-                pos = offset
-            self.trigger_drum(channel_idx, velocity)
-        if pos < num_samples:
-            out[pos:] = self.process_audio(num_samples - pos)
-        return out
-    
-    def process_audio(self, num_samples: int) -> np.ndarray:
+            if self.channels[channel_idx].choke_enabled:
+                if any(self.channels[i].choke_enabled and self._trigger_clock[i] == start + offset
+                       for i in range(channel_idx)):
+                    continue  # a lower choked channel wins this instant
+                for i, other in enumerate(self.channels):
+                    if i != channel_idx and other.choke_enabled:
+                        actions.setdefault(i, []).append((offset, None))
+            self._trigger_clock[channel_idx] = start + offset
+            actions.setdefault(channel_idx, []).append((offset, velocity))
+        # process_audio returns a view of a reused buffer; callers keep the blocks
+        return self.process_audio(num_samples, actions).copy()
+
+    def process_audio(self, num_samples: int, actions=None) -> np.ndarray:
         """
         Generate audio from all channels with A/B sub-mix routing.
         
@@ -243,6 +270,8 @@ class PythonicSynthesizer:
         
         Args:
             num_samples: Number of samples to generate
+            actions: Optional {channel: [(offset, velocity or None for a choke)]}
+                applied sample-accurately inside the block
             
         Returns:
             Stereo audio array [num_samples, 2]
@@ -264,10 +293,13 @@ class PythonicSynthesizer:
 
         # Build the active channel list once so the render path can stay lean.
         # Idle channels still advance their voice clock (4-sample trigger grid).
+        actions = actions or {}
         active_channels = []
-        for channel in self.channels:
-            if channel.is_active and not channel.muted:
+        active_actions = []
+        for i, channel in enumerate(self.channels):
+            if i in actions or (channel.is_active and not channel.muted):
                 active_channels.append(channel)
+                active_actions.append(actions.get(i))
             else:
                 channel.voice.idle(num_samples)
         self.sample_clock += num_samples
@@ -295,11 +327,12 @@ class PythonicSynthesizer:
                     _render_channel_audio,
                     active_channels,
                     repeat(num_samples),
+                    active_actions,
                 )
             else:
                 rendered_channels = (
-                    (channel, channel.process(num_samples))
-                    for channel in active_channels
+                    _render_channel_audio(channel, num_samples, channel_actions)
+                    for channel, channel_actions in zip(active_channels, active_actions)
                 )
 
             for channel, channel_output in rendered_channels:

@@ -20,7 +20,7 @@ updated on an 8 (oversampled) / 128 (oversampled) sample grid.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, astuple
+from dataclasses import dataclass
 
 import numpy as np
 from scipy.signal import lfilter
@@ -419,10 +419,12 @@ class DrumVoice:
 
     def __init__(self, sample_rate: int = 44100, seed: int = 0):
         self.sr = float(sample_rate)
+        # Separate streams for the noise source and the random pitch modulation, so
+        # the output does not depend on how the audio is split into blocks
         self._rng = np.random.default_rng(seed)
+        self._mod_rng = np.random.default_rng((seed, 1))
         self.params = VoiceParams()
         self.d = _Derived(self.params, self.sr)
-        self._key = astuple(self.params)
         self.clock = 0                  # samples rendered (block grid is absolute)
         self._carry = np.zeros((0, 2), dtype=np.float32)
         self._pending = []              # ('trig', velocity) / ('choke',)
@@ -445,17 +447,16 @@ class DrumVoice:
         self.nenv = _Env()
         self.nf_zi = [np.zeros(2), np.zeros(2)]
         self.eq_zi = [np.zeros(2), np.zeros(2)]
+        self._eq_tail = False           # EQ still ringing after both envelopes ended
         # smoothed gains: osc mix, noise mix, drive, out L, out R, eq amount
         self.g = np.array(self._gain_targets())
 
     # ---------------------------------------------------------------- params
     def set_params(self, params: VoiceParams):
-        key = astuple(params)
-        if key == self._key:
+        if params == self.params:
             return
         old = self.params
         self.params = params
-        self._key = key
         self.d = _Derived(params, self.sr)
         if old.noise_filter != params.noise_filter:
             self.nf_zi = [np.zeros(2), np.zeros(2)]
@@ -469,7 +470,7 @@ class DrumVoice:
     @property
     def is_active(self) -> bool:
         return (self.oenv.stage != 4 or self.nenv.stage != 4 or len(self._pending) > 0
-                or len(self._carry) > 0)
+                or len(self._carry) > 0 or self._eq_tail)
 
     # ---------------------------------------------------------------- events
     def trigger(self, velocity: float = 127.0):
@@ -496,7 +497,7 @@ class DrumVoice:
         self.lfo = 0.0
         self.penv = 1.0
         self.pmode4 = False
-        r = self._rng.uniform(-1.0, 1.0)
+        r = self._mod_rng.uniform(-1.0, 1.0)
         self.nlp[:] = r
         self.smode = (_sine_mod_granularity(self.A, d.mod_b0, d.inc0, d.max_inc)
                       if d.mod_mode == MOD_SINE else 0)
@@ -692,25 +693,32 @@ class DrumVoice:
             env = self.penv * d.mod_dc ** (8.0 * j)
             inc_blk = np.minimum(inc0 * pow2_dec(A * env), d.max_inc)
             blk = blk0 + j
-            mode4 = self.pmode4
-            held = self.hold_inc
-            cut = False
-            # 64-sample (16-block) housekeeping: mode-4 latch and env cut-off
-            for i in np.nonzero(blk % 16 == 0)[0]:
-                e = 0.0 if cut else env[i]
-                if e < 0.001:
-                    cut = True
-                    e = 0.0
+            # 64-sample (16-block) housekeeping: mode-4 latch and env cut-off.
+            # The env only decays, so the cut-off is sticky once reached; a cut env
+            # (e = 0) always latches the plain increment.
+            bnd = np.nonzero(blk % 16 == 0)[0]
+            if len(bnd):
+                e = env[bnd]
+                cut_b = e < 0.001
+                e = np.where(cut_b, 0.0, e)
                 x = A * 0.6931471825 * e
-                mode4 = abs(math.exp(x * d.mod_dc) - math.exp(x)) * inc0 < 1e-7
-                if mode4:
-                    held = min(inc0 * pow2_dec(A * e), d.max_inc)
-                    inc_blk[i:] = held
-                elif cut:
-                    inc_blk[i:] = min(inc0, d.max_inc)
+                m4 = np.abs(np.exp(x * d.mod_dc) - np.exp(x)) * inc0 < 1e-7
+                held_b = np.minimum(inc0 * pow2_dec(A * e), d.max_inc)
+                seg = np.cumsum(blk % 16 == 0) - 1          # boundary each block follows
+                inside = seg >= 0
+                latched = np.zeros(nb, dtype=bool)
+                latched[inside] = m4[seg[inside]]
+                inc_blk[latched] = held_b[seg[latched]]
+                stop = bnd[0]
+                mode4 = bool(m4[-1])
+                held = float(held_b[np.nonzero(m4)[0][-1]]) if m4.any() else self.hold_inc
+                cut = bool(cut_b[-1])
+            else:
+                stop = nb
+                mode4 = self.pmode4
+                held = self.hold_inc
+                cut = False
             if self.pmode4:
-                first = np.nonzero(blk % 16 == 0)[0]
-                stop = first[0] if len(first) else nb
                 inc_blk[:stop] = self.hold_inc
             self.pmode4 = mode4
             self.hold_inc = held
@@ -741,7 +749,7 @@ class DrumVoice:
         # random (noise) modulation: two cascaded one-pole lowpasses on uniform noise
         step = 8 if d.mod_hold8 else 2
         nv = n_os // step
-        u = self._rng.uniform(-1.0, 1.0, nv) * d.mod_b4
+        u = self._mod_rng.uniform(-1.0, 1.0, nv) * d.mod_b4
         c = d.mod_lpc
         bq, aq = [c], [1.0, -(1.0 - c)]
         s1, zf1 = lfilter(bq, aq, u, zi=[(1.0 - c) * self.nlp[0]])
@@ -772,7 +780,7 @@ class DrumVoice:
     def _smoothed(self, nb):
         """Per-sample smoothed gains (6, nb*4); gains glide per 4-sample block."""
         tgt = np.array(self._gain_targets())
-        if np.allclose(self.g, tgt, rtol=0.0, atol=1e-7):
+        if np.max(np.abs(self.g - tgt)) <= 1e-7:
             self.g = tgt
             return None
         k = self.d.smooth
@@ -787,6 +795,8 @@ class DrumVoice:
         n = nb * 4
         out = np.zeros((n, 2))
         if self.oenv.stage == 4 and self.nenv.stage == 4:
+            if self._eq_tail:
+                self._ring_eq(out)
             self.clock += n
             return out
 
@@ -817,21 +827,42 @@ class DrumVoice:
         sig_o = osc * oenv * go * gd
         chans = 2 if d.stereo else 1
         sig = np.empty((n, chans))
+        if noise_on:
+            wn = self._rng.uniform(-1.0, 1.0, (n, chans)) * d.noise_gain
         for c in range(chans):
             s = sig_o.copy()
             if noise_on:
-                wn = self._rng.uniform(-1.0, 1.0, n) * d.noise_gain
-                yn, self.nf_zi[c] = lfilter(d.nf_b, d.nf_a, wn, zi=self.nf_zi[c])
+                yn, self.nf_zi[c] = lfilter(d.nf_b, d.nf_a, wn[:, c], zi=self.nf_zi[c])
                 s += yn * nenv * gn * gd
             s = apply_shaper(s, d.sh_d, d.sh_k, d.sh_dc)
             if np.any(np.asarray(ge) != 0.0):
                 bp, self.eq_zi[c] = lfilter(d.eq_b, d.eq_a, s, zi=self.eq_zi[c])
                 s = s + ge * bp
+                self._eq_tail = True
             sig[:, c] = s
         out[:, 0] = sig[:, 0] * gl
         out[:, 1] = sig[:, -1] * gr
         self.clock += n
         return out
+
+    def _ring_eq(self, out):
+        """Let the EQ ring out on silence once both envelopes have ended."""
+        d = self.d
+        _, _, _, gl, gr, ge = self.g
+        chans = 2 if d.stereo else 1
+        zero = np.zeros(len(out))
+        level = 0.0
+        for c in range(chans):
+            bp, self.eq_zi[c] = lfilter(d.eq_b, d.eq_a, zero, zi=self.eq_zi[c])
+            out[:, c] = ge * bp
+            level = max(level, float(np.max(np.abs(self.eq_zi[c]))))
+        if chans == 1:
+            out[:, 1] = out[:, 0]
+        out[:, 0] *= gl
+        out[:, 1] *= gr
+        if level < 1e-7 or ge == 0.0:
+            self.eq_zi = [np.zeros(2), np.zeros(2)]
+            self._eq_tail = False
 
     def idle(self, num_samples: int):
         """Advance time without rendering (silent / muted channel)."""
