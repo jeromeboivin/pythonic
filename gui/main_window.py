@@ -5256,23 +5256,17 @@ class PythonicGUI:
                 fg_color = self.COLORS['text']
             
             btn.config(bg=bg_color, fg=fg_color)
-        
-        # Schedule next update for flash animation
-        self.root.after(250, self._toggle_button_flash)
     
     def _toggle_button_flash(self):
-        """Toggle flash state and update buttons"""
+        """Toggle flash state and update buttons (one 250 ms chain, started at init)"""
         if self.pattern_manager.is_playing:
             self.button_flash_state = not self.button_flash_state
             self._update_pattern_button_states()
-        else:
+        elif self.button_flash_state:
             # Reset flash state when not playing
-            if self.button_flash_state:
-                self.button_flash_state = False
-                self._update_pattern_button_states()
-            else:
-                # Continue checking
-                self.root.after(250, self._toggle_button_flash)
+            self.button_flash_state = False
+            self._update_pattern_button_states()
+        self.root.after(250, self._toggle_button_flash)
     
     def run(self):
         """Run the application"""
