@@ -1694,6 +1694,8 @@ class PythonicGUI:
         menu.add_separator()
         menu.add_command(label="Load Drum Patch (.mtdrum)...", command=self._load_drum_patch)
         menu.add_command(label="Save Drum Patch (.mtdrum)...", command=self._save_drum_patch)
+        menu.add_command(label="Export Drum to WAV...", command=self._export_current_drum)
+        menu.add_command(label="Export All Drums to WAV...", command=self._export_all_wavs)
         menu.add_separator()
         menu.add_command(label="Cut Preset", command=self._cut_preset)
         menu.add_command(label="Copy Preset", command=self._copy_preset)

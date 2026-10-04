@@ -753,9 +753,15 @@ class PresetManager:
 
 
     def export_drum_to_wav(self, channel, filepath: str, duration_ms: float = 2000.0, velocity: int = 127, sample_rate: int = 44100, bit_depth: int = 16, mono: bool = False):
+        from .drum_channel import DrumChannel
+
+        # Render a copy so the live voice (and the audio thread using it) is untouched
+        render = DrumChannel(channel.channel_id, sample_rate)
+        render.set_parameters(channel.get_parameters())
+        render._synthesizer = channel._synthesizer  # tempo-synced LFOs read its BPM
         num_samples = int(duration_ms * sample_rate / 1000.0)
-        channel.trigger(velocity)
-        audio = channel.process(num_samples)
+        render.trigger(velocity)
+        audio = render.process(num_samples)
         if mono:
             audio = ((audio[:, 0] + audio[:, 1]) * 0.5).reshape(-1, 1)
         max_val = np.max(np.abs(audio))
