@@ -1,0 +1,19 @@
+<!doctype html><html><head><meta charset="utf-8">
+<!-- Lets the same node:test-style spec files run here and under `node --test`. -->
+<script type="importmap">
+{ "imports": { "node:test": "./shim/node-test.js", "node:assert/strict": "./shim/node-assert.js" } }
+</script>
+<script type="module">
+// Tiny in-page harness: imports spec modules, runs what they registered, leaves results on window.__results.
+// *.test.js = pure logic (also runs in Node); *.engine-spec.js = needs the DOM / customElements
+// (not a `node --test` pattern, so Node never picks it up).
+import { registered } from './shim/node-test.js';
+globalThis.test = (name, fn) => registered.push({ name, fn });
+for (const spec of ['./model.test.js', './knob.engine-spec.js']) await import(spec);
+const out = [];
+for (const { name, fn } of registered) {
+  try { await fn(); out.push({ name, ok: true }); }
+  catch (e) { out.push({ name, ok: false, error: String(e && e.stack || e) }); }
+}
+window.__results = out;
+</script></head><body></body></html>
