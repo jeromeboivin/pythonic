@@ -385,8 +385,8 @@ const VARIANTS = {
     },
   },
   C: {
-    name: 'Fader banks + click-to-assign modulation', ks: 30, fh: 112, ind: 'chips',
-    note: 'Times and amounts on fader banks (envelopes, velocity), timbre on knobs, the three modulators as stacked rows. A destination is set by pressing its → button and clicking the target control (face knobs included); targets carry a colour chip (L1 / L2 / P) and a moving arc.',
+    name: 'Fader banks + click-to-assign modulation (WINNER, as decided)', ks: 30, fh: 112, ind: 'arc',
+    note: 'Winner. Attack/decay and velocity on fader banks, timbre on knobs, the three modulators as stacked rows. A destination is set by pressing its → button and clicking the target (the selected strip\'s tune / decay / level, master and morph included). Modulation is a moving arc in the source colour. Tune, osc decay and level live on the face only.',
     rack: () => {
       const asg = { 'lfo1.dest': { t: 'asg' }, 'lfo2.dest': { t: 'asg' }, 'pump.dest': { t: 'asg' } };
       const m = (s) => {
@@ -399,10 +399,10 @@ const VARIANTS = {
         <button class="btn" data-asgoff>off</button><button class="btn" data-asgcancel>cancel</button></span>` : '';
       const vf = { t: 'vf' };
       return rackHeader(bar) + `<div class="secs">
-        ${sec('Oscillator', [['osc.wave'], ['osc.pmode'], ['osc.freq', 'osc.pitch'], ['osc.amt', 'osc.rate']], { f: .85 })}
+        ${sec('Oscillator', [['osc.wave'], ['osc.pmode'], ['osc.freq'], ['osc.amt', 'osc.rate']], { f: .85 })}
         ${sec('Noise', [['noise.filt', 'noise.stereo'], ['noise.freq', 'noise.q']], { f: .75 })}
-        ${sec('Envelopes', [['noise.env'], ['osc.atk', 'osc.dec', 'noise.atk', 'noise.dec']], { f: 1.12, ov: { 'osc.atk': { t: 'vf', l: 'osc atk' }, 'osc.dec': { t: 'vf', l: 'osc dec' }, 'noise.atk': { t: 'vf', l: 'nse atk' }, 'noise.dec': { t: 'vf', l: 'nse dec' } } })}
-        ${sec('Mix', [['mix.mix', 'mix.out'], ['mix.eqf', 'mix.eqg', 'mix.dist'], ['mix.pan', 'mix.level', 'mix.choke']], { f: 1.05 })}
+        ${sec('Envelopes', [['noise.env'], ['osc.atk', 'noise.atk', 'noise.dec']], { f: 1, ov: { 'osc.atk': { t: 'vf', l: 'osc atk' }, 'osc.dec': { t: 'vf', l: 'osc dec' }, 'noise.atk': { t: 'vf', l: 'nse atk' }, 'noise.dec': { t: 'vf', l: 'nse dec' } } })}
+        ${sec('Mix', [['mix.mix', 'mix.out'], ['mix.eqf', 'mix.eqg', 'mix.dist'], ['mix.pan', 'mix.choke']], { f: 1.05 })}
         ${sec('Velocity', [['vel.osc', 'vel.noise', 'vel.mod']], { f: .6, rs: 'flex:1' })}
         ${sec('FX', [['fx.vint', 'fx.rt', 'fx.rm', 'fx.rw'], ['fx.dt', 'fx.pp'], ['fx.fb', 'fx.dm']], { f: 1.15 })}
         <section class="sec" style="flex:2.75 1 0;gap:3px"><h4>Modulation</h4>${m('lfo1')}${m('lfo2')}${m('pump')}</section>
