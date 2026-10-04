@@ -632,7 +632,7 @@ const VARIANTS = {
     note: 'Every feature replaces the channel edit in the edit rack drawer (opening it if closed). The whole face stays live and usable. Wide and short: everything must fit in one 1568×260 row.' },
   C: { name: 'Separate Qt windows', how: () => 'win',
     note: 'Every feature is its own non-modal window (its own web view), movable, several at once. The panel stays live. Windows can hide behind the panel and must be sized and placed.' },
-  D: { name: 'Mixed by weight (recommended)', how: (f) => FEAT[f].mix,
+  D: { name: 'Mixed by weight (WINNER, as decided)', how: (f) => FEAT[f].mix,
     note: 'One-choice prompts (export tail) as a popover on the button; channel tools (PO-32, AI generator) as rack pages so the face stays live and their 8 lanes line up with the 8 strips; setup as an overlay sheet.' },
 };
 Object.assign(state, { open: null, ftab: { po32: 0, setup: 0 }, wins: [], native: null, front: null });
