@@ -1,0 +1,372 @@
+<!doctype html>
+<!--
+  PROTOTYPE, throwaway. Answers "How are step features entered on the 16-pad row?" (map #1, ticket #8).
+  A crop of the settled panel (strips abbreviated to their headers) with three step-entry models,
+  switchable with ?variant=A|B|C or the bottom bar. Everything is clickable; state is in memory only
+  and printed under the pads after every action.
+  Step = trigger, accent, velocity (1-127, used when not accented), fill, probability, substeps.
+  Patterns are 1-64 steps, shown 16 per page.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PROTOTYPE step entry</title>
+<style>
+  :root { --bg:#050506; --panel:#17181a; --panel-hi:#1e1f22; --box:#34363a; --label:#e8e8e4; --dim:#8f9194;
+    --accent:#ff8a1f; --mute:#8a3dff; --pad-off:#232427; --play:#3dff6e;
+    --g1:#e8352a; --g2:#f2862e; --g3:#f4cf3a; --g4:#f3efe3; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); overflow:hidden; font-family:"DejaVu Sans", Arial, sans-serif; color:var(--label); user-select:none; }
+  #stage { position:absolute; left:0; top:0; transform-origin:0 0; background:var(--panel); border-radius:14px; box-shadow:0 0 0 2px #2a2b2e inset; overflow:hidden; }
+  .row { display:flex; gap:8px; align-items:center; }
+  .btn { background:#2a2b2f; color:var(--label); border:0; border-radius:4px; font:10px/1 inherit; font-family:inherit; letter-spacing:.06em; text-transform:uppercase;
+    padding:7px 9px; cursor:pointer; box-shadow:0 2px 0 #0a0a0b; }
+  .btn.on { background:var(--accent); color:#1a0d00; box-shadow:0 0 10px rgba(255,138,31,.45), 0 2px 0 #6b3405; }
+  .btn.arm { background:#2f6bff; color:#fff; box-shadow:0 0 10px rgba(47,107,255,.6); }
+  .btn.big { width:64px; height:64px; border-radius:50%; font-size:22px; padding:0; }
+  .btn.big.on { background:#2fd05a; color:#032; }
+  .btn.dis { opacity:.35; }
+  .ttl { font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--dim); }
+  .note { font-size:10px; color:#6a6c70; font-style:italic; }
+  .wordmark { font-weight:800; letter-spacing:.32em; font-size:22px; } .wordmark b { color:var(--accent); }
+  /* strip headers */
+  .strips { display:grid; grid-template-columns:repeat(8,1fr); gap:6px; }
+  .strip { border:1px solid var(--box); border-radius:8px; padding:8px 4px; text-align:center; cursor:pointer; position:relative; }
+  .strip.sel { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent) inset; }
+  .strip .n { font-size:11px; color:var(--accent); font-weight:700; } .strip .nm { font-size:11px; margin-top:2px; }
+  .strip .ph { font-size:9px; color:var(--dim); margin-top:10px; height:46px; display:flex; align-items:center; justify-content:center; border:1px dashed #2c2d31; border-radius:4px; }
+  .strip .trig { position:absolute; right:6px; top:6px; width:8px; height:8px; border-radius:50%; background:#2a1606; }
+  .strip .trig.on { background:var(--accent); box-shadow:0 0 6px var(--accent); }
+  /* matrix */
+  .matrix { display:grid; grid-template-columns:110px repeat(16,1fr); gap:4px; }
+  .matrix .lbl { font-size:11px; display:flex; align-items:center; gap:6px; cursor:pointer; }
+  .matrix .lbl.sel { color:var(--accent); }
+  .mc { height:20px; border-radius:3px; background:var(--pad-off); cursor:pointer; }
+  .mc.on { background:var(--gc); box-shadow:0 0 6px var(--gc); }
+  .mc.ph { outline:2px solid var(--play); }
+  .mc.out { opacity:.2; }
+  /* pads */
+  .pads { display:grid; grid-template-columns:repeat(16,1fr); gap:8px; }
+  .pad { height:92px; border-radius:6px; position:relative; background:var(--pad-off); cursor:pointer; overflow:hidden;
+    box-shadow:inset 0 -3px 0 rgba(0,0,0,.35), 0 2px 0 #000; touch-action:none; }
+  .pad::before { content:""; position:absolute; left:0; right:0; top:0; height:5px; background:var(--gc); opacity:.55; }
+  .pad.on { background:var(--gc); box-shadow:0 0 14px var(--gc); }
+  .pad.on.soft { box-shadow:none; }
+  .pad.out { opacity:.18; cursor:default; }
+  .pad.ph { outline:2px solid var(--play); outline-offset:2px; }
+  .pad.foc { outline:2px solid #2f6bff; outline-offset:2px; }
+  .pad .acc { position:absolute; right:6px; top:11px; width:9px; height:9px; border-radius:50%; background:#fff; box-shadow:0 0 6px #fff, 0 0 0 1px #000; }
+  .pad .fill { position:absolute; left:0; right:0; bottom:0; height:9px; background:repeating-linear-gradient(135deg,#111 0 4px,#fff 4px 8px); opacity:.85; }
+  .pad .bar { position:absolute; left:6px; width:8px; bottom:14px; top:24px; background:rgba(0,0,0,.45); border-radius:2px; }
+  .pad .bar i { position:absolute; left:0; right:0; bottom:0; background:#111; border-radius:2px; }
+  .pad.on .bar i { background:#1a0d00; }
+  .pad .val { position:absolute; left:0; right:0; top:44%; text-align:center; font-size:13px; font-weight:700; color:#111; }
+  .pad:not(.on) .val { color:var(--dim); }
+  .pad .prob { position:absolute; left:6px; top:10px; font-size:10px; font-weight:700; color:#111; }
+  .pad:not(.on) .prob { color:var(--dim); }
+  .pad .sub { position:absolute; left:0; right:0; bottom:14px; display:flex; justify-content:center; gap:3px; }
+  .pad .sub i { width:7px; height:7px; border-radius:50%; background:#111; }
+  .pad .sub i.x { background:transparent; box-shadow:inset 0 0 0 1.5px #111; }
+  .pad:not(.on) .sub i { background:var(--dim); } .pad:not(.on) .sub i.x { background:transparent; box-shadow:inset 0 0 0 1.5px var(--dim); }
+  .padnums { display:grid; grid-template-columns:repeat(16,1fr); gap:8px; font-size:10px; color:var(--dim); text-align:center; margin-top:5px; }
+  .padnums .end { color:var(--accent); font-weight:700; }
+  /* pages */
+  .pages { display:flex; gap:4px; }
+  .pg { width:58px; padding:6px 0; text-align:center; position:relative; }
+  .pg .pl { position:absolute; right:4px; top:4px; width:6px; height:6px; border-radius:50%; background:transparent; }
+  .pg .pl.on { background:var(--play); box-shadow:0 0 5px var(--play); }
+  /* minimap (B) */
+  .mini { display:grid; grid-template-columns:repeat(64,1fr); gap:2px; height:26px; cursor:pointer; position:relative; }
+  .mini div { background:#202124; border-radius:1px; }
+  .mini div.on { background:var(--gc); }
+  .mini div.out { background:#0c0c0d; }
+  .mini div.cur { box-shadow:inset 0 -3px 0 #2f6bff; }
+  .mini div.ph { background:var(--play) !important; }
+  .lenh { position:absolute; top:-6px; bottom:-6px; width:8px; margin-left:-4px; background:var(--accent); border-radius:3px; cursor:ew-resize; box-shadow:0 0 8px var(--accent); }
+  /* popover */
+  .pop { position:absolute; z-index:5; background:#0e0e10; border:1px solid #3a3c40; border-radius:8px; padding:8px; display:grid; grid-template-columns:repeat(4,auto); gap:4px; box-shadow:0 8px 24px rgba(0,0,0,.7); }
+  .pop .btn { font-family:"DejaVu Sans Mono", monospace; text-transform:none; }
+  .pop .t { grid-column:1/-1; font-size:10px; color:var(--dim); margin-bottom:2px; }
+  /* inspector (C) */
+  .insp { border:1px solid #2f6bff; border-radius:8px; padding:10px 12px; display:flex; gap:22px; align-items:center; }
+  .insp h5 { margin:0; font-size:13px; color:#6f9bff; letter-spacing:.08em; min-width:110px; }
+  .slider { display:flex; flex-direction:column; gap:4px; }
+  .slider input { width:180px; accent-color:var(--accent); }
+  .slider span { font-size:10px; color:var(--dim); text-transform:uppercase; letter-spacing:.08em; }
+  .cells { display:flex; gap:4px; } .cell { width:22px; height:22px; border-radius:50%; background:#2a2b2f; cursor:pointer; }
+  .cell.on { background:var(--accent); }
+  .state { font-family:"DejaVu Sans Mono", monospace; font-size:12px; color:#9fd3a8; background:#0b0c0d; border-radius:6px; padding:8px 10px; white-space:pre; overflow:hidden; }
+  .help { font-size:11px; color:var(--dim); line-height:1.6; }
+  .help b { color:var(--label); font-weight:600; }
+  #switcher { position:fixed; left:50%; bottom:14px; transform:translateX(-50%); z-index:99; display:flex; align-items:center; gap:10px; background:#fff; color:#111;
+    border-radius:999px; padding:6px 10px; font:13px/1.2 system-ui, sans-serif; box-shadow:0 6px 24px rgba(0,0,0,.6); }
+  #switcher button { border:0; background:#111; color:#fff; width:28px; height:28px; border-radius:50%; cursor:pointer; }
+  #switcher small { color:#666; margin-left:4px; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="switcher"><button id="prev">◀</button><span id="vlabel"></span><button id="next">▶</button></div>
+<script>
+const W = 1600, H = 760;
+const CH = ['Kick Deep', 'Snare Tight', 'Closed Hat', 'Open Hat', 'Clap Room', 'Low Tom', 'Rim Click', 'Crash Wash'];
+const TY = ['BD', 'SD', 'CH', 'OH', 'CP', 'LT', 'RS', 'CY'];
+const SUBS = ['', 'oo', 'o-', '-o', 'ooo', 'oo-', 'o-o', 'o--', '-oo', '--o', 'oooo', 'o-o-', '-o-o', 'ooo-', 'o---'];
+const mk = () => ({ t: false, a: false, v: 64, f: false, p: 100, s: '' });
+const pat = { length: 32, ch: [...Array(8)].map(() => [...Array(64)].map(mk)) };
+// seed a little pattern
+[[0, [0, 4, 8, 12, 16, 20, 24, 26, 28]], [1, [4, 12, 20, 28]], [2, [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30]], [3, [14, 30]], [4, [12, 28, 31]]]
+  .forEach(([c, ss]) => ss.forEach((s) => pat.ch[c][s].t = true));
+pat.ch[0][0].a = pat.ch[0][16].a = true; pat.ch[2].forEach((s, i) => { if (s.t) s.v = i % 4 ? 48 : 96; });
+pat.ch[1][28].f = true; pat.ch[2][6].p = 50; pat.ch[2][22].p = 25; pat.ch[0][26].s = 'o-o'; pat.ch[4][31].s = 'oo';
+
+const st = { sel: 0, page: 0, follow: true, playing: true, ph: 0, matrix: false, allCh: false, lane: 'trig', armLen: false, focus: null, pop: null, last: 'ready' };
+const gc = (i) => ['var(--g1)', 'var(--g2)', 'var(--g3)', 'var(--g4)'][(i % 16) >> 2];
+const btn = (t, on, attrs = '', cls = '') => `<button class="btn ${on ? 'on' : ''} ${cls}" ${attrs}>${t}</button>`;
+const steps = () => pat.ch[st.sel];
+function edit(i, fn, label) {
+  const chs = st.allCh ? [...Array(8).keys()] : [st.sel];
+  chs.forEach((c) => { const s = pat.ch[c][i]; fn(s); if (!s.t) { s.a = false; s.f = false; } });
+  st.last = `${label} step ${i + 1}${st.allCh ? ' on all 8 channels' : ' ch' + (st.sel + 1)}`;
+}
+const pages = () => Math.ceil(pat.length / 16);
+
+// ---------- shared pieces ----------
+function header() {
+  return `<div class="row" style="justify-content:space-between"><div class="wordmark">PYTHON<b>IC</b></div>
+    <span class="note">crop of the settled panel: strips shown as headers only; edit rack omitted</span>
+    <div class="row">${btn('⊞ matrix', st.matrix, 'data-act="matrix"')}</div></div>`;
+}
+function stripsOrMatrix() {
+  if (!st.matrix) return `<div class="strips">${CH.map((n, i) => `<div class="strip ${i === st.sel ? 'sel' : ''}" data-ch="${i}">
+    <span class="trig ${pat.ch[i][st.ph].t && st.playing ? "on" : ""}" data-trig="${i}"></span>
+    <div class="n">${i + 1} · ${TY[i]}</div><div class="nm">${n}</div><div class="ph">tune · decay · fader · m · sel</div></div>`).join('')}</div>`;
+  const base = st.page * 16;
+  return `<div class="matrix">${CH.map((n, c) => `<div class="lbl ${c === st.sel ? 'sel' : ''}" data-ch="${c}">${c + 1} · ${TY[c]} <span style="color:var(--dim)">${n}</span></div>` +
+    [...Array(16)].map((_, k) => { const i = base + k, s = pat.ch[c][i];
+      return `<div class="mc ${s.t ? 'on' : ''} ${i >= pat.length ? 'out' : ''} ${i === st.ph && st.playing ? 'ph' : ''}" style="--gc:${gc(i)}" data-mc="${c},${i}"></div>`; }).join('')).join('')}</div>
+    <div class="note" style="margin-top:6px">matrix: triggers of all 8 channels on the current page; click or drag along a row; click a name to select the channel</div>`;
+}
+function padHTML(i, show) {
+  const s = steps()[i], out = i >= pat.length;
+  const soft = s.t && !s.a && show.vel ? `opacity:${(0.35 + 0.65 * s.v / 127).toFixed(2)}` : '';
+  let inner = '';
+  if (!out) {
+    if (s.a && s.t) inner += '<span class="acc"></span>';
+    if (s.f && s.t) inner += '<span class="fill"></span>';
+    if (show.prob && s.p < 100) inner += `<span class="prob">${s.p}%</span>`;
+    if (show.sub && s.s) inner += `<span class="sub">${[...s.s].map((c) => `<i class="${c === 'o' ? '' : 'x'}"></i>`).join('')}</span>`;
+    if (show.bar === 'vel' && s.t) inner += `<span class="bar"><i style="height:${s.a ? 100 : s.v / 127 * 100}%"></i></span><span class="val">${s.a ? 'ACC' : s.v}</span>`;
+    if (show.bar === 'prob') inner += `<span class="bar"><i style="height:${s.p}%"></i></span><span class="val">${s.p}%</span>`;
+  }
+  return `<div class="pad ${s.t ? 'on' : ''} ${out ? 'out' : ''} ${st.focus === i ? 'foc' : ''}" data-pad="${i}" style="--gc:${gc(i)};${soft}">${inner}</div>`;
+}
+function padRow(show) {
+  const base = st.page * 16;
+  return `<div class="pads">${[...Array(16)].map((_, k) => padHTML(base + k, show)).join('')}</div>
+    <div class="padnums">${[...Array(16)].map((_, k) => `<div class="${base + k === pat.length - 1 ? 'end' : ''}">${base + k + 1}${base + k === pat.length - 1 ? ' ⟧' : ''}</div>`).join('')}</div>`;
+}
+function pageButtons() {
+  const playPage = Math.floor(st.ph / 16);
+  return `<div class="pages">${[0, 1, 2, 3].map((p) => `<button class="btn pg ${p === st.page ? 'on' : ''} ${p >= pages() ? 'dis' : ''}" data-page="${p}">${p * 16 + 1}-${p * 16 + 16}<span class="pl ${st.playing && p === playPage ? 'on' : ''}"></span></button>`).join('')}
+    ${btn('follow', st.follow, 'data-act="follow"')}</div>`;
+}
+function stateLine() {
+  const s = steps()[st.focus ?? 0];
+  return `<div class="state">last: ${st.last}
+pattern length ${pat.length} (${pages()} page${pages() > 1 ? 's' : ''}) · viewing page ${st.page + 1} · ch${st.sel + 1} ${CH[st.sel]} · all-channels ${st.allCh ? 'ON' : 'off'}${st.focus != null ? `
+step ${st.focus + 1}: trig=${s.t} acc=${s.a} vel=${s.v} fill=${s.f} prob=${s.p}% sub="${s.s}"` : ''}</div>`;
+}
+function transport() { return `<div class="row">${btn('■', false, 'data-act="stop"', 'big')}${btn('▶', st.playing, 'data-act="play"', 'big')}</div>`; }
+function popover() {
+  if (!st.pop) return '';
+  const s = steps()[st.pop.i];
+  return `<div class="pop" style="left:${st.pop.x}px;top:${st.pop.y}px"><div class="t">substeps · step ${st.pop.i + 1}</div>
+    ${SUBS.map((x) => btn(x || 'none', s.s === x, `data-sub="${x}"`)).join('')}</div>`;
+}
+
+// ---------- variants ----------
+const LANES = [['trig', 'trig'], ['acc', 'accent'], ['vel', 'velocity'], ['fill', 'fill'], ['prob', 'prob'], ['sub', 'substeps']];
+const VARIANTS = {
+  A: {
+    name: 'Lane modes (hardware style)',
+    help: `<b>Lane buttons</b> choose what the pads edit. TRIG/ACC/FILL: click toggles (drag paints). VEL/PROB: drag a pad up/down. SUB: click a pad for the substep menu.
+      <b>Last step</b>: arm it, then click the pad that ends the pattern (any page). <b>All ch</b> latches: edits hit the same step on all 8 channels. Pages switch the 16 pads; <b>follow</b> tracks the playhead.`,
+    render() {
+      const show = { vel: true, prob: st.lane === 'prob', sub: st.lane === 'sub' || true, bar: st.lane === 'vel' ? 'vel' : st.lane === 'prob' ? 'prob' : null };
+      return `<div class="row" style="justify-content:space-between">
+          <div class="row">${LANES.map(([k, l]) => btn(l, st.lane === k, `data-lane="${k}"`)).join('')}</div>
+          <div class="row">${btn('last step', false, 'data-act="armlen"', st.armLen ? 'arm' : '')}${btn('all ch', st.allCh, 'data-act="allch"')}${pageButtons()}</div></div>
+        ${padRow(show)}`;
+    },
+  },
+  B: {
+    name: 'No modes: gestures + minimap',
+    help: `<b>Click</b> toggles a trigger (drag paints). <b>Ctrl+click</b> accent · <b>Alt+click</b> fill · <b>drag up/down</b> on a lit pad = velocity · <b>Shift+drag</b> = probability · <b>right-click</b> = substeps.
+      Everything shows on the pads at once. The <b>minimap</b> shows all 64 steps: click a quarter to view it, drag the orange handle to set the length. <b>All ch</b> latches.`,
+    render() {
+      const show = { vel: true, prob: true, sub: true, bar: null };
+      const base = st.page * 16, s = steps();
+      const mini = [...Array(64)].map((_, i) => `<div class="${s[i].t ? 'on' : ''} ${i >= pat.length ? 'out' : ''} ${i >= base && i < base + 16 ? 'cur' : ''} ${i === st.ph && st.playing ? 'ph' : ''}" style="--gc:${gc(i)}" data-mini="${i}"></div>`).join('');
+      return `<div class="row" style="justify-content:space-between;align-items:flex-end">
+          <div style="flex:1;margin-right:16px"><div class="ttl" style="margin-bottom:6px">all 64 steps · drag the handle for length</div>
+            <div class="mini" id="mini">${mini}<span class="lenh" id="lenh" style="left:${pat.length / 64 * 100}%"></span></div></div>
+          <div class="row">${btn('all ch', st.allCh, 'data-act="allch"')}${btn('follow', st.follow, 'data-act="follow"')}</div></div>
+        ${padRow(show)}`;
+    },
+  },
+  C: {
+    name: 'Click to trigger, inspector for the rest',
+    help: `<b>Click</b> a pad toggles its trigger and focuses it (blue ring). <b>Right-click</b> focuses without toggling. The <b>step inspector</b> above the pads edits the focused step:
+      accent, fill, velocity, probability, substeps (division + cells), and "pattern ends here". <b>All ch</b> applies inspector and trigger edits to all 8 channels.`,
+    render() {
+      const show = { vel: true, prob: true, sub: true, bar: null };
+      const f = st.focus, s = f == null ? null : steps()[f];
+      const insp = s == null ? `<div class="insp"><h5>NO STEP</h5><span class="note">click or right-click a pad to focus a step</span></div>` :
+        `<div class="insp"><h5>STEP ${f + 1}</h5>
+          ${btn('accent', s.a, 'data-i="a"')}${btn('fill', s.f, 'data-i="f"')}
+          <label class="slider"><span>velocity ${s.v}${s.a ? ' (accent plays 127)' : ''}</span><input type="range" min="1" max="127" value="${s.v}" data-ir="v"></label>
+          <label class="slider"><span>probability ${s.p}%</span><input type="range" min="0" max="100" value="${s.p}" data-ir="p"></label>
+          <div class="slider"><span>substeps</span><div class="row">${[0, 2, 3, 4].map((n) => btn(n ? '÷' + n : 'off', s.s.length === n, `data-div="${n}"`)).join('')}
+            <div class="cells">${[...s.s].map((c, k) => `<span class="cell ${c === 'o' ? 'on' : ''}" data-cell="${k}"></span>`).join('')}</div></div></div>
+          ${btn('pattern ends here', pat.length === f + 1, 'data-i="end"')}
+        </div>`;
+      return `<div class="row" style="justify-content:flex-end">${btn('all ch', st.allCh, 'data-act="allch"')}${pageButtons()}</div>${insp}${padRow(show)}`;
+    },
+  },
+};
+
+// ---------- render & layout ----------
+const keys = Object.keys(VARIANTS);
+let cur = new URLSearchParams(location.search).get('variant'); if (!keys.includes(cur)) cur = 'A';
+const stage = document.getElementById('stage');
+stage.style.width = W + 'px'; stage.style.height = H + 'px';
+function render() {
+  const v = VARIANTS[cur];
+  stage.innerHTML = `<div style="position:absolute;inset:16px;display:grid;grid-template-columns:230px 1fr;grid-template-rows:40px 300px 1fr;gap:12px">
+      <div style="grid-column:1/3">${header()}</div>
+      <div class="col" style="grid-row:2"><div class="help">${v.help}</div></div>
+      <div style="grid-row:2;overflow:hidden">${stripsOrMatrix()}</div>
+      <div style="grid-row:3;display:flex;align-items:flex-start;justify-content:center;padding-top:60px">${transport()}</div>
+      <div style="grid-row:3;display:flex;flex-direction:column;gap:10px;position:relative">${v.render()}${stateLine()}${popover()}</div>
+    </div>`;
+  fit();
+}
+function fit() {
+  const m = 20, s = Math.min((innerWidth - m * 2) / W, (innerHeight - m * 2 - 50) / H);
+  stage.style.transform = `translate(${(innerWidth - W * s) / 2}px, ${(innerHeight - 50 - H * s) / 2}px) scale(${s})`;
+  document.getElementById('vlabel').innerHTML = `<b>${cur}</b> · ${VARIANTS[cur].name}<small>scale ${s.toFixed(2)}</small>`;
+}
+function go(d) { cur = keys[(keys.indexOf(cur) + d + keys.length) % keys.length]; history.replaceState(null, '', '?variant=' + cur); st.pop = null; render(); }
+document.getElementById('prev').onclick = () => go(-1);
+document.getElementById('next').onclick = () => go(1);
+addEventListener('keydown', (e) => { if (e.target.closest('input')) return; if (e.key === 'ArrowLeft') go(-1); if (e.key === 'ArrowRight') go(1); });
+addEventListener('resize', fit);
+stage.addEventListener('contextmenu', (e) => e.preventDefault());
+
+// ---------- pointer handling ----------
+let drag = null; // {kind, i, y0, v0, paint, moved}
+const scale = () => stage.getBoundingClientRect().width / W;
+const stageXY = (e) => { const r = stage.getBoundingClientRect(), s = scale(); return [(e.clientX - r.left) / s, (e.clientY - r.top) / s]; };
+function padAt(e) { const el = document.elementFromPoint(e.clientX, e.clientY); return el && el.closest('[data-pad]'); }
+
+stage.addEventListener('pointerdown', (e) => {
+  const t = e.target;
+  if (st.pop && !t.closest('.pop')) { st.pop = null; render(); if (!t.closest('[data-pad]')) return; }
+  const pad = t.closest('[data-pad]');
+  if (pad) {
+    const i = +pad.dataset.pad; if (i >= pat.length && !(cur === 'A' && st.armLen)) return;
+    const s = steps()[i];
+    if (cur === 'A') {
+      if (st.armLen) { pat.length = i + 1; st.armLen = false; st.last = `length set to ${i + 1}`; render(); return; }
+      if (e.button === 2) return;
+      if (st.lane === 'vel' || st.lane === 'prob') { if (st.lane === 'vel' && !s.t) return; drag = { kind: st.lane === 'vel' ? 'v' : 'p', i, y0: e.clientY, v0: st.lane === 'vel' ? s.v : s.p }; return; }
+      if (st.lane === 'sub') { const [x, y] = stageXY(e); st.pop = { i, x: Math.min(x - 258, 1050), y: y - 380 }; render(); return; }
+      const key = { trig: 't', acc: 'a', fill: 'f' }[st.lane];
+      if (key !== 't' && !s.t) return;
+      const val = !s[key]; edit(i, (x) => x[key] = val, `${st.lane} ${val ? 'on' : 'off'}`); drag = { kind: 'paint', key, val, seen: new Set([i]) }; render(); return;
+    }
+    if (cur === 'B') {
+      if (e.button === 2) { const [x, y] = stageXY(e); st.pop = { i, x: Math.min(x - 258, 1050), y: y - 380 }; render(); return; }
+      if (e.ctrlKey) { if (s.t) edit(i, (x) => x.a = !x.a, 'accent toggled'); render(); return; }
+      if (e.altKey) { if (s.t) edit(i, (x) => x.f = !x.f, 'fill toggled'); render(); return; }
+      drag = { kind: 'b', i, y0: e.clientY, v0: e.shiftKey ? s.p : s.v, prop: e.shiftKey ? 'p' : 'v', moved: false, wasOn: s.t };
+      return;
+    }
+    if (cur === 'C') {
+      st.focus = i;
+      if (e.button !== 2) { const val = !s.t; edit(i, (x) => x.t = val, `trigger ${val ? 'on' : 'off'}`); }
+      else st.last = `focused step ${i + 1}`;
+      render(); return;
+    }
+  }
+  if (t.id === 'lenh') { drag = { kind: 'len' }; return; }
+  const mini = t.closest('[data-mini]');
+  if (mini) { const i = +mini.dataset.mini; if (i < pat.length) { st.page = i >> 4; st.follow = false; st.last = `viewing page ${st.page + 1}`; render(); } return; }
+  const mc = t.closest('[data-mc]');
+  if (mc) { const [c, i] = mc.dataset.mc.split(',').map(Number); if (i >= pat.length) return; const val = !pat.ch[c][i].t; pat.ch[c][i].t = val; if (!val) { pat.ch[c][i].a = pat.ch[c][i].f = false; }
+    st.last = `matrix ch${c + 1} step ${i + 1} ${val ? 'on' : 'off'}`; drag = { kind: 'mpaint', c, val }; render(); return; }
+});
+addEventListener('pointermove', (e) => {
+  if (!drag) return;
+  if (drag.kind === 'paint') { const p = padAt(e); if (!p) return; const i = +p.dataset.pad; if (drag.seen.has(i) || i >= pat.length) return; drag.seen.add(i);
+    if (drag.key !== 't' && !steps()[i].t) return; edit(i, (x) => x[drag.key] = drag.val, `${drag.key} paint`); render(); return; }
+  if (drag.kind === 'mpaint') { const el = document.elementFromPoint(e.clientX, e.clientY); const mc = el && el.closest('[data-mc]'); if (!mc) return;
+    const [c, i] = mc.dataset.mc.split(',').map(Number); if (c !== drag.c || i >= pat.length || pat.ch[c][i].t === drag.val) return; pat.ch[c][i].t = drag.val; render(); return; }
+  if (drag.kind === 'len') { const r = document.getElementById('mini').getBoundingClientRect(); const n = Math.max(1, Math.min(64, Math.round((e.clientX - r.left) / r.width * 64)));
+    if (n !== pat.length) { pat.length = n; if (st.page >= pages()) st.page = pages() - 1; st.last = `length ${n}`; render(); } return; }
+  const dy = (drag.y0 - e.clientY) / scale();
+  if (drag.kind === 'v' || drag.kind === 'p') {
+    const max = drag.kind === 'v' ? 127 : 100, min = drag.kind === 'v' ? 1 : 0, val = Math.max(min, Math.min(max, Math.round(drag.v0 + dy)));
+    edit(drag.i, (x) => x[drag.kind] = val, drag.kind === 'v' ? `velocity ${val}` : `probability ${val}%`); render(); return;
+  }
+  if (drag.kind === 'b') {
+    if (Math.abs(dy) < 3 && !drag.moved) return;
+    if (!drag.wasOn) return;
+    drag.moved = true; const max = drag.prop === 'v' ? 127 : 100, min = drag.prop === 'v' ? 1 : 0, val = Math.max(min, Math.min(max, Math.round(drag.v0 + dy)));
+    edit(drag.i, (x) => x[drag.prop] = val, drag.prop === 'v' ? `velocity ${val}` : `probability ${val}%`); render();
+  }
+});
+addEventListener('pointerup', () => {
+  if (drag && drag.kind === 'b' && !drag.moved) { const val = !steps()[drag.i].t; edit(drag.i, (x) => x.t = val, `trigger ${val ? 'on' : 'off'}`); render(); }
+  drag = null;
+});
+stage.addEventListener('click', (e) => {
+  const t = e.target.closest('[data-act],[data-lane],[data-page],[data-ch],[data-sub],[data-i],[data-div],[data-cell]');
+  if (!t) return;
+  const d = t.dataset, f = st.focus;
+  if (d.act === 'matrix') st.matrix = !st.matrix;
+  else if (d.act === 'allch') st.allCh = !st.allCh;
+  else if (d.act === 'follow') st.follow = !st.follow;
+  else if (d.act === 'play') st.playing = true;
+  else if (d.act === 'stop') { st.playing = false; st.ph = 0; }
+  else if (d.act === 'armlen') st.armLen = !st.armLen;
+  else if (d.lane) { st.lane = d.lane; st.pop = null; }
+  else if (d.page) { const p = +d.page; if (p < pages()) { st.page = p; st.follow = false; } }
+  else if (d.ch) { st.sel = +d.ch; st.focus = null; }
+  else if (d.sub !== undefined) { const i = st.pop.i; edit(i, (x) => x.s = d.sub, `substeps "${d.sub}"`); st.pop = null; }
+  else if (d.i === 'a' || d.i === 'f') { if (steps()[f].t) edit(f, (x) => x[d.i] = !x[d.i], d.i === 'a' ? 'accent toggled' : 'fill toggled'); }
+  else if (d.i === 'end') { pat.length = f + 1; st.last = `length ${f + 1}`; }
+  else if (d.div !== undefined) { const n = +d.div; edit(f, (x) => x.s = n ? 'o'.repeat(n) : '', `substeps ÷${n}`); }
+  else if (d.cell !== undefined) { const k = +d.cell; edit(f, (x) => { const a = [...x.s]; a[k] = a[k] === 'o' ? '-' : 'o'; x.s = a.join(''); }, 'substep cell'); }
+  render();
+});
+stage.addEventListener('input', (e) => { const k = e.target.dataset.ir; if (!k || st.focus == null) return; const v = +e.target.value;
+  edit(st.focus, (x) => x[k] = v, k === 'v' ? `velocity ${v}` : `probability ${v}%`);
+  const sp = e.target.previousElementSibling; sp.textContent = k === 'v' ? `velocity ${v}` : `probability ${v}%`;
+  const pad = stage.querySelector(`[data-pad="${st.focus}"]`); if (pad) pad.outerHTML = padHTML(st.focus, { vel: true, prob: true, sub: true, bar: null });
+});
+setInterval(() => {
+  if (!st.playing) return;
+  st.ph = (st.ph + 1) % pat.length;
+  if (st.follow && st.page !== st.ph >> 4 && !drag && !st.pop && !(document.activeElement && document.activeElement.type === 'range')) { st.page = st.ph >> 4; render(); return; }
+  stage.querySelectorAll('.pad').forEach((p) => p.classList.toggle('ph', +p.dataset.pad === st.ph));
+  stage.querySelectorAll('.mc').forEach((p) => p.classList.toggle('ph', +p.dataset.mc.split(',')[1] === st.ph));
+  stage.querySelectorAll('[data-mini]').forEach((p) => p.classList.toggle('ph', +p.dataset.mini === st.ph));
+  stage.querySelectorAll('.pg .pl').forEach((p, k) => p.classList.toggle('on', k === st.ph >> 4));
+  stage.querySelectorAll('[data-trig]').forEach((l) => l.classList.toggle('on', pat.ch[+l.dataset.trig][st.ph].t));
+}, 125);
+render();
+</script>
+</body>
+</html>
