@@ -1,0 +1,292 @@
+<!doctype html>
+<!--
+  PROTOTYPE, throwaway. Answers "How do knobs, faders and buttons behave under mouse + wheel, and how do
+  they show MIDI?" (map #1, ticket #9). A bench of panel controls plus a virtual MIDI controller, with three
+  behaviour sets switchable via ?variant=A|B|C or the bottom bar. In-memory only; every action is logged.
+  CC 21 starts mapped to "decay" so CC motion can be tried straight away.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PROTOTYPE controls</title>
+<style>
+  :root { --bg:#050506; --panel:#17181a; --panel-hi:#1e1f22; --box:#34363a; --label:#e8e8e4; --dim:#8f9194; --accent:#ff8a1f; --learn:#2f6bff; --midi:#3dff6e; --knob:#0d0d0e; }
+  * { box-sizing:border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); overflow:hidden; font-family:"DejaVu Sans", Arial, sans-serif; color:var(--label); user-select:none; }
+  #stage { position:absolute; left:0; top:0; transform-origin:0 0; background:var(--panel); border-radius:14px; box-shadow:0 0 0 2px #2a2b2e inset; overflow:hidden; }
+  .wordmark { font-weight:800; letter-spacing:.32em; font-size:22px; } .wordmark b { color:var(--accent); }
+  .box { border:1px solid var(--box); border-radius:8px; padding:12px; position:relative; }
+  .ttl { font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--dim); margin-bottom:10px; }
+  .row { display:flex; gap:22px; align-items:flex-end; }
+  .help { font-size:12px; color:var(--dim); line-height:1.7; } .help b { color:var(--label); font-weight:600; }
+  .btn { background:#2a2b2f; color:var(--label); border:0; border-radius:4px; font-size:10px; font-family:inherit; letter-spacing:.06em; text-transform:uppercase; padding:7px 9px; cursor:pointer; box-shadow:0 2px 0 #0a0a0b; }
+  .btn.on { background:var(--accent); color:#1a0d00; box-shadow:0 0 10px rgba(255,138,31,.45); }
+  .btn.learnon { background:var(--learn); color:#fff; box-shadow:0 0 12px var(--learn); }
+  .ctl { display:flex; flex-direction:column; align-items:center; gap:4px; position:relative; cursor:ns-resize; }
+  .ctl.dom { cursor:move; }
+  .ctl .lbl { font-size:10px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); white-space:nowrap; }
+  .ctl .val { font-size:11px; color:var(--label); font-family:"DejaVu Sans Mono", monospace; min-height:14px; white-space:nowrap; }
+  .ctl .badge { font-size:9px; padding:1px 5px; border-radius:3px; background:#13301c; color:var(--midi); font-family:"DejaVu Sans Mono", monospace; min-height:13px; }
+  .ctl .badge:empty { background:transparent; }
+  .ctl .mled { position:absolute; right:-2px; top:-2px; width:8px; height:8px; border-radius:50%; background:#0f2a17; display:none; }
+  .ctl .mled.show { display:block; } .ctl .mled.blink { background:var(--midi); box-shadow:0 0 6px var(--midi); }
+  .ctl.learning svg, .ctl.learning .track { animation:pulse .6s infinite alternate; }
+  .ctl.learnable { outline:1px dashed var(--learn); outline-offset:4px; border-radius:6px; }
+  .ctl.flash svg circle.cap { stroke:#fff; }
+  @keyframes pulse { from { filter:drop-shadow(0 0 0 var(--learn)); } to { filter:drop-shadow(0 0 10px var(--learn)); } }
+  .track { width:8px; background:#050505; border-radius:4px; position:relative; box-shadow:0 0 0 1px #2c2d30; cursor:ns-resize; }
+  .track i { position:absolute; left:50%; width:30px; height:14px; margin-left:-15px; background:linear-gradient(#55575c,#2b2c30); border-radius:2px; box-shadow:0 1px 0 #000; }
+  .track i::after { content:""; position:absolute; left:3px; right:3px; top:6px; height:2px; background:var(--accent); }
+  .track .ghost { position:absolute; left:-6px; right:-6px; height:2px; background:var(--midi); box-shadow:0 0 4px var(--midi); }
+  .ctl.flash .track i { box-shadow:0 0 10px #fff; }
+  .seg { display:flex; gap:2px; } .seg .btn { padding:6px 7px; }
+  .list { background:#0b0b0c; border:1px solid #2f3034; border-radius:3px; font-size:11px; padding:5px 8px; min-width:86px; cursor:pointer; position:relative; }
+  .list::after { content:"▾"; position:absolute; right:6px; color:var(--dim); }
+  .listmenu { position:absolute; z-index:6; background:#0e0e10; border:1px solid #3a3c40; border-radius:6px; padding:4px; }
+  .listmenu div { padding:5px 10px; font-size:11px; cursor:pointer; border-radius:3px; } .listmenu div:hover { background:#2a2b2f; } .listmenu div.cur { color:var(--accent); }
+  .rot { display:flex; flex-direction:column; align-items:center; }
+  .rot .opts { display:flex; gap:6px; font-size:9px; color:#55575b; text-transform:uppercase; } .rot .opts span.cur { color:var(--accent); font-weight:700; }
+  .bubble { position:absolute; z-index:8; background:#000; color:#fff; border:1px solid var(--accent); border-radius:4px; padding:4px 8px; font:12px "DejaVu Sans Mono", monospace; pointer-events:none; white-space:nowrap; transform:translate(-50%,-100%); }
+  .lcd { background:#120706; color:#ff4a30; font-family:"DejaVu Sans Mono", monospace; border-radius:4px; padding:8px 12px; text-shadow:0 0 6px rgba(255,74,48,.6); box-shadow:inset 0 0 0 1px #3a1410; font-size:22px; font-weight:700; letter-spacing:.08em; width:330px; height:46px; white-space:nowrap; overflow:hidden; }
+  .lcd small { font-size:13px; letter-spacing:.12em; margin-right:10px; }
+  .menu { position:absolute; z-index:9; background:#0e0e10; border:1px solid #3a3c40; border-radius:6px; padding:4px; min-width:200px; box-shadow:0 8px 24px rgba(0,0,0,.7); }
+  .menu div { padding:6px 10px; font-size:12px; cursor:pointer; border-radius:3px; } .menu div:hover { background:#2a2b2f; } .menu div.dis { color:#55575b; pointer-events:none; }
+  .entry { position:absolute; z-index:9; } .entry input { width:90px; font:12px "DejaVu Sans Mono", monospace; background:#000; color:#fff; border:1px solid var(--accent); border-radius:3px; padding:3px 5px; }
+  .vc { display:flex; gap:16px; align-items:flex-end; }
+  .vc .cc { display:flex; flex-direction:column; align-items:center; gap:6px; font-size:10px; color:var(--dim); }
+  .vc input[type=range] { writing-mode:vertical-lr; direction:rtl; height:150px; accent-color:var(--midi); }
+  .log { font:11px/1.55 "DejaVu Sans Mono", monospace; color:#9fd3a8; background:#0b0c0d; border-radius:6px; padding:8px 10px; height:100%; overflow:hidden; white-space:pre; }
+  #switcher { position:fixed; left:50%; bottom:14px; transform:translateX(-50%); z-index:99; display:flex; align-items:center; gap:10px; background:#fff; color:#111; border-radius:999px; padding:6px 10px; font:13px/1.2 system-ui, sans-serif; box-shadow:0 6px 24px rgba(0,0,0,.6); }
+  #switcher button { border:0; background:#111; color:#fff; width:28px; height:28px; border-radius:50%; cursor:pointer; }
+  #switcher small { color:#666; margin-left:4px; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="switcher"><button id="prev">◀</button><span id="vlabel"></span><button id="next">▶</button></div>
+<script>
+const W = 1600, H = 820;
+// ---------- parameters (what describe() would return) ----------
+const P = [
+  { id: 'osc.freq', label: 'osc freq', kind: 'knob', min: 20, max: 20000, curve: 'log', def: 440, unit: 'Hz' },
+  { id: 'osc.decay', label: 'decay', kind: 'knob', min: 10, max: 10000, curve: 'log', def: 316, unit: 'ms' },
+  { id: 'osc.pitch', label: 'pitch', kind: 'knob', min: -24, max: 24, curve: 'lin', def: 0, unit: 'st' },
+  { id: 'mix.pan', label: 'pan', kind: 'knob', min: -100, max: 100, curve: 'lin', def: 0, unit: 'pan' },
+  { id: 'mix.level', label: 'level', kind: 'fader', min: -60, max: 10, curve: 'lin', def: 0, unit: 'dB' },
+  { id: 'noise.decay', label: 'noise decay', kind: 'fader', min: 10, max: 10000, curve: 'log', def: 316, unit: 'ms' },
+  { id: 'osc.pmod', label: 'pitch mod', kind: 'enum', opts: ['decay', 'sine', 'rand'], def: 0 },
+  { id: 'fx.dtime', label: 'delay time', kind: 'enum', opts: ['1/4', '1/8', '1/16', '1/8T', '1/4.'], def: 1 },
+  { id: 'mix.choke', label: 'choke', kind: 'toggle', def: 0 },
+];
+const val = {}; P.forEach((p) => val[p.id] = p.def);
+const byId = Object.fromEntries(P.map((p) => [p.id, p]));
+const toN = (p, v) => p.kind === 'enum' ? v / (p.opts.length - 1) : p.kind === 'toggle' ? v : p.curve === 'log' ? Math.log(v / p.min) / Math.log(p.max / p.min) : (v - p.min) / (p.max - p.min);
+const fromN = (p, n) => { n = Math.max(0, Math.min(1, n)); return p.kind === 'enum' ? Math.round(n * (p.opts.length - 1)) : p.kind === 'toggle' ? (n >= .5 ? 1 : 0) : p.curve === 'log' ? p.min * Math.pow(p.max / p.min, n) : p.min + n * (p.max - p.min); };
+function fmt(p, v) {
+  if (p.kind === 'enum') return p.opts[v]; if (p.kind === 'toggle') return v ? 'on' : 'off';
+  if (p.unit === 'Hz') return v < 1000 ? `${v.toFixed(0)} Hz` : `${(v / 1000).toFixed(2)} kHz`;
+  if (p.unit === 'ms') return v < 100 ? `${v.toFixed(1)} ms` : v < 1000 ? `${v.toFixed(0)} ms` : `${(v / 1000).toFixed(2)} s`;
+  if (p.unit === 'dB') return `${v >= 0 ? '+' : ''}${v.toFixed(1)} dB`;
+  if (p.unit === 'st') return `${v >= 0 ? '+' : ''}${v.toFixed(2)} st`;
+  if (p.unit === 'pan') return Math.abs(v) < .5 ? 'C' : v < 0 ? `L${(-v).toFixed(0)}` : `R${v.toFixed(0)}`;
+}
+// ---------- MIDI state ----------
+const ccMap = { 21: 'osc.decay' }; // cc -> param
+const ccVal = { 21: 40, 22: 64, 23: 64, 24: 0 };
+const picked = {}; // param -> bool (pickup mode)
+let learnTarget = null, learnMode = false, sweep = false, log = [];
+function addLog(s) { log.push(s); log = log.slice(-14); const el = document.getElementById('log'); if (el) el.textContent = log.slice().reverse().join('\n'); }
+
+// ---------- variants: behaviour sets ----------
+const V = {
+  A: { name: 'Bubble readout, right-click menu, jump',
+    cfg: { axis: 'v', range: 200, fine: 'shift', wheel: .01, readout: 'bubble', en: 'seg', track: 'jump', dbl: 'reset', learn: 'menu', cc: 'jump' },
+    help: `<b>Drag up/down</b> (200 px = full range), <b>Shift</b> = ×0.1 fine. <b>Wheel</b> 1 % per notch (one option on a switch). <b>Double-click</b> resets to default.
+      Faders: <b>click the track</b> to jump there. A <b>bubble</b> shows the value while you touch a control. Switches are segmented buttons.
+      <b>Right-click</b> a control: MIDI learn, remove mapping. Mapped controls carry a <b>CC badge</b>; an incoming CC <b>jumps</b> the control and flashes it.` },
+  B: { name: 'Panel display, LEARN button, no modifiers',
+    cfg: { axis: 'dom', range: 300, fine: 'wheel', wheel: .004, readout: 'lcd', en: 'rotary', track: 'relative', dbl: 'reset', learn: 'button', cc: 'jump' },
+    help: `<b>Drag in any direction</b> (up or right = more, 300 px = full range); no modifier keys. <b>Wheel is the fine adjust</b> (0.4 % per notch). <b>Double-click</b> resets.
+      Faders only move <b>relative</b> to a grab (no jump). The <b>panel display</b> shows name and value of the touched control, like hardware. Switches are <b>rotary</b> with detents.
+      MIDI: press <b>LEARN</b> on the panel, learnable controls get dashed outlines, click one, move a CC. Mapped controls show a <b>green LED</b> that blinks on incoming CC; CC <b>jumps</b>.` },
+  C: { name: 'Inline values, exact entry, CC pickup',
+    cfg: { axis: 'v', range: 200, fine: 'shift', wheel: .01, readout: 'inline', en: 'list', track: 'jump', dbl: 'entry', learn: 'menu', cc: 'pickup' },
+    help: `<b>Drag up/down</b> (200 px), <b>Shift</b> fine, <b>wheel</b> 1 %. The value is <b>always printed</b> under each control. <b>Double-click</b> opens a field to <b>type an exact value</b>; reset is in the right-click menu.
+      Switches are <b>lists</b>. <b>Right-click</b>: reset, MIDI learn, remove mapping. Incoming CC uses <b>pickup</b>: a green ghost marker shows the controller; the control only follows once the controller crosses its value.` },
+};
+const keys = Object.keys(V);
+let cur = new URLSearchParams(location.search).get('variant'); if (!keys.includes(cur)) cur = 'A';
+const cfg = () => V[cur].cfg;
+
+// ---------- rendering ----------
+function pt(cx, cy, r, a) { const t = a * Math.PI / 180; return [cx + r * Math.sin(t), cy - r * Math.cos(t)]; }
+function arc(cx, cy, r, a0, a1) { const [x0, y0] = pt(cx, cy, r, a0), [x1, y1] = pt(cx, cy, r, a1); return `M${x0} ${y0} A${r} ${r} 0 ${a1 - a0 > 180 ? 1 : 0} 1 ${x1} ${y1}`; }
+function knobSVG(p, size, ghostN) {
+  const n = toN(p, val[p.id]), a = -135 + 270 * n, [px, py] = pt(50, 50, 30, a);
+  const bip = p.min < 0 && p.curve === 'lin', a0 = bip ? 0 : -135;
+  const lo = Math.min(a0, a), hi = Math.max(a0, a);
+  let g = ''; if (ghostN != null) { const [gx, gy] = pt(50, 50, 44, -135 + 270 * ghostN); g = `<circle cx="${gx}" cy="${gy}" r="5" fill="none" stroke="var(--midi)" stroke-width="3"/>`; }
+  let ticks = ''; if (p.kind === 'enum') ticks = p.opts.map((_, k) => { const ta = -135 + 270 * k / (p.opts.length - 1), [x0, y0] = pt(50, 50, 40, ta), [x1, y1] = pt(50, 50, 48, ta); return `<line x1="${x0}" y1="${y0}" x2="${x1}" y2="${y1}" stroke="${k === val[p.id] ? 'var(--accent)' : '#55575b'}" stroke-width="4"/>`; }).join('');
+  return `<svg viewBox="0 0 100 100" width="${size}" height="${size}">
+    ${p.kind === 'enum' ? ticks : `<path d="${arc(50, 50, 44, -135, 135)}" stroke="#2c2d31" stroke-width="7" fill="none" stroke-linecap="round"/>
+    ${hi - lo > 0.5 ? `<path d="${arc(50, 50, 44, lo, hi)}" stroke="var(--accent)" stroke-width="7" fill="none" stroke-linecap="round"/>` : ''}`}
+    <circle class="cap" cx="50" cy="50" r="34" fill="var(--knob)" stroke="#2a2b2e" stroke-width="2"/>
+    <line x1="50" y1="50" x2="${px}" y2="${py}" stroke="#f2f2f2" stroke-width="5" stroke-linecap="round"/>${g}</svg>`;
+}
+function ccOf(id) { const c = Object.keys(ccMap).find((k) => ccMap[k] === id); return c ? +c : null; }
+function ghostFor(p) { if (cfg().cc !== 'pickup') return null; const c = ccOf(p.id); if (c == null || picked[p.id]) return null; return ccVal[c] / 127; }
+function ctlHTML(p) {
+  const c = cfg(), cc = ccOf(p.id), cls = `${c.axis === 'dom' ? 'dom' : ''} ${learnTarget === p.id ? 'learning' : ''} ${learnMode && !learnTarget ? 'learnable' : ''}`;
+  const badge = c.learn === 'menu' ? `<span class="badge">${cc != null ? 'CC ' + cc : ''}</span>` : '';
+  const led = `<span class="mled ${cc != null && c.learn === 'button' ? 'show' : ''}"></span>`;
+  const inline = c.readout === 'inline' ? `<span class="val">${fmt(p, val[p.id])}</span>` : '';
+  let body = '';
+  if (p.kind === 'knob') body = knobSVG(p, 64, ghostFor(p));
+  else if (p.kind === 'fader') { const n = toN(p, val[p.id]), g = ghostFor(p);
+    body = `<div class="track" style="height:170px"><i style="top:calc(${(1 - n) * 100}% - 7px)"></i>${g != null ? `<span class="ghost" style="top:${(1 - g) * 100}%"></span>` : ''}</div>`; }
+  else if (p.kind === 'enum') {
+    if (c.en === 'seg') body = `<div class="seg">${p.opts.map((o, k) => `<button class="btn ${k === val[p.id] ? 'on' : ''}" data-opt="${k}">${o}</button>`).join('')}</div>`;
+    if (c.en === 'rotary') body = `<div class="rot">${knobSVG(p, 56)}<div class="opts">${p.opts.map((o, k) => `<span class="${k === val[p.id] ? 'cur' : ''}">${o}</span>`).join('')}</div></div>`;
+    if (c.en === 'list') body = `<div class="list" data-list>${p.opts[val[p.id]]}</div>`;
+  } else body = `<button class="btn ${val[p.id] ? 'on' : ''}" data-tog>${p.label}</button>`;
+  return `<div class="ctl ${cls}" data-p="${p.id}" style="${p.kind === 'enum' || p.kind === 'toggle' ? 'cursor:default' : ''}">${led}${body}${p.kind !== 'toggle' ? `<span class="lbl">${p.label}</span>` : ''}${inline}${badge}</div>`;
+}
+const stage = document.getElementById('stage'); stage.style.width = W + 'px'; stage.style.height = H + 'px';
+let lcdHold = 0, lcdText = '<small>TEMPO</small>120.0';
+function render() {
+  const v = V[cur], c = v.cfg;
+  stage.innerHTML = `<div style="position:absolute;inset:16px;display:grid;grid-template-columns:330px 1fr 420px;grid-template-rows:46px 1fr 280px;gap:14px">
+    <div class="wordmark" style="align-self:center">PYTHON<b>IC</b></div>
+    <div style="display:flex;gap:12px;align-items:center;justify-content:flex-end">
+      ${c.readout === 'lcd' ? `<div class="lcd" id="lcd">${lcdText}</div>` : ''}
+      ${c.learn === 'button' ? `<button class="btn ${learnMode ? 'learnon' : ''}" data-act="learn" style="padding:10px 14px">learn</button>` : ''}
+      <button class="btn" data-act="resetall">reset bench</button></div>
+    <div></div>
+    <div class="help" style="grid-row:2/4">${v.help}<br><br><span style="color:#55575b">Controls are the same parameters the engine has (log Hz and ms curves, bipolar pitch and pan).
+      In the real app the core owns ranges and curves through describe(), and MIDI CC is normalised the same way.</span></div>
+    <div class="box" style="grid-row:2"><div class="ttl">continuous</div>
+      <div class="row" style="gap:34px">${P.filter((p) => p.kind === 'knob' || p.kind === 'fader').map(ctlHTML).join('')}</div>
+      <div class="ttl" style="margin-top:26px">stepped and on/off</div>
+      <div class="row" style="gap:34px">${P.filter((p) => p.kind === 'enum' || p.kind === 'toggle').map(ctlHTML).join('')}</div></div>
+    <div class="box" style="grid-row:2"><div class="ttl">virtual MIDI controller (stands in for a hardware box)</div>
+      <div class="vc">${[21, 22, 23, 24].map((n) => `<div class="cc"><input type="range" min="0" max="127" value="${ccVal[n]}" data-cc="${n}"><span>CC ${n}</span><span style="color:var(--midi)">${ccMap[n] ? byId[ccMap[n]].label : '—'}</span></div>`).join('')}
+        <div style="display:flex;flex-direction:column;gap:8px"><button class="btn ${sweep ? 'on' : ''}" data-act="sweep">sweep CC 21</button><span class="help" style="font-size:10px;line-height:1.4">moves CC 21 slowly,<br>as a hand on a knob would</span></div></div></div>
+    <div class="box" style="grid-column:2/4;grid-row:3"><div class="ttl">event log, newest first (what the core would receive)</div><div class="log" id="log" style="height:220px">${log.slice().reverse().join('\n')}</div></div>
+  </div>`;
+  fit();
+}
+function fit() { const m = 20, s = Math.min((innerWidth - m * 2) / W, (innerHeight - m * 2 - 50) / H);
+  stage.style.transform = `translate(${(innerWidth - W * s) / 2}px, ${(innerHeight - 50 - H * s) / 2}px) scale(${s})`;
+  document.getElementById('vlabel').innerHTML = `<b>${cur}</b> · ${V[cur].name}<small>scale ${s.toFixed(2)}</small>`; }
+function refresh(id) { const el = stage.querySelector(`[data-p="${id}"]`); if (el) el.outerHTML = ctlHTML(byId[id]); }
+const scale = () => stage.getBoundingClientRect().width / W;
+const sxy = (e) => { const r = stage.getBoundingClientRect(), s = scale(); return [(e.clientX - r.left) / s, (e.clientY - r.top) / s]; };
+// ---------- readout ----------
+let bubbleT = 0;
+function showValue(p, el) {
+  const c = cfg();
+  if (c.readout === 'bubble') {
+    let b = document.getElementById('bubble'); if (!b) { b = document.createElement('div'); b.id = 'bubble'; b.className = 'bubble'; stage.appendChild(b); }
+    const r = (el || stage.querySelector(`[data-p="${p.id}"]`)).getBoundingClientRect(), sr = stage.getBoundingClientRect(), s = scale();
+    b.style.left = ((r.left + r.width / 2 - sr.left) / s) + 'px'; b.style.top = ((r.top - sr.top) / s - 6) + 'px'; b.textContent = `${p.label}  ${fmt(p, val[p.id])}`; b.style.display = 'block';
+    clearTimeout(bubbleT); bubbleT = setTimeout(() => { if (!drag) b.style.display = 'none'; }, 900);
+  }
+  if (c.readout === 'lcd') { lcdText = `<small>${p.label.toUpperCase()}</small>${fmt(p, val[p.id])}`; const l = document.getElementById('lcd'); if (l) l.innerHTML = lcdText;
+    clearTimeout(lcdHold); lcdHold = setTimeout(() => { lcdText = '<small>TEMPO</small>120.0'; const l2 = document.getElementById('lcd'); if (l2) l2.innerHTML = lcdText; }, 1500); }
+}
+function setVal(id, v, src) { const p = byId[id], old = val[id]; val[id] = v; if (src !== 'cc') picked[id] = false; refresh(id); if (src !== 'silent') showValue(p); return old; }
+// ---------- gestures ----------
+let drag = null, wheelG = {}, menu = null;
+function closeMenus() { stage.querySelectorAll('.menu,.entry,.listmenu').forEach((m) => m.remove()); }
+stage.addEventListener('contextmenu', (e) => e.preventDefault());
+stage.addEventListener('pointerdown', (e) => {
+  const t = e.target;
+  if (!t.closest('.menu,.entry,.listmenu')) closeMenus();
+  const ctl = t.closest('[data-p]'); if (!ctl) return;
+  const p = byId[ctl.dataset.p], c = cfg();
+  if (e.button === 2) { if (c.learn === 'menu') openMenu(p, e); return; }
+  if (learnMode && c.learn === 'button') { learnTarget = p.id; addLog(`learn: waiting for a CC for ${p.label}`); render(); return; }
+  if (t.closest('[data-opt]')) { const k = +t.closest('[data-opt]').dataset.opt; const o = setVal(p.id, k); addLog(`set ${p.id} ${fmt(p, o)} → ${fmt(p, k)}  (1 undo step)`); return; }
+  if (t.closest('[data-tog]')) { const o = setVal(p.id, val[p.id] ? 0 : 1); addLog(`set ${p.id} ${fmt(p, o)} → ${fmt(p, val[p.id])}  (1 undo step)`); return; }
+  if (t.closest('[data-list]')) { openList(p, t.closest('[data-list]')); return; }
+  if (p.kind === 'toggle') return;
+  let n0 = toN(p, val[p.id]);
+  if (p.kind === 'fader' && c.track === 'jump' && !t.closest('.track i')) { const r = ctl.querySelector('.track').getBoundingClientRect(); n0 = 1 - (e.clientY - r.top) / r.height; setVal(p.id, fromN(p, n0)); }
+  const range = p.kind === 'fader' ? 170 : p.kind === 'enum' ? 120 : c.range;
+  drag = { p, x0: e.clientX, y0: e.clientY, n0, start: val[p.id], range, el: ctl };
+  stage.setPointerCapture(e.pointerId); showValue(p, ctl);
+});
+stage.addEventListener('pointermove', (e) => {
+  if (!drag) return; const c = cfg(), s = scale(); const dx = (e.clientX - drag.x0) / s, dy = (drag.y0 - e.clientY) / s;
+  let d = c.axis === 'dom' ? (Math.abs(dx) > Math.abs(dy) ? dx : dy) : dy;
+  if (c.fine === 'shift' && e.shiftKey) d *= .1;
+  if (e.shiftKey !== drag.shift) { drag.shift = e.shiftKey; drag.n0 = toN(drag.p, val[drag.p.id]); drag.x0 = e.clientX; drag.y0 = e.clientY; return; }
+  const nv = fromN(drag.p, drag.n0 + d / drag.range); if (nv !== val[drag.p.id]) setVal(drag.p.id, nv);
+});
+stage.addEventListener('pointerup', () => { if (!drag) return; const p = drag.p;
+  if (val[p.id] !== drag.start) addLog(`gesture ${p.id}: ${fmt(p, drag.start)} → ${fmt(p, val[p.id])}  (1 undo step)`);
+  drag = null; const b = document.getElementById('bubble'); if (b) setTimeout(() => { if (!drag) b.style.display = 'none'; }, 600); });
+stage.addEventListener('dblclick', (e) => {
+  const ctl = e.target.closest('[data-p]'); if (!ctl) return; const p = byId[ctl.dataset.p]; if (p.kind === 'toggle') return;
+  if (cfg().dbl === 'reset') { const o = setVal(p.id, p.def); addLog(`reset ${p.id}: ${fmt(p, o)} → ${fmt(p, p.def)}  (1 undo step)`); return; }
+  if (p.kind === 'enum') return;
+  const [x, y] = sxy(e); closeMenus();
+  const d = document.createElement('div'); d.className = 'entry'; d.style.left = (x - 45) + 'px'; d.style.top = (y - 12) + 'px';
+  d.innerHTML = `<input value="${+val[p.id].toFixed(2)}" title="Enter to apply, Esc to cancel">`; stage.appendChild(d); const inp = d.querySelector('input'); inp.focus(); inp.select();
+  inp.onkeydown = (k) => { if (k.key === 'Escape') d.remove(); if (k.key === 'Enter') { let v = parseFloat(inp.value.replace(/k$/i, '000')); if (!isNaN(v)) { v = Math.max(p.min, Math.min(p.max, v)); const o = setVal(p.id, v); addLog(`typed ${p.id}: ${fmt(p, o)} → ${fmt(p, v)}  (1 undo step)`); } d.remove(); } };
+});
+stage.addEventListener('wheel', (e) => {
+  const ctl = e.target.closest('[data-p]'); if (!ctl) return; e.preventDefault(); const p = byId[ctl.dataset.p], c = cfg();
+  if (p.kind === 'toggle') return;
+  const dir = e.deltaY < 0 ? 1 : -1;
+  const nv = p.kind === 'enum' ? Math.max(0, Math.min(p.opts.length - 1, val[p.id] + dir)) : fromN(p, toN(p, val[p.id]) + dir * (p.kind === 'fader' ? c.wheel * 2 : c.wheel));
+  const g = wheelG[p.id] || (wheelG[p.id] = { start: val[p.id] }); clearTimeout(g.t);
+  setVal(p.id, nv);
+  g.t = setTimeout(() => { addLog(`wheel ${p.id}: ${fmt(p, g.start)} → ${fmt(p, val[p.id])}  (1 undo step after 400 ms idle)`); delete wheelG[p.id]; }, 400);
+}, { passive: false });
+function openMenu(p, e) {
+  const [x, y] = sxy(e), cc = ccOf(p.id), c = cfg(), m = document.createElement('div'); m.className = 'menu'; m.style.left = x + 'px'; m.style.top = y + 'px';
+  m.innerHTML = `${c.dbl === 'entry' ? `<div data-m="reset">Reset to default (${fmt(p, p.def)})</div>` : ''}
+    ${cc != null ? `<div class="dis">Mapped to CC ${cc}</div><div data-m="unmap">Remove CC mapping</div>` : ''}
+    <div data-m="learn">${learnTarget === p.id ? 'Cancel MIDI learn' : 'MIDI learn (CC)'}</div><div data-m="pb">Assign pitch bend</div>`;
+  stage.appendChild(m);
+  m.onclick = (ev) => { const a = ev.target.dataset.m; if (!a) return; m.remove();
+    if (a === 'reset') { const o = setVal(p.id, p.def); addLog(`reset ${p.id}: ${fmt(p, o)} → ${fmt(p, p.def)}  (1 undo step)`); }
+    if (a === 'unmap') { delete ccMap[cc]; addLog(`unmapped CC ${cc} from ${p.id}`); render(); }
+    if (a === 'learn') { learnTarget = learnTarget === p.id ? null : p.id; addLog(learnTarget ? `learn: waiting for a CC for ${p.label}` : 'learn cancelled'); render(); }
+    if (a === 'pb') addLog(`pitch bend → ${p.id} (not simulated)`); };
+}
+function openList(p, el) {
+  const r = el.getBoundingClientRect(), sr = stage.getBoundingClientRect(), s = scale(), m = document.createElement('div'); m.className = 'listmenu';
+  m.style.left = ((r.left - sr.left) / s) + 'px'; m.style.top = ((r.bottom - sr.top) / s + 2) + 'px';
+  m.innerHTML = p.opts.map((o, k) => `<div data-k="${k}" class="${k === val[p.id] ? 'cur' : ''}">${o}</div>`).join(''); stage.appendChild(m);
+  m.onclick = (ev) => { const k = ev.target.dataset.k; if (k == null) return; m.remove(); const o = setVal(p.id, +k); addLog(`set ${p.id} ${fmt(p, o)} → ${fmt(p, +k)}  (1 undo step)`); };
+}
+// ---------- incoming CC ----------
+function incomingCC(n, v) {
+  const prev = ccVal[n]; ccVal[n] = v;
+  if (learnTarget) { Object.keys(ccMap).forEach((k) => { if (ccMap[k] === learnTarget) delete ccMap[k]; }); ccMap[n] = learnTarget; addLog(`learned CC ${n} → ${learnTarget}`); learnTarget = null; learnMode = false; render(); return; }
+  const id = ccMap[n]; if (!id) return; const p = byId[id], c = cfg(), target = fromN(p, v / 127);
+  if (c.cc === 'pickup' && !picked[id]) {
+    const cn = toN(p, val[id]), a = prev / 127 - cn, b = v / 127 - cn;
+    if (Math.abs(b) < .02 || a * b <= 0) { picked[id] = true; addLog(`CC ${n} picked up ${id}`); } else { refresh(id); return; }
+  }
+  val[id] = target; refresh(id); showValue(p);
+  const el = stage.querySelector(`[data-p="${id}"]`); if (el) { el.classList.add('flash'); const led = el.querySelector('.mled'); if (led) led.classList.add('blink'); setTimeout(() => { el.classList.remove('flash'); if (led) led.classList.remove('blink'); }, 120); }
+  addLog(`CC ${n}=${v} → ${id} ${fmt(p, target)}`);
+}
+stage.addEventListener('input', (e) => { const n = e.target.dataset.cc; if (n) incomingCC(+n, +e.target.value); });
+stage.addEventListener('click', (e) => { const a = e.target.dataset.act; if (!a) return;
+  if (a === 'learn') { learnMode = !learnMode; learnTarget = null; addLog(learnMode ? 'learn mode: click a control, then move a CC' : 'learn mode off'); render(); }
+  if (a === 'sweep') { sweep = !sweep; render(); }
+  if (a === 'resetall') { P.forEach((p) => val[p.id] = p.def); Object.keys(picked).forEach((k) => delete picked[k]); log = []; render(); } });
+let ph = 0; setInterval(() => { if (!sweep) return; ph += .05; const v = Math.round(64 + 60 * Math.sin(ph)); const inp = stage.querySelector('[data-cc="21"]'); if (inp) inp.value = v; incomingCC(21, v); }, 50);
+// ---------- switcher ----------
+function go(d) { cur = keys[(keys.indexOf(cur) + d + keys.length) % keys.length]; history.replaceState(null, '', '?variant=' + cur); learnMode = false; learnTarget = null; render(); }
+document.getElementById('prev').onclick = () => go(-1); document.getElementById('next').onclick = () => go(1);
+addEventListener('keydown', (e) => { if (e.target.closest('input')) return; if (e.key === 'ArrowLeft') go(-1); if (e.key === 'ArrowRight') go(1); });
+addEventListener('resize', fit);
+render();
+</script>
+</body>
+</html>
