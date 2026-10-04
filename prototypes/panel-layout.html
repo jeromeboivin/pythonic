@@ -1,0 +1,358 @@
+<!doctype html>
+<!--
+  PROTOTYPE, throwaway. Answers "What is the layout of the panel?" (map #1, ticket #7).
+  Three structurally different panel layouts, switchable with ?variant=A|B|C and the bottom bar
+  (or the left/right arrow keys). Static mock, no engine: knob values are made up; pads, channel
+  select, mutes and tabs respond to clicks only so the layout can be judged.
+  Open the file directly in a browser. The panel scales to the window at a fixed ratio (letterboxed).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PROTOTYPE panel layout</title>
+<style>
+  :root {
+    --bg: #050506;
+    --panel: #17181a;
+    --panel-hi: #1e1f22;
+    --box: #34363a;
+    --label: #e8e8e4;
+    --dim: #8f9194;
+    --accent: #ff8a1f;
+    --accent-dim: #4a2a0e;
+    --knob: #0d0d0e;
+    --lcd-bg: #120706;
+    --lcd: #ff4a30;
+    --sel: #ff8a1f;
+    --mute: #8a3dff;
+    --pad-off: #232427;
+    --g1: #e8352a; --g2: #f2862e; --g3: #f4cf3a; --g4: #f3efe3;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden;
+    font-family: "DejaVu Sans", "Helvetica Neue", Arial, sans-serif; color: var(--label); }
+  #stage { position: absolute; left: 0; top: 0; transform-origin: 0 0; background: var(--panel);
+    background-image: repeating-linear-gradient(0deg, rgba(255,255,255,.012) 0 1px, transparent 1px 3px);
+    border-radius: 14px; box-shadow: 0 0 0 2px #2a2b2e inset; overflow: hidden; }
+  .box { border: 1px solid var(--box); border-radius: 8px; padding: 8px; position: relative; }
+  .ttl { font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--dim); text-align: center; margin-bottom: 6px; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .col { display: flex; flex-direction: column; gap: 8px; }
+  .wordmark { font-weight: 800; letter-spacing: .32em; font-size: 22px; color: var(--label); }
+  .wordmark b { color: var(--accent); }
+
+  /* knob */
+  .knob { display: flex; flex-direction: column; align-items: center; gap: 2px; width: calc(var(--s, 40px) + 14px); }
+  .knob svg { width: var(--s, 40px); height: var(--s, 40px); display: block; }
+  .knob span, .fader span, .seg > span, .tog span, .sel span { font-size: 9px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); white-space: nowrap; }
+  /* fader */
+  .fader { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .fader .slot { width: 6px; height: var(--fh, 110px); background: #050505; border-radius: 3px; position: relative; box-shadow: 0 0 0 1px #2c2d30; }
+  .fader .slot i { position: absolute; left: 50%; width: 26px; height: 12px; margin-left: -13px; background: linear-gradient(#55575c, #2b2c30); border-radius: 2px; box-shadow: 0 1px 0 #000; }
+  .fader .slot i::after { content: ""; position: absolute; left: 3px; right: 3px; top: 5px; height: 2px; background: var(--accent); }
+  .hfader .slot { width: var(--fw, 120px); height: 6px; background: #050505; border-radius: 3px; position: relative; box-shadow: 0 0 0 1px #2c2d30; }
+  .hfader .slot i { position: absolute; top: 50%; width: 12px; height: 22px; margin-top: -11px; margin-left: -6px; background: linear-gradient(90deg, #55575c, #2b2c30); border-radius: 2px; }
+  .hfader .slot i::after { content: ""; position: absolute; top: 3px; bottom: 3px; left: 5px; width: 2px; background: var(--accent); }
+  .hfader { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .hfader .ends { display: flex; justify-content: space-between; width: var(--fw, 120px); font-size: 9px; color: var(--dim); text-transform: uppercase; }
+  /* buttons */
+  .btn { background: #2a2b2f; color: var(--label); border: 0; border-radius: 4px; font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
+    padding: 5px 7px; cursor: pointer; box-shadow: 0 2px 0 #0a0a0b; font-family: inherit; min-width: 24px; }
+  .btn.on { background: var(--accent); color: #1a0d00; box-shadow: 0 0 10px rgba(255,138,31,.45), 0 2px 0 #6b3405; }
+  .btn.mute.on { background: var(--mute); color: #fff; box-shadow: 0 0 10px rgba(138,61,255,.5); }
+  .btn.big { width: 64px; height: 64px; border-radius: 50%; font-size: 22px; padding: 0; }
+  .btn.big.on { background: #2fd05a; color: #032; box-shadow: 0 0 14px rgba(47,208,90,.5); }
+  .seg { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+  .seg .opts { display: flex; gap: 2px; }
+  .seg .btn { padding: 4px 5px; font-size: 9px; min-width: 0; }
+  .tog { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+  .led { width: 8px; height: 8px; border-radius: 50%; background: #2a1606; display: inline-block; }
+  .led.on { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+  .led.g.on { background: #3dff6e; box-shadow: 0 0 6px #3dff6e; }
+  .sel { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+  .sel .box2 { background: #0b0b0c; border: 1px solid #2f3034; border-radius: 3px; font-size: 10px; padding: 3px 6px; min-width: 64px; text-align: left; color: var(--label); }
+  .sel .box2::after { content: " ▾"; color: var(--dim); float: right; }
+  /* lcd */
+  .lcd { background: var(--lcd-bg); color: var(--lcd); font-family: "DejaVu Sans Mono", monospace; border-radius: 4px; padding: 6px 10px;
+    text-shadow: 0 0 6px rgba(255,74,48,.6); box-shadow: inset 0 0 0 1px #3a1410; letter-spacing: .06em; white-space: nowrap; overflow: hidden; }
+  .lcd.seg7 { font-size: 34px; font-weight: 700; letter-spacing: .12em; text-align: right; }
+  /* pads */
+  .pads { display: grid; grid-template-columns: repeat(16, 1fr); gap: 8px; }
+  .pad { height: var(--ph, 64px); border-radius: 6px; cursor: pointer; position: relative; background: var(--pad-off);
+    box-shadow: inset 0 -3px 0 rgba(0,0,0,.35), 0 2px 0 #000; }
+  .pad::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 5px; border-radius: 6px 6px 0 0; background: var(--gc); opacity: .55; }
+  .pad.on { background: var(--gc); box-shadow: 0 0 14px var(--gc), inset 0 -3px 0 rgba(0,0,0,.25); }
+  .pad.acc::after { content: ""; position: absolute; right: 6px; top: 10px; width: 7px; height: 7px; border-radius: 50%; background: #fff; box-shadow: 0 0 6px #fff; }
+  .pad.ph { outline: 2px solid #3dff6e; outline-offset: 2px; }
+  .padnums { display: grid; grid-template-columns: repeat(16, 1fr); gap: 8px; font-size: 9px; color: var(--dim); text-align: center; margin-top: 4px; }
+  /* strips */
+  .strips { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; height: 100%; }
+  .strip { border: 1px solid var(--box); border-radius: 8px; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 6px 4px 8px; background: rgba(255,255,255,.01); }
+  .strip.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset, 0 0 18px rgba(255,138,31,.15); }
+  .strip .hd { width: 100%; background: var(--panel-hi); border-radius: 4px; padding: 4px 3px; text-align: center; }
+  .strip .hd .n { font-size: 10px; color: var(--accent); font-weight: 700; }
+  .strip .hd .nm { font-size: 10px; letter-spacing: .04em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .strip .grow { flex: 1; display: flex; align-items: flex-end; }
+  .strip .btns { display: flex; gap: 4px; }
+  /* patterns */
+  .pgrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
+  .pbtn { font-size: 12px; font-weight: 700; padding: 7px 0; text-align: center; }
+  .pbtn.empty { color: #55575b; }
+  .pbtn.play { background: #2fd05a; color: #032; box-shadow: 0 0 10px rgba(47,208,90,.5); }
+  .pbtn.queued { background: #2f6bff; color: #fff; }
+  .pbtn.chain { color: #6fa0ff; }
+  .prog { display: grid; grid-template-columns: repeat(8, 1fr); gap: 3px; }
+  .prog .btn { padding: 4px 0; font-size: 9px; }
+  /* edit area */
+  .edit { display: flex; flex-direction: column; min-height: 0; }
+  .edit .hdr { display: flex; align-items: baseline; gap: 10px; margin-bottom: 6px; }
+  .edit .hdr .ch { color: var(--accent); font-weight: 700; font-size: 13px; letter-spacing: .1em; }
+  .edit .hdr .nm { font-size: 13px; }
+  .edit .hdr .hint { margin-left: auto; font-size: 10px; color: var(--dim); }
+  .secs { display: grid; gap: 8px; min-height: 0; flex: 1; }
+  .sec { border: 1px solid var(--box); border-radius: 8px; padding: 6px 8px 8px; min-width: 0; }
+  .sec h4 { margin: 0 0 6px; font-size: 10px; font-weight: 400; letter-spacing: .14em; text-transform: uppercase; color: var(--accent); }
+  .sec .items { display: flex; flex-wrap: wrap; gap: 8px 6px; align-items: flex-end; }
+  .tabs { display: flex; gap: 4px; margin-bottom: 8px; }
+  .tabs .btn { padding: 6px 14px; }
+  .lanes { display: flex; gap: 4px; align-items: center; }
+  .note { font-size: 9px; color: #5c5e62; font-style: italic; }
+  .mini { --s: 26px; }
+
+  /* switcher (not part of the design) */
+  #switcher { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 99; display: flex; align-items: center; gap: 10px;
+    background: #fff; color: #111; border-radius: 999px; padding: 6px 10px; font: 13px/1.2 system-ui, sans-serif; box-shadow: 0 6px 24px rgba(0,0,0,.6); }
+  #switcher button { border: 0; background: #111; color: #fff; width: 28px; height: 28px; border-radius: 50%; cursor: pointer; font-size: 14px; }
+  #switcher small { color: #666; margin-left: 4px; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="switcher"><button id="prev" title="previous (←)">◀</button><span id="vlabel"></span><button id="next" title="next (→)">▶</button></div>
+<script>
+// ---------- mock state ----------
+const CH = [
+  { n: 'Kick Deep', t: 'BD' }, { n: 'Snare Tight', t: 'SD' }, { n: 'Closed Hat', t: 'CH' }, { n: 'Open Hat', t: 'OH' },
+  { n: 'Clap Room', t: 'CP' }, { n: 'Low Tom', t: 'LT' }, { n: 'Rim Click', t: 'RS' }, { n: 'Crash Wash', t: 'CY' },
+];
+const STEPS = [
+  [0, 4, 8, 10, 12], [4, 12], [0, 2, 4, 6, 8, 10, 12, 14], [2, 6, 10, 14], [4, 12, 15], [7, 13], [3, 11], [0],
+];
+const ACC = [[0, 8], [12], [4, 12], [], [], [], [], [0]];
+const state = { rack: true, sel: 0, mutes: new Set([5]), tab: 0, ph: 0, playing: true };
+const rnd = (i) => (Math.sin(i * 91.7) * 0.5 + 0.5);
+
+// ---------- components ----------
+function pt(cx, cy, r, a) { const t = a * Math.PI / 180; return [cx + r * Math.sin(t), cy - r * Math.cos(t)]; }
+function arc(cx, cy, r, a0, a1) {
+  const [x0, y0] = pt(cx, cy, r, a0), [x1, y1] = pt(cx, cy, r, a1);
+  return `M${x0.toFixed(2)} ${y0.toFixed(2)} A${r} ${r} 0 ${a1 - a0 > 180 ? 1 : 0} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}`;
+}
+let kid = 0;
+function knob(label, v, size) {
+  v = v ?? rnd(++kid);
+  const a = -135 + 270 * v, [px, py] = pt(50, 50, 30, a);
+  return `<div class="knob" ${size ? `style="--s:${size}px"` : ''}><svg viewBox="0 0 100 100">
+    <path d="${arc(50, 50, 44, -135, 135)}" stroke="#2c2d31" stroke-width="7" fill="none" stroke-linecap="round"/>
+    <path d="${arc(50, 50, 44, -135, Math.max(a, -134))}" stroke="var(--accent)" stroke-width="7" fill="none" stroke-linecap="round"/>
+    <circle cx="50" cy="50" r="34" fill="var(--knob)" stroke="#2a2b2e" stroke-width="2"/>
+    <line x1="50" y1="50" x2="${px.toFixed(1)}" y2="${py.toFixed(1)}" stroke="#f2f2f2" stroke-width="5" stroke-linecap="round"/>
+  </svg>${label ? `<span>${label}</span>` : ''}</div>`;
+}
+function fader(label, v, h) {
+  v = v ?? rnd(++kid);
+  return `<div class="fader" ${h ? `style="--fh:${h}px"` : ''}><div class="slot"><i style="top:calc(${(1 - v) * 100}% - 6px)"></i></div>${label ? `<span>${label}</span>` : ''}</div>`;
+}
+function hfader(l, r, v, w) {
+  return `<div class="hfader" ${w ? `style="--fw:${w}px"` : ''}><div class="slot"><i style="left:${v * 100}%"></i></div><div class="ends"><span>${l}</span><span>${r}</span></div></div>`;
+}
+const btn = (t, on, cls = '', attrs = '') => `<button class="btn ${on ? 'on' : ''} ${cls}" ${attrs}>${t}</button>`;
+const seg = (label, opts, i) => `<div class="seg"><div class="opts">${opts.map((o, k) => btn(o, k === i)).join('')}</div><span>${label}</span></div>`;
+const tog = (label, on) => `<div class="tog">${btn(label, on)}</div>`;
+const sel = (label, val) => `<div class="sel"><div class="box2">${val}</div><span>${label}</span></div>`;
+const box = (title, inner, style = '') => `<div class="box" style="${style}">${title ? `<div class="ttl">${title}</div>` : ''}${inner}</div>`;
+
+function pads(ph) {
+  const ch = state.sel, on = new Set(STEPS[ch]), acc = new Set(ACC[ch]);
+  const gc = (i) => ['var(--g1)', 'var(--g2)', 'var(--g3)', 'var(--g4)'][i >> 2];
+  return `<div class="pads" ${ph ? `style="--ph:${ph}px"` : ''}>${[...Array(16)].map((_, i) =>
+    `<div class="pad ${on.has(i) ? 'on' : ''} ${acc.has(i) && on.has(i) ? 'acc' : ''}" data-pad="${i}" style="--gc:${gc(i)}"></div>`).join('')}</div>
+    <div class="padnums">${[...Array(16)].map((_, i) => `<div>${i + 1}</div>`).join('')}</div>`;
+}
+function lanes() {
+  return `<div class="lanes">${['trig', 'acc', 'fill', 'prob', 'sub'].map((l, i) => btn(l, i === 0)).join('')}
+    ${btn('⊞ matrix')}<span class="note">&nbsp;lane / step-entry model: separate ticket</span></div>`;
+}
+function patterns(cols = 4) {
+  const cls = (i) => i === 0 ? 'play' : i === 2 ? 'queued' : i === 1 ? 'chain' : i > 4 ? 'empty' : '';
+  return `<div class="pgrid" style="grid-template-columns:repeat(${cols},1fr)">${'ABCDEFGHIJKL'.split('').map((p, i) =>
+    `<button class="btn pbtn ${cls(i)} ${i === 0 ? '' : ''}">${p}</button>`).join('')}</div>
+    <div class="row" style="margin-top:6px;justify-content:center">${btn('◀◀')}${btn('▶▶')}${btn('menu')}${btn('copy')}${btn('paste')}</div>`;
+}
+function programs(cols = 8) {
+  return `<div class="prog" style="grid-template-columns:repeat(${cols},1fr)">${[...Array(16)].map((_, i) => btn(i + 1, i === 2)).join('')}</div>`;
+}
+function presetBrowser(w = 260) {
+  return `<div class="row">${btn('◀')}<div class="lcd" style="width:${w}px;font-size:14px">808 CLASSIC.mtpreset</div>${btn('▶')}${btn('▼')}</div>`;
+}
+function utils() {
+  return `<div class="row">${btn('↶')}${btn('↷')}${btn('PO-32')}${btn('⚙')}<span class="led g on" title="MIDI activity"></span></div>`;
+}
+function morph(big) {
+  return big
+    ? `<div class="col" style="align-items:center">${knob('sound morph', .35, 92)}<div class="row">${btn('learn A')}${btn('learn B')}</div></div>`
+    : `<div class="row">${btn('A')}${hfader('A', 'B', .35, 180)}${btn('B')}</div>`;
+}
+function tempo(bigKnob) {
+  return `<div class="col" style="align-items:stretch">
+    <div class="lcd seg7">120.0</div>
+    <div class="row" style="justify-content:center">${bigKnob ? knob('tempo', .45, 70) : ''}${knob('swing', .2)}</div>
+    ${seg('step rate', ['1/8', '1/8T', '1/16', '1/16T', '1/32'], 2)}
+    ${seg('fill rate', ['2x', '3x', '4x', '5x', '6x', '7x', '8x'], 2)}
+  </div>`;
+}
+function transport() {
+  return `<div class="row">${btn('■', false, 'big')}${btn('▶', state.playing, 'big', 'data-play')}</div>`;
+}
+
+const SECTIONS = () => [
+  { id: 'osc', t: 'Oscillator', h: () => seg('wave', ['sin', 'tri', 'saw'], 0) + knob('freq') + knob('pitch') + seg('pitch mod', ['dec', 'sin', 'rnd'], 0) + knob('amount') + knob('rate') + knob('attack') + knob('decay') },
+  { id: 'noise', t: 'Noise', h: () => seg('filter', ['LP', 'BP', 'HP'], 2) + knob('freq') + knob('Q') + tog('stereo', true) + seg('env', ['exp', 'lin', 'mod'], 0) + fader('attack', .1, 60) + fader('decay', .5, 60) },
+  { id: 'mix', t: 'Mix', h: () => hfader('osc', 'noise', .3, 110) + knob('eq freq') + knob('eq gain', .5) + knob('distort') + knob('level', .8) + knob('pan', .5) + tog('choke') + seg('out', ['A', 'B'], 0) },
+  { id: 'fx', t: 'FX', h: () => knob('vintage') + knob('rvb time') + knob('rvb mix') + knob('rvb wide') + seg('delay', ['1/4', '1/8', '1/16', '1/8T', '1/4.'], 1) + knob('fdbk') + knob('dly mix') + tog('P.P') },
+  { id: 'vel', t: 'Velocity', h: () => fader('osc', .3, 60) + fader('noise', .5, 60) + fader('mod', 0, 60) },
+  { id: 'lfo1', t: 'LFO 1', h: () => tog('on', true) + sel('wave', 'Tri') + knob('rate') + knob('depth') + sel('sync', '1/8') + tog('re', true) + tog('uni') + sel('dest', 'Osc decay') },
+  { id: 'lfo2', t: 'LFO 2', h: () => tog('on') + sel('wave', 'Sin') + knob('rate') + knob('depth') + sel('sync', 'Free') + tog('re', true) + tog('uni') + sel('dest', 'Off') },
+  { id: 'pump', t: 'Pump', h: () => tog('on') + knob('amount') + knob('attack') + knob('release') + knob('curve') + sel('dest', 'Level') },
+];
+function editArea(ids, grid, knobSize, extra = '') {
+  const s = SECTIONS().filter((x) => !ids || ids.includes(x.id));
+  return `<div class="edit" style="height:100%">
+    <div class="hdr"><span class="ch">CH ${state.sel + 1}</span><span class="nm">${CH[state.sel].n}</span><span class="note">${CH[state.sel].t}</span>
+      <span class="hint">${btn('edit all')} ${btn('drum patch ▼')}</span></div>${extra}
+    <div class="secs" style='${grid};--s:${knobSize}px'>${s.map((x) => `<section class="sec" style="grid-area:${x.id}"><h4>${x.t}</h4><div class="items">${x.h()}</div></section>`).join('')}</div>
+  </div>`;
+}
+function strip(i, knobs, fh, extra = '') {
+  const c = CH[i];
+  return `<div class="strip ${state.sel === i ? 'sel' : ''}" data-ch="${i}">
+    <div class="hd"><div class="n">${i + 1} · ${c.t}</div><div class="nm">${c.n}</div></div>
+    ${knobs.map((k) => knob(k)).join('')}${extra}
+    <div class="grow">${fader('', .55 + rnd(i) * .3, fh)}</div>
+    <div class="btns">${btn('m', state.mutes.has(i), 'mute', `data-mute="${i}"`)}${btn('sel', state.sel === i, '', `data-sel="${i}"`)}</div>
+    <span class="led ${STEPS[i].includes(state.ph) && state.playing ? 'on' : ''}" data-trig="${i}"></span>
+  </div>`;
+}
+
+// ---------- variants ----------
+const VARIANTS = {
+  A: {
+    name: 'Hardware face + rack drawer', w: 1600, get h() { return state.rack ? 1000 : 700; },
+    render: () => `
+    <div style="position:absolute;inset:16px;display:grid;grid-template-columns:230px 1fr 270px;grid-template-rows:520px 130px ${state.rack ? '1fr' : '0'};gap:12px">
+      <div class="col" style="grid-row:1">
+        <div class="wordmark">PYTHON<b>IC</b></div>
+        ${box('master', `<div class="row" style="justify-content:center">${knob('', .7, 48)}</div>`)}
+        ${box('pattern', patterns(4))}
+        ${box('program', programs(8))}
+      </div>
+      <div class="col" style="grid-row:1;min-height:0">
+        <div class="row" style="justify-content:space-between">${presetBrowser(300)}<div class="row">${btn('edit rack ' + (state.rack ? '▴' : '▾'), state.rack, '', 'data-rack')}${utils()}</div></div>
+        <div class="strips" style="flex:1;--s:40px">${CH.map((_, i) => strip(i, ['tune', 'decay'], 170)).join('')}</div>
+      </div>
+      <div class="col" style="grid-row:1">
+        ${box('morph', morph(true))}
+        ${box('tempo', tempo(true))}
+      </div>
+      <div style="grid-column:1;grid-row:2;display:flex;align-items:center;justify-content:center">${transport()}</div>
+      <div style="grid-column:2/4;grid-row:2" class="col">${lanes()}${pads(70)}</div>
+      ${!state.rack ? '' : `<div style="grid-column:1/4;grid-row:3;min-height:0" class="box">${editArea(null,
+        'grid-template-columns:1.25fr 1fr 1.1fr 1.15fr .45fr 1fr 1fr .85fr;grid-template-areas:\"osc noise mix fx vel lfo1 lfo2 pump\"', 30)}</div>`}
+    </div>`,
+  },
+  B: {
+    name: 'Console split (strips left, edit right)', w: 1920, h: 1080,
+    render: () => `
+    <div style="position:absolute;inset:16px;display:grid;grid-template-columns:720px 1fr;grid-template-rows:64px 1fr 210px;gap:12px">
+      <div class="row" style="grid-column:1/3;justify-content:space-between;border-bottom:1px solid var(--box);padding-bottom:8px">
+        <div class="wordmark">PYTHON<b>IC</b></div>${presetBrowser(280)}
+        <div class="row"><span class="ttl" style="margin:0">program</span>${programs(16)}</div>
+        ${morph(false)}${knob('master', .7, 30)}${utils()}
+      </div>
+      <div class="strips" style="grid-row:2;--s:34px">${CH.map((_, i) => strip(i, ['pan'], 300)).join('')}</div>
+      <div class="box" style="grid-row:2;min-height:0">${editArea(null,
+        'grid-template-columns:1.2fr 1fr 1.1fr .5fr;grid-template-rows:1fr 1fr;grid-template-areas:\"osc noise mix vel\" \"fx lfo1 lfo2 pump\"', 40)}</div>
+      <div style="grid-column:1/3;grid-row:3;display:grid;grid-template-columns:170px 470px 1fr;gap:12px">
+        <div class="col" style="align-items:center;justify-content:center">${transport()}</div>
+        ${box('', `<div class="row" style="align-items:flex-start;gap:12px"><div style="width:230px">${tempo(false)}</div><div style="flex:1">${patterns(3)}</div></div>`)}
+        <div class="col">${lanes()}${pads(110)}</div>
+      </div>
+    </div>`,
+  },
+  C: {
+    name: 'Tabbed centre (4:3)', w: 1440, h: 1080,
+    render: () => {
+      const tabs = [['Sound', ['osc', 'noise', 'mix'], 'grid-template-columns:1.2fr 1fr 1fr;grid-template-areas:"osc noise mix"'],
+        ['FX · Velocity', ['fx', 'vel'], 'grid-template-columns:3fr 1fr;grid-template-areas:"fx vel"'],
+        ['Modulation', ['lfo1', 'lfo2', 'pump'], 'grid-template-columns:1fr 1fr 1fr;grid-template-areas:"lfo1 lfo2 pump"']];
+      const t = tabs[state.tab];
+      const tabBar = `<div class="tabs">${tabs.map((x, i) => btn(x[0], i === state.tab, '', `data-tab="${i}"`)).join('')}</div>`;
+      return `
+    <div style="position:absolute;inset:16px;display:grid;grid-template-columns:200px 1fr 240px;grid-template-rows:56px 440px 1fr 170px;gap:12px">
+      <div class="row" style="grid-column:1/4;justify-content:space-between">
+        <div class="wordmark">PYTHON<b>IC</b></div>${presetBrowser(280)}${utils()}
+      </div>
+      <div class="col" style="grid-row:2">${box('pattern', patterns(3))}${box('program', programs(4))}</div>
+      <div class="strips" style="grid-row:2;--s:32px">${CH.map((_, i) => strip(i, ['tune', 'decay', 'rvb', 'dly'], 110)).join('')}</div>
+      <div class="col" style="grid-row:2">${box('morph', morph(true))}${box('master', `<div class="row" style="justify-content:center">${knob('', .7, 40)}</div>`)}</div>
+      <div class="box" style="grid-column:1/4;grid-row:3;min-height:0">${editArea(t[1], t[2], 44, tabBar)}</div>
+      <div style="grid-column:1/4;grid-row:4;display:grid;grid-template-columns:150px 1fr 330px;gap:12px">
+        <div class="col" style="justify-content:center;align-items:center">${transport()}</div>
+        <div class="col">${lanes()}${pads(78)}</div>
+        ${box('', `<div class="row" style="gap:10px"><div class="lcd seg7" style="font-size:28px">120.0</div>${knob('tempo', .45, 46)}${knob('swing', .2, 34)}</div>
+          <div class="row" style="margin-top:6px">${seg('rate', ['1/8', '1/8T', '1/16', '1/16T', '1/32'], 2)}</div>
+          <div class="row" style="margin-top:4px">${seg('fill', ['2x', '3x', '4x', '5x', '6x', '7x', '8x'], 2)}</div>`)}
+      </div>
+    </div>`;
+    },
+  },
+};
+
+// ---------- wiring ----------
+const keys = Object.keys(VARIANTS);
+let cur = new URLSearchParams(location.search).get('variant');
+if (!keys.includes(cur)) cur = 'A';
+const stage = document.getElementById('stage');
+function render() { kid = 0; const v = VARIANTS[cur]; stage.style.width = v.w + 'px'; stage.style.height = v.h + 'px'; stage.innerHTML = v.render(); fit(); }
+function fit() {
+  const v = VARIANTS[cur], m = 20, s = Math.min((innerWidth - m * 2) / v.w, (innerHeight - m * 2 - 50) / v.h);
+  stage.style.transform = `translate(${(innerWidth - v.w * s) / 2}px, ${(innerHeight - 50 - v.h * s) / 2}px) scale(${s})`;
+  const g = (a, b) => b ? g(b, a % b) : a, d = g(v.w, v.h);
+  document.getElementById('vlabel').innerHTML = `<b>${cur}</b> · ${v.name}<small>${v.w}×${v.h} (${v.w / d}:${v.h / d}) · scale ${s.toFixed(2)}</small>`;
+}
+function go(dir) { cur = keys[(keys.indexOf(cur) + dir + keys.length) % keys.length]; history.replaceState(null, '', '?variant=' + cur); render(); }
+document.getElementById('prev').onclick = () => go(-1);
+document.getElementById('next').onclick = () => go(1);
+addEventListener('keydown', (e) => { if (e.target.closest('input,textarea,[contenteditable]')) return; if (e.key === 'ArrowLeft') go(-1); if (e.key === 'ArrowRight') go(1); });
+addEventListener('resize', fit);
+stage.addEventListener('click', (e) => {
+  const t = e.target.closest('[data-pad],[data-sel],[data-mute],[data-tab],[data-ch],[data-play],[data-rack]');
+  if (!t) return;
+  if (t.dataset.pad) { const s = STEPS[state.sel], i = +t.dataset.pad, k = s.indexOf(i); k < 0 ? s.push(i) : s.splice(k, 1); }
+  else if (t.dataset.mute) { const i = +t.dataset.mute; state.mutes.has(i) ? state.mutes.delete(i) : state.mutes.add(i); }
+  else if (t.dataset.tab) state.tab = +t.dataset.tab;
+  else if (t.dataset.rack !== undefined) state.rack = !state.rack;
+  else if (t.dataset.play !== undefined) state.playing = !state.playing;
+  else if (t.dataset.sel || t.dataset.ch) state.sel = +(t.dataset.sel ?? t.dataset.ch);
+  render();
+});
+setInterval(() => {
+  if (!state.playing) return;
+  state.ph = (state.ph + 1) % 16;
+  stage.querySelectorAll('.pad').forEach((p, i) => p.classList.toggle('ph', i === state.ph));
+  stage.querySelectorAll('[data-trig]').forEach((l) => l.classList.toggle('on', STEPS[+l.dataset.trig].includes(state.ph)));
+}, 125);
+render();
+</script>
+</body>
+</html>
