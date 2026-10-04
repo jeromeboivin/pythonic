@@ -129,7 +129,7 @@
   .t8, .t8 .btn { font-family: "DejaVu Sans Condensed", "DejaVu Sans", Arial, sans-serif; }
   .t8 .dt { display: inline; fill: #d8d8d8; }
   .t8 .k .tr, .t8 .k .va { display: none; }
-  .t8 .k .cap { r: 37px; fill: #141416; stroke: #3b3b3f; stroke-width: 3px; }
+  .t8 .k .cap { r: 31px; fill: #141416; stroke: #3b3b3f; stroke-width: 3px; }
   .t8 .ctl .lbl { color: #f2f2f2; font-weight: 700; font-size: 10px; letter-spacing: .03em; }
   .t8 .btn { background: #1c1d1f; color: #18a95d; font-weight: 700; box-shadow: 0 2px 0 #000, inset 0 1px 0 #303134; }
   .t8 .btn.on { background: #10291b; color: #66ffb3; text-shadow: 0 0 8px #2dff8a; box-shadow: 0 0 10px rgba(45,255,138,.25), 0 2px 0 #000; }
@@ -161,6 +161,7 @@
     box-shadow: 0 0 10px var(--cc), inset 0 0 8px var(--cc); }
   .hs .vf .track i { width: 54px; margin-left: -27px; height: 24px; border-radius: 3px; background: linear-gradient(#f6f6f6, #a9a9a9 44%, #2b2b2b 52%, #111); }
   .hs .vf .track i::after { display: none; }
+  .hs .vf .track .mg { height: 4px; left: -12px; right: -12px; z-index: 2; }
   .hs.muted .vf .track { border-color: #3a3a3a; box-shadow: none; }
   .hs .chb { width: 64px; font-size: 14px; padding: 7px 0; }
   .hs .chb.mut { color: #ff4a4a; text-shadow: 0 0 6px #ff2a2a; }
@@ -196,14 +197,22 @@
   .t8.f1 .lcd.seg7, .t8.f2 .lcd.seg7 { font-family: "DSEG7", monospace; font-size: 27px; letter-spacing: .02em; }
   .ccb { font: 700 9px "DejaVu Sans Mono", monospace; padding: 1px 4px; border-radius: 3px; background: #2e2208; color: #ffb020; display: inline-flex; gap: 3px; align-items: center; }
   .ccb i { width: 6px; height: 6px; border-radius: 50%; background: #ffb020; box-shadow: 0 0 5px #ffb020; animation: pgp .4s infinite alternate; }
-  .pal-B .mo { filter: drop-shadow(0 0 1.5px #000) drop-shadow(0 0 1px #000); }
+  .pal-B .mo { filter: drop-shadow(0 0 2px #000) drop-shadow(0 0 1px #000); }
+  .pal-B .mg { outline: 2px solid #000; }
+  #loupe { position: fixed; left: 12px; bottom: 62px; z-index: 50; background: #0b0b0c; border: 1px dashed #777; border-radius: 10px; padding: 8px 12px 10px; }
+  #loupe .lt { font: 11px system-ui, sans-serif; color: #aaa; margin-bottom: 6px; }
+  #loupe .lrow { display: flex; gap: 10px; align-items: flex-end; }
+  #loupe .hs { border-left: 0; width: 120px; }
+  #loupe.hide { display: none; }
+  #loupe .lbar { width: 16px; height: 46px; border: 2px solid var(--cc); border-radius: 8px; box-shadow: 0 0 10px var(--cc), inset 0 0 8px var(--cc); margin-top: 4px; }
   #switcher .sw2 { width: auto; border-radius: 999px; padding: 0 10px; font-size: 12px; }
   #switcher .sw2.on { background: #22a35f; }
 </style>
 </head>
 <body>
 <div id="stage"></div>
-<div id="switcher"><button id="prev" title="previous (←)">◀</button><span id="vlabel"></span><button id="next" title="next (→)">▶</button><button class="sw2" id="fontb" title="font set (F)">font</button><button class="sw2" id="scaleb" title="force minimum-window scale">0.8</button></div>
+<div id="loupe"></div>
+<div id="switcher"><button id="prev" title="previous (←)">◀</button><span id="vlabel"></span><button id="next" title="next (→)">▶</button><button class="sw2" id="fontb" title="font set (F)">font</button><button class="sw2" id="scaleb" title="force minimum-window scale">0.8</button><button class="sw2 on" id="loupeb" title="show the clash spots enlarged">loupe</button></div>
 <script>
 // ---------------------------------------------------------------- parameters (engine units)
 const P = {};
@@ -512,9 +521,9 @@ function faceT() {
 
 const FONTS = ['System: DejaVu Sans Condensed + DejaVu Sans Mono', 'Barlow Condensed + Doto dots + DSEG7', 'Archivo Narrow + DotGothic16 + DSEG7'];
 const PAL = {
-  A: { lfo1: '#3cc8ff', lfo2: '#ff5fa8', pump: '#d9e04a', dash: {}, w: 7 },
-  B: { lfo1: '#c9f3ff', lfo2: '#ffd1ea', pump: '#f7f4b8', dash: {}, w: 9 },
-  C: { lfo1: '#3cc8ff', lfo2: '#ff5fa8', pump: '#d9e04a', dash: { lfo2: '9 6', pump: '2 6' }, w: 7 },
+  A: { lfo1: '#3cc8ff', lfo2: '#ff5fa8', pump: '#d9e04a', dash: {}, w: 11 },
+  B: { lfo1: '#e6fbff', lfo2: '#ffe6f3', pump: '#fdfbd8', dash: {}, w: 14 },
+  C: { lfo1: '#3cc8ff', lfo2: '#ff5fa8', pump: '#d9e04a', dash: { lfo2: '14 8', pump: '3 7' }, w: 11 },
 };
 const VARIANTS = {
   A: { name: 'Mod colours as prototyped (saturated)', theme: 't8 pal-A', face: faceT, ks: 30, fh: 112, ind: 'arc',
@@ -527,7 +536,7 @@ const VARIANTS = {
 state.font = 0; state.s08 = false;
 // modulation that lands on strips of the same hue, to judge clashes
 Object.assign(state.ch[4], { 'lfo1.on': 1, 'lfo1.wave': 0, 'lfo1.rate': .7, 'lfo1.depth': 50, 'lfo1.dest': destIx('osc.pitch') });
-Object.assign(state.ch[2], { 'pump.on': 1, 'pump.amt': 70, 'pump.rel': 250, 'pump.dest': destIx('mix.level') });
+Object.assign(state.ch[2], { 'pump.on': 1, 'pump.amt': 80, 'pump.rel': 900, 'pump.dest': destIx('mix.level') });
 Object.assign(state.ch[7], { 'lfo2.depth': 90 });
 function applyPal() {
   const pl = PAL[cur];
@@ -543,6 +552,13 @@ const W = 1600, H = () => state.rack ? 1000 : 700;
 function render() {
   stage.style.width = W + 'px'; stage.style.height = H() + 'px';
   applyPal(); stage.className = cfg().theme + ' f' + state.font;
+  const L = document.getElementById('loupe'), keep = L.classList.contains('hide');
+  L.className = cfg().theme + ' f' + state.font + (keep ? ' hide' : '');
+  const lk = (c, id, l, extra = '') => `<div class="hs" style="--cc:${CC[c]}"><div class="tab">${CH[c][0]}</div>${ctl(id, c, { t: 'k', s: 84, l })}${extra}<div class="lbar"></div></div>`;
+  L.innerHTML = `<div class="lt">Loupe, about 3× (bench tool, not part of the design): the clash spots of the panel</div><div class="lrow">
+    ${lk(0, 'osc.dec', 'decay · L1')}${lk(4, 'osc.pitch', 'tune · L1 on cyan')}${lk(7, ctrlId(7) || 'mix.pan', 'ctrl · L2 on violet')}
+    <div class="hs" style="--cc:${CC[2]}"><div class="tab">${CH[2][0]}</div>${ctl('mix.level', 2, { t: 'vf', s: 150, l: 'level · pump' })}</div>
+    ${lk(1, 'osc.dec', 'decay · MIDI', '<span class="ccb" style="font-size:13px"><i></i>CC 21</span>')}</div>`;
   stage.innerHTML = `<div style="position:absolute;left:16px;right:16px;top:16px;height:662px;display:grid;grid-template-columns:230px 1fr 270px;grid-template-rows:520px 130px;gap:12px">${cfg().face()}</div>
     ${state.rack ? `<div class="box" style="position:absolute;left:16px;right:16px;top:690px;bottom:16px"><div class="rack">${rack()}</div></div>` : ''}<div id="pop"></div>`;
   fit();
@@ -553,6 +569,7 @@ function fit() {
   stage.style.transform = `translate(${(innerWidth - W * scale) / 2}px, ${(innerHeight - 50 - H() * scale) / 2}px) scale(${scale})`;
   document.getElementById('vlabel').innerHTML = `<b>${cur}</b> · ${cfg().name}<small>font: ${FONTS[state.font]} · scale ${scale.toFixed(2)}</small>`;
   document.getElementById('scaleb').classList.toggle('on', state.s08);
+  const L = document.getElementById('loupe'); L.style.transformOrigin = '0 100%'; L.style.transform = `scale(${Math.min(1, innerWidth / 1500, (innerHeight - 80) / 900)})`;
   document.getElementById('vlabel').title = cfg().note;
 }
 function go(d) { cur = keys[(keys.indexOf(cur) + d + keys.length) % keys.length]; state.assign = null; try { history.replaceState(null, '', '?variant=' + cur); } catch (_) {} render(); }
@@ -561,6 +578,7 @@ document.getElementById('next').onclick = () => go(1);
 addEventListener('resize', fit);
 const cycleFont = () => { state.font = (state.font + 1) % FONTS.length; render(); };
 document.getElementById('fontb').onclick = cycleFont;
+document.getElementById('loupeb').onclick = (e) => { document.getElementById('loupe').classList.toggle('hide'); e.target.classList.toggle('on'); };
 document.getElementById('scaleb').onclick = () => { state.s08 = !state.s08; fit(); };
 addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && state.assign) { state.assign = null; render(); }
@@ -705,7 +723,7 @@ function mods(now) {
 }
 function frame(now) {
   const M = mods(now), ind = cfg().ind;
-  stage.querySelectorAll('.k[data-k], .vf[data-k], .hf[data-k]').forEach((el) => {
+  document.querySelectorAll('.k[data-k], .vf[data-k], .hf[data-k]').forEach((el) => {
     const id = el.dataset.k, m = M[el.dataset.c + ':' + id], p = P[id];
     const n = norm(p, get(el.dataset.c === 'g' ? 'g' : +el.dataset.c, id));
     const col = m ? SRC[m.src[0]].hex : '';
