@@ -48,9 +48,12 @@ DISCRETE_PARAMS = {
     'output_pair', 'delay_time', 'delay_ping_pong',
 }
 
+# LFO/pump stay independent of morph A/B states: interpolation never writes
+# them, so live edits (a MORPH target included) survive slider moves
+MODULATION_PARAMS = {'lfo1', 'lfo2', 'pump'}
+
 # Parameters to NOT interpolate (identity/metadata)
-# LFO/pump are excluded so they stay independent of morph A/B states
-EXCLUDED_PARAMS = {'name', 'lfo1', 'lfo2', 'pump'}
+EXCLUDED_PARAMS = {'name'} | MODULATION_PARAMS
 
 
 class MorphManager:
@@ -241,6 +244,8 @@ class MorphManager:
         all_keys = set(a.keys()) | set(b.keys())
         
         for key in all_keys:
+            if key in MODULATION_PARAMS:
+                continue
             if key in EXCLUDED_PARAMS:
                 # Use A endpoint name when closer to A, B when closer to B
                 result[key] = a.get(key) if t < 0.5 else b.get(key)

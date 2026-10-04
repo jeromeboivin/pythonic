@@ -61,6 +61,9 @@ class PythonicSynthesizer:
         
         # Current BPM (read by channel LFOs for tempo sync)
         self._bpm = 120.0
+
+        # Morph manager moved by LFO/pump MORPH modulation (see set_morph_manager)
+        self._morph_manager = None
         
         # Pre-allocate buffers to avoid allocations in process_audio
         self._output_buffer = np.zeros((4096, 2), dtype=np.float32)
@@ -310,7 +313,7 @@ class PythonicSynthesizer:
         # Pre-render: apply MORPH offset (uses previous block's values)
         _morph_offset = 0.0
         _saved_morph = None
-        if hasattr(self, '_morph_manager'):
+        if self._morph_manager is not None:
             for channel in self.channels:
                 offsets = channel._global_mod_offsets
                 if offsets and ModTarget.MORPH in offsets:
@@ -520,6 +523,10 @@ class PythonicSynthesizer:
         """Return the 0-indexed current program slot."""
         return self._current_program
     
+    def set_morph_manager(self, morph_manager):
+        """Let LFO/pump modulation targeting MORPH move this morph manager."""
+        self._morph_manager = morph_manager
+
     def get_programs_data(self) -> dict:
         """Get all program bank data for saving."""
         return {

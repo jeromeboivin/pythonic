@@ -125,6 +125,7 @@ class PythonicGUI:
         
         # Morph manager
         self.morph_manager = MorphManager(self.synth)
+        self.synth.set_morph_manager(self.morph_manager)
         
         # Audio state
         self.audio_stream = None
@@ -5087,6 +5088,7 @@ class PythonicGUI:
         self.synth.set_mono(was_mono)
         self.preset_manager.synth = self.synth
         self.morph_manager.synth = self.synth
+        self.synth.set_morph_manager(self.morph_manager)
         self.synth.load_preset_data(preset_data)
         smoothing_ms = self.preferences_manager.get('param_smoothing_ms', 30.0)
         for channel in self.synth.channels:
