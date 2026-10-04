@@ -3204,19 +3204,7 @@ class PythonicGUI:
         """Handle MIDI program change to select pattern"""
         if 0 <= pattern_index < 12:  # Patterns A-L
             # Must update UI on main thread
-            self.root.after(0, lambda: self._select_pattern_by_index(pattern_index))
-    
-    def _select_pattern_by_index(self, pattern_index: int):
-        """Select a pattern by index and update UI"""
-        self.pattern_manager.selected_pattern_index = pattern_index
-        
-        # Update pattern button states
-        if hasattr(self, 'pattern_buttons'):
-            for i, btn in enumerate(self.pattern_buttons):
-                btn.set_selected(i == pattern_index)
-        
-        # Update pattern editors
-        self._update_pattern_editors()
+            self.root.after(0, lambda: self._on_pattern_select(pattern_index))
     
     def _on_midi_transport_start(self):
         """Handle MIDI Start message"""
