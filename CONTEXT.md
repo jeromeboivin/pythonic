@@ -19,3 +19,7 @@ _Avoid_: Drum, sound, instrument preset
 **Program**:
 One of sixteen stored sets of the eight channel sounds inside a preset, switched to change all sounds at once.
 _Avoid_: Kit, bank, slot
+
+**Edit all**:
+A mode in which a change to any sound parameter of the selected channel is applied to every unmuted channel as well. It does not reach pattern steps.
+_Avoid_: Link, gang, global edit
