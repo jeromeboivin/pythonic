@@ -449,6 +449,45 @@ class DrumChannel:
             'pump': self.pump.get_parameters(),
         }
 
+    def reset_to_defaults(self):
+        """Restore the init patch of a freshly created channel (name included)."""
+        self.set_parameters(DrumChannel(self.channel_id, self.sr).get_parameters())
+
+    def randomize(self, rng=None):
+        """Randomize the drum patch: oscillator, noise, mix, EQ and distortion.
+
+        Level, pan, name, routing, velocity, FX and modulation are kept.
+        """
+        rng = rng if rng is not None else np.random.default_rng()
+
+        def log_uniform(low, high):
+            return float(np.exp(rng.uniform(np.log(low), np.log(high))))
+
+        def choice(enum_cls):
+            members = list(enum_cls)
+            return members[rng.integers(len(members))].value
+
+        self.set_parameters({
+            'osc_waveform': choice(WaveformType),
+            'osc_frequency': log_uniform(30.0, 5000.0),
+            'pitch_mod_mode': choice(PitchModMode),
+            'pitch_mod_amount': float(rng.uniform(-60.0, 60.0)),
+            'pitch_mod_rate': log_uniform(1.0, 2000.0),
+            'osc_attack': float(rng.uniform(0.0, 20.0)),
+            'osc_decay': log_uniform(10.0, 2000.0),
+            'noise_filter_mode': choice(NoiseFilterMode),
+            'noise_filter_freq': log_uniform(20.0, 20000.0),
+            'noise_filter_q': log_uniform(0.5, 20.0),
+            'noise_stereo': bool(rng.integers(2)),
+            'noise_envelope_mode': choice(NoiseEnvelopeMode),
+            'noise_attack': float(rng.uniform(0.0, 20.0)),
+            'noise_decay': log_uniform(10.0, 2000.0),
+            'osc_noise_mix': float(rng.uniform(0.0, 1.0)),
+            'distortion': float(rng.uniform(0.0, 0.6)),
+            'eq_frequency': log_uniform(20.0, 20000.0),
+            'eq_gain_db': float(rng.uniform(-12.0, 12.0)),
+        })
+
     def set_parameters(self, params: dict, immediate: bool = True):
         """Set all parameters from a dictionary (preset loading)."""
         if 'name' in params:

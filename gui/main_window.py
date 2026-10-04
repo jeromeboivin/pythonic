@@ -1697,7 +1697,8 @@ class PythonicGUI:
         menu.add_separator()
         menu.add_command(label="Cut Preset", command=self._cut_preset)
         menu.add_command(label="Copy Preset", command=self._copy_preset)
-        menu.add_command(label="Paste Preset", command=self._paste_preset)
+        menu.add_command(label="Paste Preset", command=self._paste_preset,
+                         state='normal' if getattr(self, '_preset_clipboard', None) else 'disabled')
         menu.add_separator()
         menu.add_command(label="Initialize Preset", command=self._init_preset)
         menu.add_command(label="Randomize All", command=self._randomize_all)
@@ -1728,30 +1729,42 @@ class PythonicGUI:
     def _copy_preset(self):
         """Copy current preset to clipboard"""
         # Store preset data in memory for paste
-        self._preset_clipboard = self.preset_manager.export_preset_to_dict()
+        self._preset_clipboard = self.preset_manager.export_preset_to_dict(self.pattern_manager)
+        self._preset_clipboard['morph'] = copy.deepcopy(self.morph_manager.to_dict())
     
     def _paste_preset(self):
         """Paste preset from clipboard"""
         if hasattr(self, '_preset_clipboard') and self._preset_clipboard:
-            self.preset_manager.import_preset_from_dict(self._preset_clipboard)
-            self._update_ui_from_channel()
+            self._push_undo_state()
+            self.preset_manager.import_preset_from_dict(self._preset_clipboard, self.pattern_manager)
+            self.morph_manager.from_dict(copy.deepcopy(self._preset_clipboard['morph']))
+            self.morph_slider.set(int(self.morph_manager.position * 100))
+            self._after_preset_replaced()
     
     def _init_preset(self):
         """Initialize/reset preset to defaults"""
+        self._push_undo_state()
         for channel in self.synth.channels:
             channel.reset_to_defaults()
         self.pattern_manager.reset_all_patterns()
-        self._update_ui_from_channel()
-        self._update_pattern_editors()
+        self.morph_manager._init_endpoints()
+        self._after_preset_replaced()
     
     def _randomize_all(self):
         """Randomize all drum patches and patterns"""
-        import random
+        self._push_undo_state()
         for channel in self.synth.channels:
             channel.randomize()
         self.pattern_manager.randomize_pattern(self.pattern_manager.selected_pattern_index)
+        self.morph_manager._init_endpoints()
+        self._after_preset_replaced()
+
+    def _after_preset_replaced(self):
+        """Refresh every view after the whole preset changed in place"""
         self._update_ui_from_channel()
-        self._update_pattern_editors()
+        self._update_pattern_ui()
+        self._update_matrix_editor()
+        self._update_morph_ui()
     
     def _on_channel_select(self, channel_idx, event=None):
         """Handle channel selection

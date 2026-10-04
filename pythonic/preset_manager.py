@@ -3,6 +3,7 @@ Preset Manager for Pythonic
 Handles loading/saving of .mtpreset files and WAV export
 """
 
+import copy
 import re
 import json
 import os
@@ -728,6 +729,19 @@ class PresetManager:
         DrumPatchWriter.write_drum_patch(filepath, channel, name)
         
         return filepath
+
+    def export_preset_to_dict(self, pattern_manager=None) -> Dict:
+        """Snapshot the sound (and the patterns, when given) as a detached dict."""
+        data = copy.deepcopy(self.synth.get_preset_data())
+        if pattern_manager is not None:
+            data['patterns'] = copy.deepcopy(pattern_manager.to_dict())
+        return data
+
+    def import_preset_from_dict(self, data: Dict, pattern_manager=None):
+        """Apply a dict from :meth:`export_preset_to_dict`; the dict stays reusable."""
+        self.synth.load_preset_data(copy.deepcopy(data))
+        if pattern_manager is not None and 'patterns' in data:
+            pattern_manager.from_dict(copy.deepcopy(data['patterns']))
 
     def _convert_drum_patch_data(self, patch: Dict) -> Dict:
         """Convert parsed .mtdrum data to internal channel format"""
