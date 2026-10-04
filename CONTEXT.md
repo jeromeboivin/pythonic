@@ -24,6 +24,78 @@ _Avoid_: Instrument, role, slot
 One of sixteen stored sets of the eight channel sounds inside a preset, switched to change all sounds at once.
 _Avoid_: Kit, bank, slot
 
+**Pattern**:
+One of the twelve step sequences of a preset, A to L: a lane of steps for each channel, 1 to 64 steps long, played in a loop.
+_Avoid_: Sequence, bar, loop
+
+**Selected pattern**:
+The pattern being edited. It need not be the one sounding.
+_Avoid_: Edited pattern, current pattern
+
+**Playing pattern**:
+The pattern sounding during playback.
+_Avoid_: Current pattern, active pattern
+
+**Chain**:
+A run of neighbouring patterns linked in order, say A→B→C, that play one after another and then start again from the first.
+_Avoid_: Song, playlist, sequence
+
+**Queued pattern**:
+A pattern picked during playback that takes over when the playing pattern ends, ahead of any chain.
+_Avoid_: Next pattern, cued pattern
+
+**Page**:
+Sixteen steps of a pattern shown on the pads at once: 1-16, 17-32, 33-48 or 49-64.
+_Avoid_: Bar, bank
+
+**Matrix**:
+A view of the triggers of all eight channels on one page of the selected pattern.
+_Avoid_: Grid, overview
+
+**Sound morph**:
+A blend of the sounds of all eight channels between the two morph endpoints, set by the morph position.
+_Avoid_: Crossfade, scene, snapshot
+
+**Morph endpoint**:
+One of the two stored sets of the eight channel sounds, A and B, that the sound morph blends between; saved in the preset. Unlike a program, it is not switched to but blended toward.
+_Avoid_: Snapshot, scene, program
+
+**Morph position**:
+Where the sound morph sits between endpoint A (0 %) and endpoint B (100 %).
+_Avoid_: Morph amount, crossfade
+
+**Morph learn**:
+A mode in which changes to the sounds are captured into one morph endpoint, A or B.
+_Avoid_: MIDI learn, capture
+
+**Lane**:
+One channel's row of steps in a pattern.
+_Avoid_: Track, row, step lane
+
+**Step mode**:
+Which step property the pads edit: trigger, accent, velocity, fill, probability or substeps.
+_Avoid_: Lane mode, lane, layer
+
+**Mute**:
+A channel switched off from playback; its steps stay.
+_Avoid_: Solo, bypass
+
+**Step rate**:
+The note length of one step: 1/8, 1/8T, 1/16, 1/16T or 1/32.
+_Avoid_: Resolution, scale, speed
+
+**Fill rate**:
+How many hits a fill step plays within the step, 2 to 8.
+_Avoid_: Roll rate, ratchet count
+
+**Swing**:
+How late the second sixteenth of every eighth note plays, giving a shuffle feel.
+_Avoid_: Shuffle, groove
+
+**MIDI learn**:
+Mapping a hardware controller to a control by touching the control and then moving the controller.
+_Avoid_: Morph learn, assign, map
+
 **Edit all**:
 A mode in which a change to any sound parameter of the selected channel is applied to every unmuted channel as well. It does not reach pattern steps.
 _Avoid_: Link, gang, global edit
