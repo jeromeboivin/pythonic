@@ -16,6 +16,10 @@ _Avoid_: Track, instrument, voice
 The complete sound of one channel, saved or loaded on its own.
 _Avoid_: Drum, sound, instrument preset
 
+**Drum type**:
+The kind of drum a drum patch is (bass drum, snare, closed hat, ...), guessed from its name. A channel has no fixed drum type: it is whatever its drum patch is, and some drum patches have none.
+_Avoid_: Instrument, role, slot
+
 **Program**:
 One of sixteen stored sets of the eight channel sounds inside a preset, switched to change all sounds at once.
 _Avoid_: Kit, bank, slot
