@@ -1,0 +1,13 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<script>
+  window.__errors = [];
+  window.addEventListener('error', e => window.__errors.push(String(e.message || e.type) + ' @ ' + (e.filename || (e.target && e.target.src) || '')), true);
+</script>
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+<script type="module" src="./main.js"></script>
+</head>
+<body>bench</body>
+</html>
