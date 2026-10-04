@@ -526,14 +526,14 @@ const PAL = {
   C: { lfo1: '#3cc8ff', lfo2: '#ff5fa8', pump: '#d9e04a', dash: { lfo2: '14 8', pump: '3 7' }, w: 11 },
 };
 const VARIANTS = {
-  A: { name: 'Mod colours as prototyped (saturated)', theme: 't8 pal-A', face: faceT, ks: 30, fh: 112, ind: 'arc',
+  A: { name: 'Mod colours saturated (WINNER, as decided)', theme: 't8 pal-A', face: faceT, ks: 30, fh: 112, ind: 'arc',
     note: 'Cyan / pink / yellow arcs, same saturation as the fader lights.' },
   B: { name: 'Mod colours as light tints with a dark edge', theme: 't8 pal-B', face: faceT, ks: 30, fh: 112, ind: 'arc',
     note: 'Near-white tints of cyan / pink / yellow, thicker, outlined in black, so they read as an overlay against saturated faders.' },
   C: { name: 'Mod colours + line style (solid / dashed / dotted)', theme: 't8 pal-C', face: faceT, ks: 30, fh: 112, ind: 'arc',
     note: 'Saturated colours kept; LFO 1 solid, LFO 2 dashed, pump dotted, so a source reads even where hues clash.' },
 };
-state.font = 0; state.s08 = false;
+state.font = 1; state.s08 = false;
 // modulation that lands on strips of the same hue, to judge clashes
 Object.assign(state.ch[4], { 'lfo1.on': 1, 'lfo1.wave': 0, 'lfo1.rate': .7, 'lfo1.depth': 50, 'lfo1.dest': destIx('osc.pitch') });
 Object.assign(state.ch[2], { 'pump.on': 1, 'pump.amt': 80, 'pump.rel': 900, 'pump.dest': destIx('mix.level') });
