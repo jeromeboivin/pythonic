@@ -153,6 +153,7 @@
   .hs:first-child { border-left: 0; }
   .hs .tab { background: #f2f2f2; color: #000; font-weight: 700; font-size: 11px; text-transform: uppercase; padding: 2px 4px; border-radius: 1px;
     width: 100%; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin: 6px 0 2px; }
+  .hs.sel .tab { background: var(--cc); box-shadow: 0 0 10px var(--cc); }
   .hs .grow { flex: 1; display: flex; align-items: flex-end; }
   .hs .vf .track { width: 16px; background: rgba(0,0,0,.7); border: 2px solid var(--cc); border-radius: 8px; margin: 2px 18px 4px;
     box-shadow: 0 0 10px var(--cc), inset 0 0 8px var(--cc); }
@@ -173,6 +174,10 @@
   .pgbars .pg { cursor: pointer; display: flex; flex-direction: column; gap: 3px; font-size: 9px; color: #8a8a8d; text-transform: uppercase; letter-spacing: .08em; }
   .pgbars .pg i { height: 6px; background: #4a4a4d; border-radius: 1px; }
   .pgbars .pg.on { color: #f2f2f2; } .pgbars .pg.on i { background: #e8e8e8; box-shadow: 0 0 6px #fff; }
+  .pgbars .pg.play i { animation: pgp .5s infinite alternate; }
+  @keyframes pgp { from { box-shadow: 0 0 0 #22e384; } to { background: #22e384; box-shadow: 0 0 8px #22e384; } }
+  .mled { width: 9px; height: 9px; border-radius: 50%; background: #3a2a08; display: inline-block; }
+  .mled.on { background: #ffb020; box-shadow: 0 0 6px #ffb020; }
   .pnums { display: grid; grid-template-columns: repeat(16, 1fr); gap: 8px; text-align: center; font-weight: 700; font-size: 13px; color: #f2f2f2; }
 
   #switcher { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 99; display: flex; align-items: center; gap: 10px;
@@ -257,16 +262,16 @@ const SRC = { lfo1: { c: 'var(--lfo1)', hex: '#3cc8ff', s: 'L1', n: 'LFO 1' }, l
 
 // ---------------------------------------------------------------- mock state
 const CH = [
-  ['Kick Deep', 'BD', { 'osc.freq': 52, 'osc.amt': 38, 'osc.rate': 60, 'osc.dec': 420, 'mix.mix': 92, 'noise.dec': 30, 'lfo1.on': 1, 'lfo1.wave': 1, 'lfo1.rate': .4, 'lfo1.depth': 45, 'lfo1.dest': destIx('osc.dec') }],
-  ['Snare Tight', 'SD', { 'osc.freq': 190, 'osc.dec': 120, 'noise.filt': 1, 'noise.freq': 4200, 'noise.dec': 210, 'mix.mix': 35, 'fx.rm': 22, 'fx.rt': 40, 'pump.on': 1, 'pump.amt': 70, 'pump.rel': 300, 'pump.dest': destIx('fx.rm') }],
-  ['Closed Hat', 'CH', { 'osc.freq': 8000, 'noise.filt': 2, 'noise.freq': 7000, 'noise.dec': 45, 'mix.mix': 8, 'mix.pan': 18, 'lfo1.on': 1, 'lfo1.wave': 5, 'lfo1.rate': 4, 'lfo1.depth': 30, 'lfo1.dest': destIx('noise.freq') }],
-  ['Open Hat', 'OH', { 'noise.filt': 2, 'noise.freq': 6500, 'noise.dec': 380, 'mix.mix': 6, 'mix.choke': 1, 'lfo2.on': 1, 'lfo2.rate': .25, 'lfo2.depth': 80, 'lfo2.dest': destIx('mix.pan') }],
-  ['Clap Room', 'CP', { 'noise.filt': 1, 'noise.freq': 1400, 'noise.env': 2, 'noise.dec': 260, 'mix.mix': 4, 'fx.rm': 35, 'fx.rt': 55 }],
-  ['Low Tom', 'LT', { 'osc.freq': 110, 'osc.amt': 12, 'osc.dec': 380, 'mix.mix': 85, 'mix.pan': -25 }],
-  ['Rim Click', 'RS', { 'osc.freq': 1700, 'osc.wave': 1, 'osc.dec': 25, 'mix.mix': 70, 'fx.dm': 28, 'fx.dt': 3, 'fx.pp': 1 }],
-  ['Crash Wash', 'CY', { 'noise.filt': 2, 'noise.freq': 5200, 'noise.dec': 1900, 'noise.stereo': 1, 'mix.mix': 3, 'fx.rm': 30, 'fx.rt': 70, 'mix.level': -4 }],
+  ['808 BD', 'BD', { 'osc.freq': 52, 'osc.amt': 38, 'osc.rate': 60, 'osc.dec': 420, 'mix.mix': 92, 'noise.dec': 30, 'lfo1.on': 1, 'lfo1.wave': 1, 'lfo1.rate': .4, 'lfo1.depth': 45, 'lfo1.dest': destIx('osc.dec') }],
+  ['808 MT', 'MT', { 'osc.freq': 110, 'osc.amt': 12, 'osc.dec': 380, 'mix.mix': 85, 'mix.pan': -25 }],
+  ['808 RS', 'RS', { 'osc.freq': 1700, 'osc.wave': 1, 'osc.dec': 25, 'mix.mix': 70, 'fx.dm': 28, 'fx.dt': 3, 'fx.pp': 1 }],
+  ['808 CP', 'CP', { 'noise.filt': 1, 'noise.freq': 1400, 'noise.env': 2, 'noise.dec': 260, 'mix.mix': 4, 'fx.rm': 35, 'fx.rt': 55 }],
+  ['808 SD', 'SD', { 'osc.freq': 190, 'osc.dec': 120, 'noise.filt': 1, 'noise.freq': 4200, 'noise.dec': 210, 'mix.mix': 35, 'fx.rm': 22, 'fx.rt': 40, 'pump.on': 1, 'pump.amt': 70, 'pump.rel': 300, 'pump.dest': destIx('fx.rm') }],
+  ['Metal Ping', '', { 'noise.filt': 2, 'noise.freq': 5200, 'noise.dec': 1900, 'noise.stereo': 1, 'mix.mix': 3, 'fx.rm': 30, 'fx.rt': 70, 'mix.level': -4 }],
+  ['808 CH', 'CH', { 'osc.freq': 8000, 'noise.filt': 2, 'noise.freq': 7000, 'noise.dec': 45, 'mix.mix': 8, 'mix.pan': 18, 'lfo1.on': 1, 'lfo1.wave': 5, 'lfo1.rate': 4, 'lfo1.depth': 30, 'lfo1.dest': destIx('noise.freq') }],
+  ['808 OH', 'OH', { 'noise.filt': 2, 'noise.freq': 6500, 'noise.dec': 380, 'mix.mix': 6, 'mix.choke': 1, 'lfo2.on': 1, 'lfo2.rate': .25, 'lfo2.depth': 80, 'lfo2.dest': destIx('mix.pan') }],
 ];
-const STEPS = [[0, 4, 8, 10, 12], [4, 12], [0, 2, 4, 6, 8, 10, 12, 14], [2, 6, 10, 14], [4, 12, 15], [7, 13], [3, 11], [0]];
+const STEPS = [[0, 4, 8, 10, 12], [7, 13], [3, 11], [4, 12, 15], [4, 12], [0], [0, 2, 4, 6, 8, 10, 12, 14], [2, 6, 10, 14]];
 const state = {
   sel: 0, rack: true, editAll: false, page: 0, assign: null, ph: 0, playing: true, mutes: new Set([5]),
   ch: CH.map(([, , o]) => { const v = {}; for (const id in P) if (!id.startsWith('g.')) v[id] = P[id].d; return Object.assign(v, o); }),
@@ -441,12 +446,12 @@ function faceT() {
   const strips = CH.map(([nm, ty], i) => {
     const cid = ctrlId(i), muted = state.mutes.has(i), user = state.ctrl === 5;
     const ctrl = cid ? ctl(cid, i, { t: 'k', s: 34, l: user ? P[cid].n : 'ctrl' }) : deadKnob;
-    return `<div class="hs ${muted ? 'muted' : ''}" style="--cc:${CC[i]}">
+    return `<div class="hs ${muted ? 'muted' : ''} ${state.sel === i ? 'sel' : ''}" style="--cc:${CC[i]}">
       <div class="tab">${nm}</div>
       ${ctl('osc.pitch', i, { t: 'k', s: 34, l: 'tune' })}${ctl('osc.dec', i, { t: 'k', s: 34, l: 'decay' })}
       <div class="${user ? 'uc' : ''}" ${user ? `data-userctrl="${i}" title="click the label to pick this channel's CTRL parameter"` : ''}>${ctrl}</div>
       <div class="grow">${ctl('mix.level', i, { t: 'vf', s: 128, l: '' })}</div>
-      <button class="btn chb ${state.sel === i ? 'on' : ''} ${muted ? 'mut' : ''}" data-chb="${i}">${ty}</button></div>`;
+      <button class="btn chb ${state.sel === i ? 'on' : ''} ${muted ? 'mut' : ''}" data-chb="${i}">${ty || i + 1}</button></div>`;
   }).join('');
   const lanes = ['trig', 'accent', 'velo', 'fill', 'prob', 'sub'].map((l, i) => btn(l, state.lane === i, 'sq', `data-lane="${i}"`)).join('');
   const pats = 'ABCDEFGHIJKL'.split('').map((p, i) => btn(p, i === 0, 'sq' + (i === 0 ? ' red' : ''), 'style="font-size:15px"')).join('');
@@ -454,7 +459,7 @@ function faceT() {
   <div class="col" style="grid-row:1;gap:7px">
     <div class="brand">PYTHON<b>IC</b></div>
     <div class="row" style="gap:14px;justify-content:center">${btn('undo', false, 'rnd')}${btn('redo', false, 'rnd')}</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">${lanes}${btn('last step', false, 'sq red')}${btn('all ch', false, 'sq')}${btn('⊞ matrix', false, 'sq', 'style="grid-column:1/3"')}</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">${lanes}${btn('last step', false, 'sq red')}${btn('all ch', false, 'sq')}${btn('follow', true, 'sq')}${btn('⊞ matrix', false, 'sq')}</div>
     <div class="hl" style="font-size:12px;margin-top:2px">pattern</div>
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px">${pats}</div>
     <div class="row" style="gap:3px;justify-content:center">${['◀◀', '▶▶', 'menu', 'copy', 'paste'].map((x) => btn(x)).join('')}</div>
@@ -476,21 +481,22 @@ function faceT() {
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px">${btn('◀', false, 'sq')}${btn('▶', false, 'sq')}${btn('preset', false, 'sq', 'style="grid-column:3/5"')}
       ${btn('edit rack', state.rack, 'sq', 'data-rack style="grid-column:1/3"')}${btn('po-32', false, 'sq')}${btn('setup', false, 'sq')}
       ${btn('mute', state.muteMode, 'sq red', 'data-mutemode style="grid-column:1/3"')}${btn('learn a', false, 'sq')}${btn('learn b', false, 'sq')}</div>
-    <div class="row" style="gap:14px;align-items:center;justify-content:center"><div class="lcd seg7" style="width:140px">120.0</div>
-      <div class="ctl k" style="--s:36px"><svg viewBox="0 0 100 100"><circle class="dt" cx="16.8" cy="83.2" r="3"/><circle class="dt" cx="83.2" cy="83.2" r="3"/><circle class="cap" cx="50" cy="50" r="34"/><line x1="50" y1="50" x2="70" y2="30" stroke="#f2f2f2" stroke-width="5" stroke-linecap="round"/></svg><span class="lbl">swing</span></div></div>
+    <div class="row" style="gap:10px;align-items:center;justify-content:center"><div class="lcd seg7" style="width:118px;font-size:30px">120.0</div>
+      <div class="ctl k" style="--s:40px"><svg viewBox="0 0 100 100"><circle class="dt" cx="16.8" cy="83.2" r="3"/><circle class="dt" cx="83.2" cy="83.2" r="3"/><circle class="cap" cx="50" cy="50" r="34"/><line x1="50" y1="50" x2="58" y2="18" stroke="#f2f2f2" stroke-width="5" stroke-linecap="round"/></svg><span class="lbl">tempo</span></div><div class="ctl k" style="--s:32px"><svg viewBox="0 0 100 100"><circle class="dt" cx="16.8" cy="83.2" r="3"/><circle class="dt" cx="83.2" cy="83.2" r="3"/><circle class="cap" cx="50" cy="50" r="34"/><line x1="50" y1="50" x2="70" y2="30" stroke="#f2f2f2" stroke-width="5" stroke-linecap="round"/></svg><span class="lbl">swing</span></div></div>
+    <div class="row" style="justify-content:flex-end;gap:6px;font-size:9px;color:#8a8a8d;text-transform:uppercase;letter-spacing:.08em;margin-top:-6px">midi <span class="mled on"></span></div>
     <div class="col morph" style="align-items:center;gap:4px;margin-top:6px">${ctl('g.morph', 'g', { s: 116, l: 'sound morph' })}</div>
   </div>
   <div style="grid-column:1;grid-row:2;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px">
     <button class="ss ${state.playing ? 'on' : ''}" data-play></button><span class="wtab">start / stop</span></div>
   <div style="grid-column:2/4;grid-row:2;display:flex;flex-direction:column;gap:6px">
-    <div class="pgbars">${['1–16', '17–32', '33–48', '49–64'].map((x, i) => `<div class="pg ${state.pg === i ? 'on' : ''}" data-pg="${i}"><span>steps ${x}</span><i></i></div>`).join('')}</div>
+    <div class="pgbars">${['1–16', '17–32', '33–48', '49–64'].map((x, i) => `<div class="pg ${state.pg === i ? 'on' : ''} ${i === 0 && state.playing ? 'play' : ''}" data-pg="${i}"><span>steps ${x}</span><i></i></div>`).join('')}</div>
     <div class="pnums">${[...Array(16)].map((_, i) => `<div>${state.pg * 16 + i + 1}</div>`).join('')}</div>
     <div class="pads">${[...Array(16)].map((_, i) => `<div class="pad ${STEPS[state.sel].includes(i) ? 'on' : ''}" style="--gc:${gc(i)}"></div>`).join('')}</div>
   </div>`;
 }
 
 const VARIANTS = {
-  A: { name: 'Hardware look (8-track rhythm performer style)', theme: 't8', face: faceT, ks: 30, fh: 112, ind: 'arc',
+  A: { name: 'Hardware look (WINNER, as decided)', theme: 't8', face: faceT, ks: 30, fh: 112, ind: 'arc',
     note: 'Black panel, white tab labels, lit coloured faders, tune / decay / CTRL per strip, one MUTE mode button, green-lit buttons and a green dot display, big ringed morph knob, page bars over the pads.' },
   B: { name: 'Current settled look (panel layout A + edit rack C)', theme: '', face: () => face(), ks: 30, fh: 112, ind: 'arc',
     note: 'Dark grey panel, orange accents, boxed strips with tune / decay / fader / mute / sel, red segment display, stop + play.' },
