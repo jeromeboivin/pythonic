@@ -23,3 +23,27 @@ _Avoid_: Kit, bank, slot
 **Edit all**:
 A mode in which a change to any sound parameter of the selected channel is applied to every unmuted channel as well. It does not reach pattern steps.
 _Avoid_: Link, gang, global edit
+
+**Step**:
+One position in a channel's lane of a pattern, 1 to 64 per pattern. A step holds its trigger, accent, velocity, fill, probability and substeps.
+_Avoid_: Beat, tick, note
+
+**Accent**:
+A step flag that plays the hit at full strength, whatever the step's velocity.
+_Avoid_: Strong beat
+
+**Velocity**:
+How hard an unaccented step hits, from 1 to 127.
+_Avoid_: Level, volume, dynamics
+
+**Fill**:
+A step flag that repeats the hit at the fill rate until the next step, each repeat softer than the last.
+_Avoid_: Roll, flam, ratchet
+
+**Probability**:
+The chance, from 0 to 100 %, that a triggered step plays on a given pass.
+_Avoid_: Chance, likelihood
+
+**Substeps**:
+A step split into equal parts, each part either played or silent.
+_Avoid_: Ratchet, sub-division, flam
