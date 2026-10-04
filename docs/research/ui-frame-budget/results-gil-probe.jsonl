@@ -1,0 +1,11 @@
+{"action": "idle baseline", "ms_per_run": 500.1, "probe_late_max_ms": 2.59, "p99": 0.97}
+{"action": "import torch (first)", "ms_per_run": 2116.4, "probe_late_max_ms": 381.49, "p99": 17.8}
+{"action": "load patch model (116 MB)", "ms_per_run": 9000.1, "probe_late_max_ms": 125.91, "p99": 2.52}
+{"action": "load pattern model", "ms_per_run": 199.5, "probe_late_max_ms": 3.03, "p99": 1.79}
+{"action": "preset load (parse + new synth + patterns)", "ms_per_run": 81.4, "probe_late_max_ms": 5.27, "p99": 5.2}
+{"action": "parse .mtpreset only", "ms_per_run": 42.9, "probe_late_max_ms": 5.25, "p99": 5.16}
+{"action": "new PythonicSynthesizer()", "ms_per_run": 41.4, "probe_late_max_ms": 1.47, "p99": 0.96}
+{"action": "gc.collect()", "ms_per_run": 120.7, "probe_late_max_ms": 132.01, "p99": 114.56}
+{"action": "WAV render 2 s (worst-case pattern)", "ms_per_run": 180.5, "probe_late_max_ms": 1.79, "p99": 0.75}
+{"action": "one realistic UI frame (json)", "ms_per_run": 1.2, "probe_late_max_ms": 7.3, "p99": 7.07}
+{"gc_full_collection_ms": {"engine modules only": 31.4, "engine + tkinter, 1 synth": 42.7, "after import torch": 91.6, "after gc.freeze()": 0.0, "after 5 preset loads (frozen)": 1.0}}
