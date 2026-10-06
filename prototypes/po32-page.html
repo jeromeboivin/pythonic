@@ -685,7 +685,7 @@ const poSource = () => FL('input', LB('USB Audio CODEC', 118) + btn('rescan'), 3
   + `<div class="note">${po.rec ? 'listening: play the PO-32 into the input' : po.decoded ? 'decoded: 16 sounds, 7 patterns' : 'nothing decoded yet'}</div>` + CK('keep recordings (debug)');
 const poCount = () => `<span class="note">${po.sel.size} / 12 selected</span>`;
 const poImportBtn = () => pb('import', `import 8 sounds + ${po.sel.size} patterns`, true);
-const poSummary = () => `<div class="note">Bank ${po.bank} replaces the sounds of channels 1–8; ${po.sel.size} patterns land on ${[...po.sel.values()].sort().join(' ') || '—'}. One undo step.</div>`;
+const poSummary = () => `<div class="note">Bank ${po.bank} replaces the sounds of channels 1–8 and all 12 patterns: ${po.sel.size} land on ${[...po.sel.values()].sort().join(' ') || '—'}, the rest are emptied. One undo step.</div>`;
 const poPatBtns = (cols) => `<div style="display:grid;grid-template-columns:repeat(${cols},1fr);gap:3px">${[...Array(16)].map((_, i) => {
   const d = po.sel.get(i), e = empty(i);
   return `<button class="btn sq ${d ? 'on' : ''}" data-po="sel:${i}" style="font-size:10px;padding:4px 0;${e ? 'opacity:.45;' : ''}${po.focus === i ? 'outline:1px solid #f2f2f2;' : ''}">${i + 1}${d ? '→' + d : ''}</button>`; }).join('')}</div>`;
@@ -758,7 +758,7 @@ const VARIANTS = {
     note: 'Per-channel things sit under their strip: transfer has a send/silent toggle per strip; import shows what each channel becomes plus the focused pattern\'s lane. Pattern picking is a 4×4 grid on the right.' },
   B: { name: 'Pad-aligned patterns', page: pageB,
     note: 'Import puts the 16 PO-32 patterns under the 16 pads, each with a thumbnail and its destination letter; patch names sit under the strips. Transfer has no toggles: the face MUTE decides what is sent silent.' },
-  C: { name: 'Stage flow', page: pageC,
+  C: { name: 'Stage flow (WINNER, as decided)', page: pageC,
     note: 'A numbered left-to-right flow (listen › bank › pick patterns › import; choose › prepare › send). The current stage is lit, later ones dimmed. Nothing lines up with the face.' },
 };
 for (const k in VARIANTS) VARIANTS[k].how = (f) => FEAT[f].mix;
@@ -823,7 +823,7 @@ function nativeClose(ok) {
 
 // ---------------------------------------------------------------- render + fit
 const keys = Object.keys(VARIANTS);
-let cur = new URLSearchParams(location.search).get('variant'); if (!keys.includes(cur)) cur = 'A';
+let cur = new URLSearchParams(location.search).get('variant'); if (!keys.includes(cur)) cur = 'C';
 const cfg = () => VARIANTS[cur];
 for (const k in VARIANTS) Object.assign(VARIANTS[k], { theme: 't8', face: faceT, ks: 30, fh: 112, ind: 'arc' });
 const stage = document.getElementById('stage');
