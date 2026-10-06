@@ -17,13 +17,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pythonic.sequencer import StepSequencer, STEP_TICKS
-from pythonic.oscillator import WaveformType, PitchModMode
-from pythonic.noise import NoiseFilterMode, NoiseEnvelopeMode
 from pythonic.pattern_manager import PatternManager
-from pythonic.lfo import (
-    LFOWaveform, LFORetrigger, LFOPolarity, SyncDivision,
-    ModTarget, MOD_TARGET_GROUPS, MOD_TARGET_LABELS,
-)
+from pythonic.lfo import ModTarget, MOD_TARGET_GROUPS, MOD_TARGET_LABELS
 from gui.widgets import (
     RotaryKnob, VerticalSlider, ChannelButton,
     WaveformSelector, ModeSelector, ToggleButton, PatternEditor, MatrixEditor
@@ -96,10 +91,10 @@ class PythonicGUI:
         self._midi_learn_target = None  # Parameter name being learned
         self._init_midi()
 
-        # UI state
-        self.selected_channel = 0
+        # UI state. The selected channel is a copy of the core's
+        # global.channel (0-based here), updated from poll.
+        self.selected_channel = self.core.get('global.channel') - 1
         self.updating_ui = False  # Prevent feedback loops
-        self.edit_all_mode = False  # When True, knob changes affect all unmuted channels
         
         # Undo/redo state management
         self._undo_stack = []  # List of (synth_data, pattern_data) snapshots
@@ -123,6 +118,7 @@ class PythonicGUI:
 
         # Build the interface
         self._build_ui()
+        self._build_address_widget_tables()
         
         # Register parameters for MIDI CC control
         self._register_cc_parameters()
@@ -467,7 +463,7 @@ class PythonicGUI:
             type_lbl.pack()
             self.channel_type_labels.append(type_lbl)
         
-        self.channel_buttons[0].set_selected(True)
+        self.channel_buttons[self.selected_channel].set_selected(True)
     
     def _build_pattern_section(self, parent):
         """Build the pattern editor section
@@ -1110,15 +1106,12 @@ class PythonicGUI:
         self.pump_dest_combo.bind('<<ComboboxSelected>>', self._on_pump_dest)
     
     # ---- LFO callbacks ----
-    
-    def _get_lfo(self, lfo_id: str):
-        """Return the LFO object for the selected channel."""
-        ch = self.synth.get_selected_channel()
-        return getattr(ch, lfo_id)
-    
+    # Wave and sync list positions are the engine enum positions, which the
+    # core's enum addresses also take.
+
     def _on_lfo_enable(self, lfo_id, value):
         if not self.updating_ui:
-            self._get_lfo(lfo_id).enabled = bool(value)
+            self._set_sound(f'{lfo_id}.on', bool(value))
     
     def _on_lfo_waveform(self, lfo_id, wave_var):
         if not self.updating_ui:
@@ -1126,15 +1119,15 @@ class PythonicGUI:
                 idx = self._lfo_wave_options.index(wave_var.get())
             except ValueError:
                 idx = 0
-            self._get_lfo(lfo_id).waveform = LFOWaveform(idx)
+            self._set_sound(f'{lfo_id}.wave', idx)
     
     def _on_lfo_rate(self, lfo_id, value):
         if not self.updating_ui:
-            self._get_lfo(lfo_id).rate_hz = float(value)
+            self._set_sound(f'{lfo_id}.rate', float(value))
     
     def _on_lfo_depth(self, lfo_id, value):
         if not self.updating_ui:
-            self._get_lfo(lfo_id).depth = float(value)
+            self._set_sound(f'{lfo_id}.depth', float(value))
     
     def _on_lfo_sync(self, lfo_id, sync_var):
         if not self.updating_ui:
@@ -1142,55 +1135,59 @@ class PythonicGUI:
                 idx = self._lfo_sync_options.index(sync_var.get())
             except ValueError:
                 idx = 0
-            self._get_lfo(lfo_id).sync = SyncDivision(idx)
+            self._set_sound(f'{lfo_id}.sync', idx)
     
     def _on_lfo_retrigger(self, lfo_id, value):
         if not self.updating_ui:
-            self._get_lfo(lfo_id).retrigger = LFORetrigger.RETRIGGER if value else LFORetrigger.FREE
+            self._set_sound(f'{lfo_id}.retrig', bool(value))
     
     def _on_lfo_polarity(self, lfo_id, value):
         if not self.updating_ui:
-            self._get_lfo(lfo_id).polarity = LFOPolarity.UNIPOLAR if value else LFOPolarity.BIPOLAR
+            self._set_sound(f'{lfo_id}.unipolar', bool(value))
     
     def _on_lfo_dest(self, lfo_id, dest_var):
         if not self.updating_ui:
-            sel = dest_var.get()
-            try:
-                idx = self._mod_target_options.index(sel)
-                self._get_lfo(lfo_id).target = self._mod_target_values[idx]
-            except ValueError:
-                self._get_lfo(lfo_id).target = ModTarget.NONE
+            self._set_sound(f'{lfo_id}.target', self._mod_target_name(dest_var.get()))
+    
+    def _mod_target_name(self, option):
+        """Address value of a destination list option ('none' if unknown)."""
+        try:
+            return self._mod_target_values[self._mod_target_options.index(option)].value
+        except ValueError:
+            return ModTarget.NONE.value
+    
+    def _mod_target_option(self, name):
+        """Destination list option of an address value."""
+        for option, target in zip(self._mod_target_options, self._mod_target_values):
+            if target.value == name:
+                return option
+        return 'Off'
     
     # ---- Pump callbacks ----
     
     def _on_pump_enable(self, value):
         if not self.updating_ui:
-            self.synth.get_selected_channel().pump.enabled = bool(value)
+            self._set_sound('pump.on', bool(value))
     
     def _on_pump_amount(self, value):
         if not self.updating_ui:
-            self.synth.get_selected_channel().pump.amount = value / 100.0
+            self._set_sound('pump.amount', value / 100.0)
     
     def _on_pump_attack(self, value):
         if not self.updating_ui:
-            self.synth.get_selected_channel().pump.attack_ms = float(value)
+            self._set_sound('pump.attack', float(value))
     
     def _on_pump_release(self, value):
         if not self.updating_ui:
-            self.synth.get_selected_channel().pump.release_ms = float(value)
+            self._set_sound('pump.release', float(value))
     
     def _on_pump_curve(self, value):
         if not self.updating_ui:
-            self.synth.get_selected_channel().pump.curve = value / 100.0
+            self._set_sound('pump.curve', value / 100.0)
     
     def _on_pump_dest(self, event=None):
         if not self.updating_ui:
-            sel = self.pump_dest_var.get()
-            try:
-                idx = self._mod_target_options.index(sel)
-                self.synth.get_selected_channel().pump.target = self._mod_target_values[idx]
-            except ValueError:
-                self.synth.get_selected_channel().pump.target = ModTarget.NONE
+            self._set_sound('pump.target', self._mod_target_name(self.pump_dest_var.get()))
     
     def _build_fx_section(self, parent):
         """Build the effects section (reverb, delay, vintage)"""
@@ -1235,7 +1232,8 @@ class PythonicGUI:
         delay_row.pack(pady=1)
         
         self.delay_time_options = ['1/4', '1/8', '1/16', '1/8T', '1/4.']
-        self.delay_time_indices = [2, 3, 4, 8, 11]  # Map to DelayTime enum values
+        # Address values (DelayTime names) of the five options
+        self.delay_time_names = ['quarter', 'eighth', 'sixteenth', 'eighth_t', 'quarter_d']
         self.delay_time_selector = ModeSelector(delay_row,
                                                 options=self.delay_time_options,
                                                 width=100,
@@ -1300,7 +1298,7 @@ class PythonicGUI:
                 font=('Segoe UI', 7), fg=self.COLORS['text_dim'],
                 bg=self.COLORS['bg_medium']).pack(side='left', padx=(0, 3))
         
-        self.bpm_var = tk.StringVar(value=str(self.pattern_manager.bpm))
+        self.bpm_var = tk.StringVar(value=str(self.core.get('global.tempo')))
         self.bpm_entry = tk.Entry(bpm_frame, textvariable=self.bpm_var, 
                                   width=4, font=('Segoe UI', 9),
                                   bg=self.COLORS['bg_dark'], fg=self.COLORS['text'],
@@ -1316,7 +1314,7 @@ class PythonicGUI:
         
         self.step_rate_buttons = []
         for rate in ['1/8', '1/8T', '1/16', '1/16T', '1/32']:
-            is_selected = (rate == self.pattern_manager.step_rate)
+            is_selected = (rate == self.core.get('global.step_rate'))
             btn = tk.Button(rate_frame, text=rate, width=4, height=1,
                            font=('Segoe UI', 7),
                            bg=self.COLORS['highlight'] if is_selected else self.COLORS['bg_light'],
@@ -1362,7 +1360,7 @@ class PythonicGUI:
         self.fill_rate_buttons = []
         for rate in ['2x', '3x', '4x', '5x', '6x', '7x', '8x']:
             rate_val = int(rate[0])
-            is_selected = (rate_val == self.pattern_manager.fill_rate)
+            is_selected = (rate_val == self.core.get('global.fill_rate'))
             btn = tk.Button(fill_frame, text=rate, width=2, height=1,
                            font=('Segoe UI', 7),
                            bg=self.COLORS['highlight'] if is_selected else self.COLORS['bg_light'],
@@ -1385,41 +1383,36 @@ class PythonicGUI:
         self.root.bind('<Key>', self._on_key_press)
     
     def _on_step_rate_button(self, rate):
-        """Handle step rate button click"""
-        self.pattern_manager.set_step_rate(rate)
-        # Update button states
+        """Handle step rate button click (the highlight follows poll)"""
+        self.core.set('global.step_rate', rate)
+    
+    def _show_step_rate(self, rate):
         for r, btn in self.step_rate_buttons:
-            if r == rate:
-                btn.config(bg=self.COLORS['highlight'])
-            else:
-                btn.config(bg=self.COLORS['bg_light'])
+            btn.config(bg=self.COLORS['highlight'] if r == rate else self.COLORS['bg_light'])
     
     def _on_fill_rate_button(self, rate):
-        """Handle fill rate button click"""
-        self.pattern_manager.set_fill_rate(rate)
-        # Update button states
+        """Handle fill rate button click (the highlight follows poll)"""
+        self.core.set('global.fill_rate', rate)
+    
+    def _show_fill_rate(self, rate):
         for r, btn in self.fill_rate_buttons:
-            if r == rate:
-                btn.config(bg=self.COLORS['highlight'])
-            else:
-                btn.config(bg=self.COLORS['bg_light'])
+            btn.config(bg=self.COLORS['highlight'] if r == round(rate) else self.COLORS['bg_light'])
     
     def _on_global_swing_change(self, value):
-        """Handle global swing slider change"""
-        swing_val = int(value)
-        self.pattern_manager.swing = swing_val / 100.0  # Convert to 0-1 range
+        """Handle global swing slider change (0-100 %)"""
+        if not self.updating_ui:
+            self.core.set('global.swing', int(float(value)) / 100.0)
     
     def _on_bpm_change(self, event=None):
-        """Handle BPM entry change"""
+        """Handle BPM entry change (the core clamps to 1-300)"""
         try:
             bpm = int(self.bpm_var.get())
-            bpm = max(1, min(300, bpm))  # Clamp to valid range
-            self.pattern_manager.set_bpm(bpm)
-            self.synth.set_bpm(bpm)  # Update synth for tempo-synced delay
-            self.bpm_var.set(str(bpm))  # Update display with clamped value
         except ValueError:
             # Restore current BPM if invalid input
-            self.bpm_var.set(str(self.pattern_manager.bpm))
+            self.bpm_var.set(str(self.core.get('global.tempo')))
+            return
+        self.core.set('global.tempo', bpm)
+        self.bpm_var.set(str(max(1, min(300, bpm))))  # Show the clamped value at once
     
     # ============== Event Handlers ==============
     
@@ -1461,12 +1454,10 @@ class PythonicGUI:
         During learn mode the slider stores the position but does not
         affect the synth – the synth stays pinned to the learned endpoint.
         """
-        morph_value = float(value) / 100.0  # Normalize to 0-1
-        self.morph_manager._position = max(0.0, min(1.0, morph_value))
-        if not self.morph_manager.is_learning():
-            self.morph_manager.apply_effective_position()
-            # Update UI to reflect interpolated parameters
-            self._update_ui_from_channel()
+        if self.updating_ui:
+            return
+        # The knobs follow once poll reports the new position
+        self.core.set('morph.position', float(value) / 100.0)
     
     def _on_morph_learn_a(self):
         """Toggle learn mode for morph endpoint A."""
@@ -1758,27 +1749,24 @@ class PythonicGUI:
         
         If clicking on an already-selected channel, trigger the drum to preview it.
         Hold Ctrl for accented trigger (velocity 127), otherwise normal (velocity 64).
+        Otherwise the core selects the channel; the editors follow from poll.
         """
         # Check if clicking on already-selected channel -> trigger preview
         if channel_idx == self.selected_channel:
-            # Trigger the drum to preview
             # Check if Ctrl is held for accented trigger
             if event and (event.state & 0x4):  # Control key mask
                 velocity = 127  # Accented
             else:
                 velocity = 64   # Normal
-            self.synth.trigger_drum(channel_idx, velocity)
-            # Flash the button
-            self.channel_buttons[channel_idx].set_triggered(True)
-            self.root.after(100, lambda: self.channel_buttons[channel_idx].set_triggered(False))
+            self._trigger_channel(channel_idx, velocity)
             return
-        
-        # Update button states
+        self.core.set('global.channel', channel_idx + 1)
+    
+    def _show_selected_channel(self, channel_idx):
+        """Show the channel the core reports as selected (from poll)."""
         for i, btn in enumerate(self.channel_buttons):
             btn.set_selected(i == channel_idx)
-        
         self.selected_channel = channel_idx
-        self.synth.select_channel(channel_idx)
         
         # Switch pattern editor to show the selected channel
         if hasattr(self, 'pattern_editors') and hasattr(self, 'current_pattern_editor_index'):
@@ -1795,305 +1783,181 @@ class PythonicGUI:
         self._update_ui_from_channel()
     
     def _on_mute_toggle(self, channel_idx, enabled):
-        """Handle mute toggle"""
-        self.synth.mute_channel(channel_idx, enabled)
-        self.channel_buttons[channel_idx].set_muted(enabled)
+        """Handle mute toggle (the channel LED follows poll)"""
+        if not self.updating_ui:
+            self.core.set(f'ch{channel_idx + 1}.mute', bool(enabled))
+    
+    def _show_mute(self, channel_idx, muted):
+        self.channel_buttons[channel_idx].set_muted(muted)
+        self.mute_buttons[channel_idx].set_value(muted)
     
     def _on_master_volume_change(self, value):
         """Handle master volume change"""
-        self.synth.set_master_volume(value)
+        if not self.updating_ui:
+            self.core.set('global.master', value)
+    
+    def _on_edit_all_toggle(self, enabled):
+        """Edit all: the core applies sound changes to every unmuted channel"""
+        self.core.set('global.edit_all', bool(enabled))
+    
+    def _set_sound(self, suffix, value):
+        """Write a sound parameter of the selected channel through the core
+        (with Edit all on, the core also writes the unmuted channels)."""
+        self.core.set(f'ch{self.selected_channel + 1}.{suffix}', value)
+    
+    # Sound parameter handlers: widget units -> engine units
     
     def _on_mix_change(self, value):
         """Handle osc/noise mix change (value comes from tk.Scale as string)"""
         if not self.updating_ui:
-            channel = self.synth.get_selected_channel()
-            channel.set_osc_noise_mix(float(value) / 100.0)
+            self._set_sound('mix.osc_noise', float(value) / 100.0)
     
     def _on_eq_freq_change(self, value):
-        """Handle EQ frequency change"""
         if not self.updating_ui:
-            channel = self.synth.get_selected_channel()
-            channel.set_eq_frequency(value)
+            self._set_sound('eq.freq', value)
     
     def _on_eq_gain_change(self, value):
-        """Handle EQ gain change"""
         if not self.updating_ui:
-            channel = self.synth.get_selected_channel()
-            channel.set_eq_gain(value)
+            self._set_sound('eq.gain', value)
     
     def _on_distort_change(self, value):
-        """Handle distortion change"""
         if not self.updating_ui:
-            channel = self.synth.get_selected_channel()
-            channel.set_distortion(value / 100.0)
+            self._set_sound('mix.distortion', value / 100.0)
     
     def _on_vintage_change(self, value):
-        """Handle vintage analog simulation change
-        
-        The vintage knob simulates analog circuit behavior:
-        - Oscillator pitch drift (random walk instability)
-        - Thermal noise floor
-        - Soft saturation for harmonic warmth
-        - High-frequency roll-off (capacitor loading)
-        """
+        """Vintage analog simulation: pitch drift, noise floor, saturation, HF roll-off"""
         if not self.updating_ui:
-            channel = self.synth.get_selected_channel()
-            channel.vintage_amount = value / 100.0
+            self._set_sound('fx.vintage', value / 100.0)
     
     def _on_reverb_decay_change(self, value):
-        """Handle reverb decay time change
-        
-        Controls the RT60 (time for reverb to decay by 60dB).
-        Range: 0-100% maps to approximately 0.1s to 4s decay time.
-        """
+        """Reverb time: 0-100 % maps to about 0.1 s to 4 s RT60"""
         if not self.updating_ui:
-            if self.edit_all_mode:
-                for ch in self.synth.channels:
-                    if not ch.muted:
-                        ch.reverb_decay = value / 100.0
-            else:
-                channel = self.synth.get_selected_channel()
-                channel.reverb_decay = value / 100.0
+            self._set_sound('fx.reverb_decay', value / 100.0)
     
     def _on_reverb_mix_change(self, value):
-        """Handle reverb dry/wet mix change
-        
-        Controls the balance between dry (original) and wet (reverb) signal.
-        0% = fully dry, 100% = fully wet.
-        """
         if not self.updating_ui:
-            if self.edit_all_mode:
-                for ch in self.synth.channels:
-                    if not ch.muted:
-                        ch.reverb_mix = value / 100.0
-            else:
-                channel = self.synth.get_selected_channel()
-                channel.reverb_mix = value / 100.0
+            self._set_sound('fx.reverb_mix', value / 100.0)
     
     def _on_reverb_width_change(self, value):
-        """Handle reverb stereo width change
-        
-        Controls the stereo width of the reverb effect.
-        0% = mono reverb, 100% = normal stereo, 200% = extra wide.
-        """
+        """Reverb width: 0 % mono, 100 % stereo, 200 % extra wide"""
         if not self.updating_ui:
-            if self.edit_all_mode:
-                for ch in self.synth.channels:
-                    if not ch.muted:
-                        ch.reverb_width = value / 100.0
-            else:
-                channel = self.synth.get_selected_channel()
-                channel.reverb_width = value / 100.0
+            self._set_sound('fx.reverb_width', value / 100.0)
     
     def _on_delay_time_change(self, index):
-        """Handle delay time selector change
-        
-        Sets the tempo-synced delay time (1/4, 1/8, 1/16, triplets, dotted).
-        """
+        """Tempo-synced delay time (1/4, 1/8, 1/16, 1/8T, 1/4.)"""
         if not self.updating_ui:
             self._push_undo_state()
-            from pythonic.delay import DelayTime
-            delay_time_value = self.delay_time_indices[index]
-            if self.edit_all_mode:
-                for ch in self.synth.channels:
-                    if not ch.muted:
-                        ch.delay_time = DelayTime(delay_time_value)
-            else:
-                channel = self.synth.get_selected_channel()
-                channel.delay_time = DelayTime(delay_time_value)
+            self._set_sound('fx.delay_time', self.delay_time_names[index])
     
     def _on_delay_feedback_change(self, value):
-        """Handle delay feedback change
-        
-        Controls how many echoes/repeats occur.
-        0% = single echo, 95% = many repeating echoes.
-        """
         if not self.updating_ui:
-            if self.edit_all_mode:
-                for ch in self.synth.channels:
-                    if not ch.muted:
-                        ch.delay_feedback = value / 100.0
-            else:
-                channel = self.synth.get_selected_channel()
-                channel.delay_feedback = value / 100.0
+            self._set_sound('fx.delay_feedback', value / 100.0)
     
     def _on_delay_mix_change(self, value):
-        """Handle delay dry/wet mix change
-        
-        Controls the balance between dry (original) and wet (delayed) signal.
-        0% = no delay, 100% = full delay effect.
-        """
         if not self.updating_ui:
-            if self.edit_all_mode:
-                for ch in self.synth.channels:
-                    if not ch.muted:
-                        ch.delay_mix = value / 100.0
-            else:
-                channel = self.synth.get_selected_channel()
-                channel.delay_mix = value / 100.0
+            self._set_sound('fx.delay_mix', value / 100.0)
     
     def _on_delay_pingpong_toggle(self, enabled):
-        """Handle delay ping-pong mode toggle
-        
-        When enabled, echoes alternate between left and right channels.
-        """
+        """Ping-pong: echoes alternate between left and right"""
         if not self.updating_ui:
             self._push_undo_state()
-            if self.edit_all_mode:
-                for ch in self.synth.channels:
-                    if not ch.muted:
-                        ch.delay_ping_pong = enabled
-            else:
-                channel = self.synth.get_selected_channel()
-                channel.delay_ping_pong = enabled
+            self._set_sound('fx.delay_pingpong', bool(enabled))
     
     def _on_level_change(self, value):
-        """Handle level change"""
         if not self.updating_ui:
-            channel = self.synth.get_selected_channel()
-            channel.level_db = value
+            self._set_sound('mix.level', value)
     
     def _on_pan_change(self, value):
-        """Handle pan change"""
         if not self.updating_ui:
-            channel = self.synth.get_selected_channel()
-            channel.pan = value
-    
-    def _on_edit_all_toggle(self, enabled):
-        """Handle edit all toggle - when enabled, changes affect all unmuted channels"""
-        self.edit_all_mode = enabled
+            self._set_sound('mix.pan', value)
     
     def _on_choke_toggle(self, enabled):
-        """Handle choke toggle"""
         if not self.updating_ui:
             self._push_undo_state()
-            channel = self.synth.get_selected_channel()
-            channel.choke_enabled = enabled
+            self._set_sound('mix.choke', bool(enabled))
     
     def _on_output_change(self, value):
-        """Handle output selector change"""
         if not self.updating_ui:
             self._push_undo_state()
-            channel = self.synth.get_selected_channel()
-            channel.output_pair = 'A' if value == 0 else 'B'
+            self._set_sound('mix.output', 'A' if value == 0 else 'B')
     
     def _on_waveform_change(self, value):
-        """Handle waveform change"""
         if not self.updating_ui:
             self._push_undo_state()
-            channel = self.synth.get_selected_channel()
-            channel.set_osc_waveform(WaveformType(value))
+            self._set_sound('osc.wave', value)  # selector position = enum position
     
     def _on_pitch_change(self, value):
-        """Handle pitch (tune) offset change in semitones"""
+        """Pitch (tune) offset in semitones"""
         if not self.updating_ui:
-            if self.edit_all_mode:
-                for ch in self.synth.channels:
-                    if not ch.muted:
-                        ch.set_pitch_semitones(value)
-            else:
-                channel = self.synth.get_selected_channel()
-                channel.set_pitch_semitones(value)
+            self._set_sound('osc.pitch', value)
     
     def _on_osc_freq_change(self, value):
-        """Handle oscillator frequency change"""
         if not self.updating_ui:
-            channel = self.synth.get_selected_channel()
-            channel.set_osc_frequency(value)
+            self._set_sound('osc.freq', value)
     
     def _on_pitch_mod_mode_change(self, value):
-        """Handle pitch mod mode change"""
         if not self.updating_ui:
             self._push_undo_state()
-            channel = self.synth.get_selected_channel()
-            channel.set_pitch_mod_mode(PitchModMode(value))
+            self._set_sound('osc.mod_mode', value)
     
     def _on_pitch_amount_change(self, value):
-        """Handle pitch mod amount change"""
         if not self.updating_ui:
-            channel = self.synth.get_selected_channel()
-            channel.set_pitch_mod_amount(value)
+            self._set_sound('osc.mod_amount', value)
     
     def _on_pitch_rate_change(self, value):
-        """Handle pitch mod rate change"""
         if not self.updating_ui:
-            channel = self.synth.get_selected_channel()
-            channel.set_pitch_mod_rate(value)
+            self._set_sound('osc.mod_rate', value)
     
     def _on_osc_attack_change(self, value):
-        """Handle oscillator attack change"""
         if not self.updating_ui:
-            channel = self.synth.get_selected_channel()
-            channel.set_osc_attack(value)
+            self._set_sound('osc.attack', value)
     
     def _on_osc_decay_change(self, value):
-        """Handle oscillator decay change"""
         if not self.updating_ui:
-            channel = self.synth.get_selected_channel()
-            channel.set_osc_decay(value)
+            self._set_sound('osc.decay', value)
     
     def _on_noise_filter_mode_change(self, value):
-        """Handle noise filter mode change"""
         if not self.updating_ui:
             self._push_undo_state()
-            channel = self.synth.get_selected_channel()
-            channel.set_noise_filter_mode(NoiseFilterMode(value))
+            self._set_sound('noise.filter', value)
     
     def _on_noise_freq_change(self, value):
-        """Handle noise filter frequency change"""
         if not self.updating_ui:
-            channel = self.synth.get_selected_channel()
-            channel.set_noise_filter_freq(value)
+            self._set_sound('noise.freq', value)
     
     def _on_noise_q_change(self, value):
-        """Handle noise filter Q change"""
         if not self.updating_ui:
-            channel = self.synth.get_selected_channel()
-            channel.set_noise_filter_q(value)
+            self._set_sound('noise.q', value)
     
     def _on_stereo_toggle(self, enabled):
-        """Handle stereo toggle"""
         if not self.updating_ui:
             self._push_undo_state()
-            channel = self.synth.get_selected_channel()
-            channel.set_noise_stereo(enabled)
+            self._set_sound('noise.stereo', bool(enabled))
     
     def _on_noise_env_mode_change(self, value):
-        """Handle noise envelope mode change"""
         if not self.updating_ui:
             self._push_undo_state()
-            channel = self.synth.get_selected_channel()
-            channel.set_noise_envelope_mode(NoiseEnvelopeMode(value))
+            self._set_sound('noise.env', value)
     
     def _on_noise_attack_change(self, value):
-        """Handle noise attack change"""
         if not self.updating_ui:
-            channel = self.synth.get_selected_channel()
-            channel.set_noise_attack(value)
+            self._set_sound('noise.attack', value)
     
     def _on_noise_decay_change(self, value):
-        """Handle noise decay change"""
         if not self.updating_ui:
-            channel = self.synth.get_selected_channel()
-            channel.set_noise_decay(value)
+            self._set_sound('noise.decay', value)
     
     def _on_osc_vel_change(self, value):
-        """Handle oscillator velocity sensitivity change"""
         if not self.updating_ui:
-            channel = self.synth.get_selected_channel()
-            channel.osc_vel_sensitivity = value / 100.0
+            self._set_sound('vel.osc', value / 100.0)
     
     def _on_noise_vel_change(self, value):
-        """Handle noise velocity sensitivity change"""
         if not self.updating_ui:
-            channel = self.synth.get_selected_channel()
-            channel.noise_vel_sensitivity = value / 100.0
+            self._set_sound('vel.noise', value / 100.0)
     
     def _on_mod_vel_change(self, value):
-        """Handle mod velocity sensitivity change"""
         if not self.updating_ui:
-            channel = self.synth.get_selected_channel()
-            channel.mod_vel_sensitivity = value / 100.0
+            self._set_sound('vel.mod', value / 100.0)
     
     # ============ Pattern Callbacks ============
     
@@ -2622,17 +2486,6 @@ class PythonicGUI:
             self._update_matrix_editor()
             self.matrix_view_active = True
     
-    def _on_swing_change(self, value):
-        """Handle swing slider change
-        
-        Swing delays the 16th notes that fall between the 8ths,
-        creating a looser, more human feel (also known as shuffle).
-        0% = no swing (straight timing)
-        100% = maximum swing (triplet feel)
-        """
-        swing_percent = int(value)
-        self.pattern_manager.swing = swing_percent
-    
     def _on_pattern_copy(self):
         """Copy current pattern/channel to clipboard"""
         pattern = self.pattern_manager.get_selected_pattern()
@@ -2721,121 +2574,166 @@ class PythonicGUI:
         elif key == 'l':
             self._load_preset()
     
-    def _trigger_channel(self, channel_idx):
-        """Trigger a drum channel"""
-        self.synth.trigger_drum(channel_idx, velocity=127)
+    def _trigger_channel(self, channel_idx, velocity=127):
+        """Trigger a drum channel (the core places the hit at its arrival time)"""
+        self.core.trigger(channel_idx, velocity)
         
         # Flash the channel button
         self.channel_buttons[channel_idx].set_triggered(True)
         self.root.after(100, lambda: self.channel_buttons[channel_idx].set_triggered(False))
     
     def _update_ui_from_channel(self):
-        """Update all UI elements from selected channel's parameters"""
+        """Update all UI elements from the selected channel's addresses"""
+        was_updating = self.updating_ui
         self.updating_ui = True
         try:
             self._do_update_ui_from_channel()
         finally:
-            self.updating_ui = False
+            self.updating_ui = was_updating
     
     def _do_update_ui_from_channel(self):
-        """Internal: perform all widget updates (called inside try/finally guard)"""
-        channel = self.synth.get_selected_channel()
+        """Internal: perform all widget updates (called inside the updating_ui guard)"""
+        core = self.core
+        prefix = f'ch{self.selected_channel + 1}.'
         
         # Update patch name - use fallback if empty
-        patch_name = channel.name if channel.name else f"Channel {self.selected_channel + 1}"
-        self.patch_name_label.config(text=patch_name)
+        name = core.get(prefix + 'name')
+        self.patch_name_label.config(text=name if name else f"Channel {self.selected_channel + 1}")
         
         # Update drum type labels for all 8 channels
         for i, lbl in enumerate(self.channel_type_labels):
-            name = self.synth.channels[i].name
-            lbl.config(text=infer_drum_type(name))
+            lbl.config(text=infer_drum_type(core.get(f'ch{i + 1}.name')))
         
-        # Mixing section - use set() for tk.Scale
-        self.mix_slider.set(channel.osc_noise_mix * 100)
-        self.eq_freq_knob.set_value(channel.eq_frequency)
-        self.eq_gain_knob.set_value(channel.eq_gain_db)
-        self.distort_knob.set_value(channel.distortion * 100)
-        self.vintage_knob.set_value(channel.vintage_amount * 100)
-        self.reverb_decay_knob.set_value(channel.reverb_decay * 100)
-        self.reverb_mix_knob.set_value(channel.reverb_mix * 100)
-        self.reverb_width_knob.set_value(channel.reverb_width * 100)
-        
-        # Delay controls
-        # Map DelayTime enum value back to selector index
-        delay_time_val = channel.delay_time.value
-        try:
-            delay_selector_idx = self.delay_time_indices.index(delay_time_val)
-        except ValueError:
-            delay_selector_idx = 1  # Default to 1/8
-        self.delay_time_selector.set_value(delay_selector_idx)
-        self.delay_feedback_knob.set_value(channel.delay_feedback * 100)
-        self.delay_mix_knob.set_value(channel.delay_mix * 100)
-        self.delay_pingpong_btn.set_value(channel.delay_ping_pong)
-        
-        self.level_knob.set_value(channel.level_db)
-        self.pan_knob.set_value(channel.pan)
-        self.choke_btn.set_value(channel.choke_enabled)
-        self.output_selector.set_value(0 if channel.output_pair == 'A' else 1)
-        
-        # Oscillator section
-        self.waveform_selector.set_value(channel.oscillator.waveform.value)
-        self.osc_freq_knob.set_value(channel.oscillator.frequency)
-        self.pitch_knob.set_value(channel.pitch_semitones)
-        self.pitch_mod_mode.set_value(channel.oscillator.pitch_mod_mode.value)
-        self.pitch_amount_knob.set_value(channel.oscillator.pitch_mod_amount)
-        self.pitch_rate_knob.set_value(channel.oscillator.pitch_mod_rate)
-        self.osc_attack_knob.set_value(channel.osc_envelope.attack_ms)
-        self.osc_decay_knob.set_value(channel.osc_envelope.decay_ms)
-        
-        # Noise section - use sliders for attack/decay
-        self.noise_filter_mode.set_value(channel.noise_gen.filter_mode.value)
-        self.noise_freq_knob.set_value(channel.noise_gen.filter_frequency)
-        self.noise_q_knob.set_value(channel.noise_gen.filter_q)
-        self.stereo_btn.set_value(channel.noise_gen.stereo)
-        self.noise_env_mode.set_value(channel.noise_gen.envelope_mode.value)
-        self.noise_attack_slider.set_value(channel.noise_gen.attack_ms)
-        self.noise_decay_slider.set_value(channel.noise_gen.decay_ms)
-        
-        # Velocity section
-        self.osc_vel_slider.set_value(channel.osc_vel_sensitivity * 100)
-        self.noise_vel_slider.set_value(channel.noise_vel_sensitivity * 100)
-        self.mod_vel_slider.set_value(channel.mod_vel_sensitivity * 100)
-        
-        # Modulation section
-        self._update_lfo_ui('lfo1', channel.lfo1)
-        self._update_lfo_ui('lfo2', channel.lfo2)
-        self._update_pump_ui(channel.pump)
+        for suffix, show in self._sound_widgets.items():
+            show(core.get(prefix + suffix))
     
-    def _update_lfo_ui(self, lfo_id: str, lfo):
-        """Sync LFO panel widgets with LFO state."""
-        getattr(self, f'{lfo_id}_enable_btn').set_value(lfo.enabled)
-        wave_idx = min(lfo.waveform.value, len(self._lfo_wave_options) - 1)
-        getattr(self, f'{lfo_id}_wave_var').set(self._lfo_wave_options[wave_idx])
-        getattr(self, f'{lfo_id}_rate_knob').set_value(lfo.rate_hz)
-        getattr(self, f'{lfo_id}_depth_knob').set_value(lfo.depth)
-        sync_idx = min(lfo.sync.value, len(self._lfo_sync_options) - 1)
-        getattr(self, f'{lfo_id}_sync_var').set(self._lfo_sync_options[sync_idx])
-        getattr(self, f'{lfo_id}_retrig_btn').set_value(lfo.retrigger == LFORetrigger.RETRIGGER)
-        getattr(self, f'{lfo_id}_polar_btn').set_value(lfo.polarity == LFOPolarity.UNIPOLAR)
-        # Destination picker
-        try:
-            idx = self._mod_target_values.index(lfo.target)
-            getattr(self, f'{lfo_id}_dest_var').set(self._mod_target_options[idx])
-        except ValueError:
-            getattr(self, f'{lfo_id}_dest_var').set('Off')
+    def _build_address_widget_tables(self):
+        """Address -> function showing its value (engine units) on the widgets.
+        
+        The UI tick calls these for the changes the core reports in poll;
+        _update_ui_from_channel calls the sound ones for the whole channel.
+        """
+        def position(suffix):
+            labels = self.core.describe('ch1.' + suffix)['labels']
+            return labels.index
+        
+        def percent(widget):
+            return lambda v: widget.set_value(v * 100)
+        
+        def lfo(lfo_id):
+            def widget(name):
+                return getattr(self, f'{lfo_id}_{name}')
+            wave_pos = position(f'{lfo_id}.wave')
+            sync_pos = position(f'{lfo_id}.sync')
+            return {
+                f'{lfo_id}.on': widget('enable_btn').set_value,
+                f'{lfo_id}.wave': lambda v: widget('wave_var').set(
+                    self._lfo_wave_options[min(wave_pos(v), len(self._lfo_wave_options) - 1)]),
+                f'{lfo_id}.rate': widget('rate_knob').set_value,
+                f'{lfo_id}.depth': widget('depth_knob').set_value,
+                f'{lfo_id}.sync': lambda v: widget('sync_var').set(
+                    self._lfo_sync_options[min(sync_pos(v), len(self._lfo_sync_options) - 1)]),
+                f'{lfo_id}.retrig': widget('retrig_btn').set_value,
+                f'{lfo_id}.unipolar': widget('polar_btn').set_value,
+                f'{lfo_id}.target': lambda v: widget('dest_var').set(self._mod_target_option(v)),
+            }
+        
+        def delay_time(name):
+            # Delay times without a button show as 1/8
+            index = self.delay_time_names.index(name) if name in self.delay_time_names else 1
+            self.delay_time_selector.set_value(index)
+        
+        self._sound_widgets = {
+            # Mixing
+            'mix.osc_noise': lambda v: self.mix_slider.set(v * 100),
+            'eq.freq': self.eq_freq_knob.set_value,
+            'eq.gain': self.eq_gain_knob.set_value,
+            'mix.distortion': percent(self.distort_knob),
+            'mix.level': self.level_knob.set_value,
+            'mix.pan': self.pan_knob.set_value,
+            'mix.choke': self.choke_btn.set_value,
+            'mix.output': lambda v: self.output_selector.set_value(0 if v == 'A' else 1),
+            # FX
+            'fx.vintage': percent(self.vintage_knob),
+            'fx.reverb_decay': percent(self.reverb_decay_knob),
+            'fx.reverb_mix': percent(self.reverb_mix_knob),
+            'fx.reverb_width': percent(self.reverb_width_knob),
+            'fx.delay_time': delay_time,
+            'fx.delay_feedback': percent(self.delay_feedback_knob),
+            'fx.delay_mix': percent(self.delay_mix_knob),
+            'fx.delay_pingpong': self.delay_pingpong_btn.set_value,
+            # Oscillator
+            'osc.wave': lambda v, pos=position('osc.wave'): self.waveform_selector.set_value(pos(v)),
+            'osc.freq': self.osc_freq_knob.set_value,
+            'osc.pitch': self.pitch_knob.set_value,
+            'osc.mod_mode': lambda v, pos=position('osc.mod_mode'):
+                self.pitch_mod_mode.set_value(pos(v)),
+            'osc.mod_amount': self.pitch_amount_knob.set_value,
+            'osc.mod_rate': self.pitch_rate_knob.set_value,
+            'osc.attack': self.osc_attack_knob.set_value,
+            'osc.decay': self.osc_decay_knob.set_value,
+            # Noise
+            'noise.filter': lambda v, pos=position('noise.filter'):
+                self.noise_filter_mode.set_value(pos(v)),
+            'noise.freq': self.noise_freq_knob.set_value,
+            'noise.q': self.noise_q_knob.set_value,
+            'noise.stereo': self.stereo_btn.set_value,
+            'noise.env': lambda v, pos=position('noise.env'): self.noise_env_mode.set_value(pos(v)),
+            'noise.attack': self.noise_attack_slider.set_value,
+            'noise.decay': self.noise_decay_slider.set_value,
+            # Velocity
+            'vel.osc': percent(self.osc_vel_slider),
+            'vel.noise': percent(self.noise_vel_slider),
+            'vel.mod': percent(self.mod_vel_slider),
+            # Modulation
+            **lfo('lfo1'),
+            **lfo('lfo2'),
+            'pump.on': self.pump_enable_btn.set_value,
+            'pump.amount': percent(self.pump_amount_knob),
+            'pump.attack': self.pump_attack_knob.set_value,
+            'pump.release': self.pump_release_knob.set_value,
+            'pump.curve': percent(self.pump_curve_knob),
+            'pump.target': lambda v: self.pump_dest_var.set(self._mod_target_option(v)),
+        }
+        
+        self._global_widgets = {
+            'global.tempo': lambda v: self.bpm_var.set(str(v)),
+            'global.step_rate': self._show_step_rate,
+            'global.fill_rate': self._show_fill_rate,
+            'global.swing': lambda v: self.global_swing_slider.set(int(round(v * 100))),
+            'global.master': self.master_knob.set_value,
+            'global.edit_all': self.edit_all_btn.set_value,
+            'morph.position': self._show_morph_position,
+        }
     
-    def _update_pump_ui(self, pump):
-        """Sync pump panel widgets with PumpSource state."""
-        self.pump_enable_btn.set_value(pump.enabled)
-        self.pump_amount_knob.set_value(pump.amount * 100)
-        self.pump_attack_knob.set_value(pump.attack_ms)
-        self.pump_release_knob.set_value(pump.release_ms)
-        self.pump_curve_knob.set_value(pump.curve * 100)
+    def _show_morph_position(self, position):
+        """A new morph position (from poll): the knobs show the blended sound."""
+        self.morph_slider.set(int(round(position * 100)))
+        self._update_ui_from_channel()
+    
+    def _show_changes(self, changes):
+        """Refresh the widgets of the addresses the core reports as changed."""
+        self.updating_ui = True
         try:
-            idx = self._mod_target_values.index(pump.target)
-            self.pump_dest_var.set(self._mod_target_options[idx])
-        except ValueError:
-            self.pump_dest_var.set('Off')
+            channel = changes.get('global.channel')
+            if channel is not None and channel - 1 != self.selected_channel:
+                self._show_selected_channel(channel - 1)
+            prefix = f'ch{self.selected_channel + 1}.'
+            for address, value in changes.items():
+                if address.startswith('ch'):
+                    head, _, suffix = address.partition('.')
+                    if suffix == 'mute':
+                        self._show_mute(int(head[2:]) - 1, value)
+                    elif address.startswith(prefix):
+                        show = self._sound_widgets.get(suffix)
+                        if show is not None:
+                            show(value)
+                else:
+                    show = self._global_widgets.get(address)
+                    if show is not None:
+                        show(value)
+        finally:
+            self.updating_ui = False
     
     def _save_preset(self):
         """Save current preset to file"""
@@ -3241,16 +3139,8 @@ class PythonicGUI:
     
     def _apply_midi_bpm(self, bpm: float):
         """Apply BPM from MIDI clock (called on main thread)"""
-        bpm_int = int(round(bpm))
-        bpm_int = max(1, min(300, bpm_int))  # Clamp to valid range
-        
-        # Update pattern manager and synth
-        self.pattern_manager.set_bpm(bpm_int)
-        self.synth.set_bpm(bpm_int)
-        
-        # Update BPM display
-        if hasattr(self, 'bpm_var'):
-            self.bpm_var.set(str(bpm_int))
+        # The core clamps to 1-300; the BPM entry follows poll
+        self.core.set('global.tempo', int(round(bpm)))
     
     def _on_midi_cc_change(self, cc_number: int, value: int):
         """Handle MIDI CC change"""
@@ -4807,6 +4697,9 @@ class PythonicGUI:
         """
         state = self.core.poll(self._poll_version)
         self._poll_version = state['version']
+        
+        if state['changes']:
+            self._show_changes(state['changes'])
         
         for event in state['events']:
             callback = self._action_callbacks.pop(event.get('id'), None)
