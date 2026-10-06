@@ -166,7 +166,7 @@ pythonic/
 │   ├── reverb.py             # Reverb effect
 │   ├── delay.py              # Delay effect
 │   ├── vintage.py            # Analog character processing
-│   ├── midi_manager.py       # MIDI input handling
+│   ├── app/                  # App core: audio stream, MIDI input, addresses
 │   ├── pattern_manager.py    # Step sequencer
 │   ├── preset_manager.py     # Preset save/load
 │   ├── preferences_manager.py # Settings persistence

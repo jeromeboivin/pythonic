@@ -8,7 +8,6 @@ from tkinter import ttk, filedialog, messagebox
 import numpy as np
 import json
 import os
-import time
 import random
 import copy
 
@@ -44,9 +43,9 @@ except ImportError:
     MIDI_AVAILABLE = False
     print("Warning: mido not available. MIDI export disabled.")
 
-# Import MIDI input manager
-from pythonic.midi_manager import MidiManager
 from pythonic.app import AppCore
+from pythonic.app.midi import cc_name
+from pythonic.app.sound import cc_parameter_target
 
 class PythonicGUI:
     """
@@ -85,11 +84,13 @@ class PythonicGUI:
         self._action_callbacks = {}  # action id -> callback(event), run by the UI tick
         self._audio_start_action = None
 
-        # MIDI input manager
-        self.midi_manager = MidiManager()
-        self._midi_activity_time = 0  # For activity indicator
-        self._midi_learn_target = None  # Parameter name being learned
-        self._init_midi()
+        # MIDI input runs in the core; the GUI shows what poll reports
+        self._midi_activity = 0  # message counter last shown on the LED
+        self._midi_notes = [0] * 8  # note counters last shown on the channel buttons
+        self._midi_learn_action = None  # id of the running learn action
+        self._midi_learn_widget = None
+        self._midi_learn_flash_id = None
+        self._last_transport = None  # (playing, selected, queued) last shown
 
         # UI state. The selected channel is a copy of the core's
         # global.channel (0-based here), updated from poll.
@@ -103,14 +104,9 @@ class PythonicGUI:
         self._undo_pending = False  # Debounce flag for coalescing rapid changes
         self._restore_pending = False  # A snapshot restore is queued in the core
         
-        # Parameter registry for MIDI CC mapping
-        # Maps parameter_name -> (widget, min_val, max_val, setter_function)
-        self._cc_parameter_registry = {}
-        
-        # Pitch bend state tracking
-        self._pitchbend_original_value = None  # Original param value before pitch bend
-        self._pitchbend_active = False  # True when pitch bend is away from center
-        self._pitchbend_center_threshold = 0.02  # Consider centered if within this range
+        # Controls offered for MIDI learn: parameter name -> widget. The core
+        # maps CCs to their targets (cc_parameter_target(name)).
+        self._cc_widgets = {}
         
         # Playback display state
         self.button_flash_state = False  # For flashing playing pattern button
@@ -120,7 +116,7 @@ class PythonicGUI:
         self._build_ui()
         self._build_address_widget_tables()
         
-        # Register parameters for MIDI CC control
+        # Offer the controls for MIDI learn (right-click menu)
         self._register_cc_parameters()
         
         # Register undo/redo on all knobs and sliders
@@ -1538,10 +1534,7 @@ class PythonicGUI:
     
     def _get_full_state_snapshot(self):
         """Capture a deep copy of all synth + pattern + morph state for undo/redo"""
-        synth_data = copy.deepcopy(self.synth.get_preset_data())
-        pattern_data = copy.deepcopy(self.pattern_manager.to_dict())
-        morph_data = copy.deepcopy(self.morph_manager.to_dict())
-        return (synth_data, pattern_data, morph_data)
+        return self.core.legacy_snapshot()
 
     def _restore_state_snapshot(self, snapshot, revert=None):
         """Restore synth + pattern + morph state from a snapshot.
@@ -3012,275 +3005,47 @@ class PythonicGUI:
             self.preferences_manager.set_preset_folder(folder)
             self._refresh_preset_list()
     
-    # ============ MIDI Input Methods ============
-    
-    def _init_midi(self):
-        """Initialize MIDI input system"""
-        if not self.midi_manager.enabled:
-            print("MIDI input not available (mido library not installed)")
-            return
-        
-        # Load preferences
-        midi_enabled = self.preferences_manager.get('midi_enabled', True)
-        base_note = self.preferences_manager.get('midi_base_note', 36)
-        preferred_device = self.preferences_manager.get('midi_input_device', None)
-        clock_sync_enabled = self.preferences_manager.get('midi_clock_sync', True)
-        cc_mappings_raw = self.preferences_manager.get('midi_cc_mappings', {})
-        
-        # Convert CC mappings from string keys to int keys
-        cc_mappings = {int(k): v for k, v in cc_mappings_raw.items()}
-        
-        # Configure MIDI manager
-        self.midi_manager.set_base_note(base_note)
-        self.midi_manager.set_clock_sync_enabled(clock_sync_enabled)
-        self.midi_manager.set_cc_mappings(cc_mappings)
-        
-        # Load pitch bend target (default to pitch knob)
-        pitchbend_target = self.preferences_manager.get('midi_pitchbend_target', 'pitch')
-        self.midi_manager.set_pitchbend_target(pitchbend_target)
-        
-        # Set up callbacks
-        self.midi_manager.set_drum_trigger_callback(self._on_midi_drum_trigger)
-        self.midi_manager.set_pattern_select_callback(self._on_midi_pattern_select)
-        self.midi_manager.set_transport_callbacks(
-            on_start=self._on_midi_transport_start,
-            on_stop=self._on_midi_transport_stop,
-            on_continue=self._on_midi_transport_continue
-        )
-        self.midi_manager.set_activity_callback(self._on_midi_activity)
-        self.midi_manager.set_bpm_callback(self._on_midi_bpm_change)
-        self.midi_manager.set_cc_callback(self._on_midi_cc_change)
-        self.midi_manager.set_pitchbend_callback(self._on_midi_pitchbend_change)
-        
-        # Auto-connect if enabled
-        if midi_enabled:
-            if preferred_device:
-                # Try preferred device first
-                if not self.midi_manager.connect(preferred_device):
-                    # Fall back to auto-connect
-                    self.midi_manager.auto_connect()
-            else:
-                self.midi_manager.auto_connect()
-            
-            if self.midi_manager.is_connected:
-                print(f"MIDI input connected: {self.midi_manager.port_name}")
-                print(f"Note mapping: {self.midi_manager.get_mapping_description()}")
-                print(f"MIDI clock sync: {'enabled' if clock_sync_enabled else 'disabled'}")
-                if cc_mappings:
-                    print(f"MIDI CC mappings: {len(cc_mappings)} active")
-                if pitchbend_target:
-                    print(f"Pitch bend mapped to: {pitchbend_target}")
-    
-    def _on_midi_drum_trigger(self, channel: int, velocity: int):
-        """Handle MIDI note triggering a drum channel"""
-        # Trigger the drum through the synth
-        self.synth.trigger_drum(channel, velocity)
-        
-        # Visual feedback - flash the channel button (must be done on main thread)
-        self.root.after(0, lambda: self._flash_channel_button(channel))
-    
-    def _flash_channel_button(self, channel: int):
-        """Flash a channel button to show it was triggered"""
-        if hasattr(self, 'channel_buttons') and channel < len(self.channel_buttons):
-            self.channel_buttons[channel].set_triggered(True)
-            self.root.after(100, lambda: self.channel_buttons[channel].set_triggered(False))
-    
-    def _on_midi_pattern_select(self, pattern_index: int):
-        """Handle MIDI program change to select pattern"""
-        if 0 <= pattern_index < 12:  # Patterns A-L
-            # Must update UI on main thread
-            self.root.after(0, lambda: self._on_pattern_select(pattern_index))
-    
-    def _on_midi_transport_start(self):
-        """Handle MIDI Start message"""
-        self.root.after(0, self._midi_start_playback)
-    
-    def _midi_start_playback(self):
-        """Start playback from beginning (called on main thread)"""
-        selected_idx = self.pattern_manager.selected_pattern_index
-        self.pattern_manager.stop_playback()  # Reset position
-        self.pattern_manager.start_playback(selected_idx)
-        self._last_playing_pattern_idx = selected_idx
-        self._update_pattern_button_states()
-        if hasattr(self, 'play_btn') and hasattr(self.play_btn, 'set_active'):
-            self.play_btn.set_active(True)
-            self.stop_btn.set_active(False)
-    
-    def _on_midi_transport_stop(self):
-        """Handle MIDI Stop message"""
-        self.root.after(0, self._on_pattern_stop)
-    
-    def _on_midi_transport_continue(self):
-        """Handle MIDI Continue message"""
-        self.root.after(0, self._midi_continue_playback)
-    
-    def _midi_continue_playback(self):
-        """Continue playback from current position (called on main thread)"""
-        if not self.pattern_manager.is_playing:
-            selected_idx = self.pattern_manager.selected_pattern_index
-            # Don't reset position - continue from where we are
-            self.pattern_manager.is_playing = True
-            self._last_playing_pattern_idx = selected_idx
-            self._update_pattern_button_states()
-            if hasattr(self, 'play_btn') and hasattr(self.play_btn, 'set_active'):
-                self.play_btn.set_active(True)
-                self.stop_btn.set_active(False)
-    
-    def _on_midi_activity(self):
-        """Handle MIDI activity for visual feedback"""
-        self._midi_activity_time = time.time()
-        # Update indicator on main thread
-        self.root.after(0, self._update_midi_indicator)
-    
-    def _on_midi_bpm_change(self, bpm: float):
-        """Handle BPM change from MIDI clock sync"""
-        # Must update on main thread
-        self.root.after(0, lambda: self._apply_midi_bpm(bpm))
-    
-    def _apply_midi_bpm(self, bpm: float):
-        """Apply BPM from MIDI clock (called on main thread)"""
-        # The core clamps to 1-300; the BPM entry follows poll
-        self.core.set('global.tempo', int(round(bpm)))
-    
-    def _on_midi_cc_change(self, cc_number: int, value: int):
-        """Handle MIDI CC change"""
-        # Must update on main thread
-        self.root.after(0, lambda: self._apply_midi_cc(cc_number, value))
-    
-    def _on_midi_pitchbend_change(self, value: float):
-        """Handle MIDI pitch bend change"""
-        # Must update on main thread
-        self.root.after(0, lambda: self._apply_midi_pitchbend(value))
-    
-    def _apply_midi_pitchbend(self, value: float):
-        """Apply MIDI pitch bend value to mapped parameter (called on main thread)
-        
-        Pitch bend acts as a temporary modulation - when the wheel returns to center,
-        the original parameter value is restored.
-        
-        Args:
-            value: Normalized pitch bend value (-1.0 to 1.0)
-        """
-        param_name = self.midi_manager.get_pitchbend_target()
-        if not param_name or param_name not in self._cc_parameter_registry:
-            return
-        
-        widget, min_val, max_val, setter_func = self._cc_parameter_registry[param_name]
-        
-        # Check if pitch bend is at center (released)
-        is_centered = abs(value) < self._pitchbend_center_threshold
-        
-        if is_centered:
-            # Wheel returned to center - restore original value
-            if self._pitchbend_active and self._pitchbend_original_value is not None:
-                if hasattr(widget, 'set_value'):
-                    widget.set_value(self._pitchbend_original_value)
-                elif hasattr(widget, 'set'):
-                    widget.set(self._pitchbend_original_value)
-            self._pitchbend_active = False
-            self._pitchbend_original_value = None
-            return
-        
-        # Pitch bend is active (away from center)
-        if not self._pitchbend_active:
-            # Just started moving - store the original value
-            if hasattr(widget, 'get_value'):
-                self._pitchbend_original_value = widget.get_value()
-            elif hasattr(widget, 'get'):
-                self._pitchbend_original_value = widget.get()
-            self._pitchbend_active = True
-        
-        # Calculate modulated value based on original value and pitch bend
-        if self._pitchbend_original_value is not None:
-            # Get the range for modulation (use half the parameter range for pitch bend)
-            param_range = max_val - min_val
-            modulation_range = param_range * 0.5  # Pitch bend covers +/- 50% of range
-            
-            # Apply modulation to original value
-            modulated_value = self._pitchbend_original_value + (value * modulation_range)
-            
-            # Clamp to valid range
-            modulated_value = max(min_val, min(max_val, modulated_value))
-            
-            # Update the widget
-            if hasattr(widget, 'set_value'):
-                widget.set_value(modulated_value)
-            elif hasattr(widget, 'set'):
-                widget.set(modulated_value)
-    
-    def _apply_midi_cc(self, cc_number: int, value: int):
-        """Apply MIDI CC value to mapped parameter (called on main thread)"""
-        param_name = self.midi_manager.get_parameter_for_cc(cc_number)
-        if not param_name or param_name not in self._cc_parameter_registry:
-            return
-        
-        widget, min_val, max_val, setter_func = self._cc_parameter_registry[param_name]
-        
-        # Map CC value (0-127) to normalized 0-1
-        normalized = value / 127.0
-        
-        # Check if widget has logarithmic scaling and use its conversion method
-        if hasattr(widget, 'logarithmic') and widget.logarithmic and hasattr(widget, '_normalized_to_value'):
-            # Use widget's log conversion for proper scaling
-            param_value = widget._normalized_to_value(normalized)
-        else:
-            # Linear mapping
-            param_value = min_val + normalized * (max_val - min_val)
-        
-        # Update the widget (this will trigger the setter via the widget's callback)
-        if hasattr(widget, 'set_value'):
-            widget.set_value(param_value)
-        elif hasattr(widget, 'set'):
-            # For tk.Scale widgets
-            widget.set(param_value)
-    
-    def _register_cc_parameter(self, param_name: str, widget, min_val: float, max_val: float, 
-                               setter_func=None):
-        """
-        Register a parameter for MIDI CC control.
-        
-        Args:
-            param_name: Unique name for the parameter
-            widget: The widget (knob/slider) controlling this parameter
-            min_val: Minimum value
-            max_val: Maximum value  
-            setter_func: Optional setter function (if None, widget callback is used)
-        """
-        self._cc_parameter_registry[param_name] = (widget, min_val, max_val, setter_func)
-        
-        # Add context menu for MIDI Learn to the widget
+    # ============ MIDI (routed by the core) ============
+    # The core opens the MIDI input and routes notes, program change,
+    # transport, clock, CC (with pickup) and pitch bend itself. The GUI only
+    # offers the controls for learn and shows what poll reports.
+
+    def _register_cc_parameter(self, param_name: str, widget):
+        """Offer a control for MIDI learn under its saved parameter name."""
+        self._cc_widgets[param_name] = widget
         self._add_midi_learn_context_menu(widget, param_name)
-    
+
     def _add_midi_learn_context_menu(self, widget, param_name: str):
         """Add right-click context menu with MIDI Learn to a widget"""
+        target = cc_parameter_target(param_name)
+
         def show_context_menu(event):
             menu = tk.Menu(self.root, tearoff=0)
             
             # Check if this parameter already has a CC mapping
-            current_cc = self.midi_manager.get_cc_for_parameter(param_name)
-            if current_cc is not None:
-                from pythonic.midi_manager import get_cc_name
-                menu.add_command(label=f"Mapped to {get_cc_name(current_cc)}", state='disabled')
+            mapped = [cc for cc, t in sorted(self.core.get('midi.cc_map').items()) if t == target]
+            if mapped:
+                menu.add_command(label=f"Mapped to {cc_name(mapped[0])}", state='disabled')
                 menu.add_command(label="Remove CC Mapping", 
                                command=lambda: self._remove_cc_mapping(param_name))
                 menu.add_separator()
             
             # Check if this parameter is the pitch bend target
-            pitchbend_target = self.midi_manager.get_pitchbend_target()
-            if pitchbend_target == param_name:
+            pitchbend_target = self.core.get('midi.pitchbend_target')
+            if pitchbend_target == target:
                 menu.add_command(label="Pitch Bend → This Parameter", state='disabled')
                 menu.add_command(label="Remove Pitch Bend Mapping", 
                                command=self._remove_pitchbend_mapping)
                 menu.add_separator()
             
-            if self.midi_manager.is_midi_learn_active():
+            if self.core.get('midi.learning') is not None:
                 menu.add_command(label="Cancel MIDI Learn", 
                                command=self._cancel_midi_learn)
             else:
                 menu.add_command(label="MIDI Learn (CC)", 
                                command=lambda: self._start_midi_learn(param_name, widget))
                 # Only show "Assign Pitch Bend" if not already assigned to this param
-                if pitchbend_target != param_name:
+                if pitchbend_target != target:
                     menu.add_command(label="Assign Pitch Bend", 
                                    command=lambda: self._assign_pitchbend(param_name))
             
@@ -3296,103 +3061,102 @@ class PythonicGUI:
         widget.bind('<Button-3>', show_context_menu)
     
     def _start_midi_learn(self, param_name: str, widget):
-        """Start MIDI learn mode for a parameter"""
-        self._midi_learn_target = param_name
+        """Ask the core to map the next CC to this control; the widget
+        flashes until the learn action ends (learned or cancelled)."""
+        self._flash_midi_learn_widget(False)  # a running learn is replaced
+        action_id = self.core.act('midi.learn', target=cc_parameter_target(param_name))
+        self._midi_learn_action = action_id
+        self._midi_learn_widget = widget
+        self._flash_midi_learn_widget(True)
         
-        # Visual feedback - change widget appearance
-        if hasattr(widget, 'configure'):
-            self._midi_learn_original_bg = widget.cget('bg') if hasattr(widget, 'cget') else None
+        def on_done(event):
+            if self._midi_learn_action == action_id:
+                self._midi_learn_action = None
+                self._flash_midi_learn_widget(False)
+                self._midi_learn_widget = None
+            if event['status'] == 'error':
+                print(f"MIDI Learn failed: {event.get('error')}", flush=True)
         
-        # Flash the widget to indicate learn mode
-        self._flash_midi_learn_widget(widget, True)
-        
-        def on_cc_learned(cc_number):
-            # Stop flashing
-            self._flash_midi_learn_widget(widget, False)
-            
-            # Add the mapping
-            self.midi_manager.add_cc_mapping(cc_number, param_name)
-            
-            # Save to preferences
-            self._save_cc_mappings()
-            
-            from pythonic.midi_manager import get_cc_name
-            print(f"MIDI Learn: {get_cc_name(cc_number)} -> {param_name}")
-            
-            self._midi_learn_target = None
-        
-        self.midi_manager.start_midi_learn(lambda cc: self.root.after(0, lambda: on_cc_learned(cc)))
+        self._when_action_done(action_id, on_done)
     
-    def _flash_midi_learn_widget(self, widget, flashing: bool):
-        """Flash a widget to indicate MIDI learn mode"""
-        if not hasattr(self, '_midi_learn_flash_id'):
+    def _flash_midi_learn_widget(self, flashing: bool):
+        """Flash the learning widget (orange every 300 ms) or restore it"""
+        widget = self._midi_learn_widget
+        if self._midi_learn_flash_id:
+            self.root.after_cancel(self._midi_learn_flash_id)
             self._midi_learn_flash_id = None
+        if widget is None:
+            return
         
         if flashing:
             def flash():
-                if not self.midi_manager.is_midi_learn_active():
-                    return
                 # Toggle between normal and highlight color
                 current = widget.cget('bg') if hasattr(widget, 'cget') else '#3a3a4a'
                 new_color = '#ff8844' if current != '#ff8844' else '#3a3a4a'
                 if hasattr(widget, 'configure'):
                     try:
                         widget.configure(bg=new_color)
-                    except:
+                    except tk.TclError:
                         pass
                 self._midi_learn_flash_id = self.root.after(300, flash)
             flash()
-        else:
-            if self._midi_learn_flash_id:
-                self.root.after_cancel(self._midi_learn_flash_id)
-                self._midi_learn_flash_id = None
+        elif hasattr(widget, 'configure'):
             # Restore original color
-            if hasattr(widget, 'configure'):
-                try:
-                    widget.configure(bg='#3a3a4a')
-                except:
-                    pass
+            try:
+                widget.configure(bg='#3a3a4a')
+            except tk.TclError:
+                pass
     
     def _cancel_midi_learn(self):
-        """Cancel MIDI learn mode"""
-        self.midi_manager.stop_midi_learn()
-        self._midi_learn_target = None
+        """Cancel MIDI learn mode (the learn action then ends as cancelled)"""
+        self.core.act('midi.learn_cancel')
     
     def _remove_cc_mapping(self, param_name: str):
-        """Remove CC mapping for a parameter"""
-        cc = self.midi_manager.get_cc_for_parameter(param_name)
-        if cc is not None:
-            self.midi_manager.remove_cc_mapping(cc)
-            self._save_cc_mappings()
-            print(f"Removed MIDI mapping for {param_name}")
-    
-    def _save_cc_mappings(self):
-        """Save CC mappings to preferences"""
-        mappings = self.midi_manager.get_cc_mappings()
-        # Convert int keys to string for JSON
-        mappings_str = {str(k): v for k, v in mappings.items()}
-        self.preferences_manager.set('midi_cc_mappings', mappings_str)
+        """Remove the CC mapping of a control"""
+        target = cc_parameter_target(param_name)
+        mapping = self.core.get('midi.cc_map')
+        self.core.set('midi.cc_map', {cc: t for cc, t in mapping.items() if t != target})
+        print(f"Removed MIDI mapping for {param_name}")
     
     def _assign_pitchbend(self, param_name: str):
         """Assign pitch bend wheel to control a parameter"""
-        self.midi_manager.set_pitchbend_target(param_name)
-        self._save_pitchbend_mapping()
+        self.core.set('midi.pitchbend_target', cc_parameter_target(param_name))
         print(f"Pitch bend wheel assigned to: {param_name}")
     
     def _remove_pitchbend_mapping(self):
         """Remove pitch bend mapping"""
-        self.midi_manager.set_pitchbend_target(None)
-        self._save_pitchbend_mapping()
+        self.core.set('midi.pitchbend_target', None)
         print("Pitch bend mapping removed")
-    
-    def _save_pitchbend_mapping(self):
-        """Save pitch bend target to preferences"""
-        target = self.midi_manager.get_pitchbend_target()
-        self.preferences_manager.set('midi_pitchbend_target', target)
     
     def _get_available_parameters(self) -> list:
         """Get list of available parameters for CC mapping"""
-        return sorted(self._cc_parameter_registry.keys())
+        return sorted(self._cc_widgets)
+    
+    def _show_midi(self, state):
+        """MIDI activity from poll: the LED and the channel buttons of played notes."""
+        if state['activity'] != self._midi_activity:
+            self._midi_activity = state['activity']
+            self._update_midi_indicator()
+        notes = state['notes']
+        for channel, count in enumerate(notes):
+            if count != self._midi_notes[channel]:
+                self._flash_channel_button(channel)
+        self._midi_notes = notes
+    
+    def _flash_channel_button(self, channel: int):
+        """Flash a channel button to show it was triggered"""
+        if hasattr(self, 'channel_buttons') and channel < len(self.channel_buttons):
+            self.channel_buttons[channel].set_triggered(True)
+            self.root.after(100, lambda: self.channel_buttons[channel].set_triggered(False))
+    
+    def _push_cc_burst(self, event):
+        """A MIDI CC burst the core closed (400 ms idle): one undo step, with
+        the snapshot the core took before it."""
+        self._undo_stack.append(event['snapshot'])
+        if len(self._undo_stack) > self._max_undo:
+            self._undo_stack.pop(0)
+        self._redo_stack.clear()
+        self._update_undo_redo_buttons()
     
     def _register_undo_on_widgets(self):
         """Register undo/redo callbacks on all knobs and sliders"""
@@ -3415,65 +3179,65 @@ class PythonicGUI:
         self._push_undo_state()
 
     def _register_cc_parameters(self):
-        """Register all knobs and sliders for MIDI CC control"""
+        """Offer the knobs and sliders for MIDI learn (ranges come from the core's describe)"""
         # Mixing section
-        self._register_cc_parameter('level', self.level_knob, -60, 10)
-        self._register_cc_parameter('pan', self.pan_knob, -100, 100)
-        self._register_cc_parameter('distortion', self.distort_knob, 0, 100)
-        self._register_cc_parameter('eq_freq', self.eq_freq_knob, 100, 10000)
-        self._register_cc_parameter('eq_gain', self.eq_gain_knob, -12, 12)
-        self._register_cc_parameter('vintage', self.vintage_knob, 0, 100)
+        self._register_cc_parameter('level', self.level_knob)
+        self._register_cc_parameter('pan', self.pan_knob)
+        self._register_cc_parameter('distortion', self.distort_knob)
+        self._register_cc_parameter('eq_freq', self.eq_freq_knob)
+        self._register_cc_parameter('eq_gain', self.eq_gain_knob)
+        self._register_cc_parameter('vintage', self.vintage_knob)
         
         # Reverb section
-        self._register_cc_parameter('reverb_decay', self.reverb_decay_knob, 0, 100)
-        self._register_cc_parameter('reverb_mix', self.reverb_mix_knob, 0, 100)
-        self._register_cc_parameter('reverb_width', self.reverb_width_knob, 0, 100)
+        self._register_cc_parameter('reverb_decay', self.reverb_decay_knob)
+        self._register_cc_parameter('reverb_mix', self.reverb_mix_knob)
+        self._register_cc_parameter('reverb_width', self.reverb_width_knob)
         
         # Delay section
-        self._register_cc_parameter('delay_feedback', self.delay_feedback_knob, 0, 100)
-        self._register_cc_parameter('delay_mix', self.delay_mix_knob, 0, 100)
+        self._register_cc_parameter('delay_feedback', self.delay_feedback_knob)
+        self._register_cc_parameter('delay_mix', self.delay_mix_knob)
         
         # Oscillator section
-        self._register_cc_parameter('osc_freq', self.osc_freq_knob, 20, 2000)
-        self._register_cc_parameter('pitch', self.pitch_knob, -24, 24)
-        self._register_cc_parameter('pitch_amount', self.pitch_amount_knob, 0, 96)
-        self._register_cc_parameter('pitch_rate', self.pitch_rate_knob, 0, 500)
-        self._register_cc_parameter('osc_attack', self.osc_attack_knob, 0, 1000)
-        self._register_cc_parameter('osc_decay', self.osc_decay_knob, 1, 5000)
+        self._register_cc_parameter('osc_freq', self.osc_freq_knob)
+        self._register_cc_parameter('pitch', self.pitch_knob)
+        self._register_cc_parameter('pitch_amount', self.pitch_amount_knob)
+        self._register_cc_parameter('pitch_rate', self.pitch_rate_knob)
+        self._register_cc_parameter('osc_attack', self.osc_attack_knob)
+        self._register_cc_parameter('osc_decay', self.osc_decay_knob)
         
         # Noise section
-        self._register_cc_parameter('noise_freq', self.noise_freq_knob, 100, 15000)
-        self._register_cc_parameter('noise_q', self.noise_q_knob, 0.5, 20)
-        self._register_cc_parameter('noise_attack', self.noise_attack_slider, 0, 1000)
-        self._register_cc_parameter('noise_decay', self.noise_decay_slider, 1, 5000)
+        self._register_cc_parameter('noise_freq', self.noise_freq_knob)
+        self._register_cc_parameter('noise_q', self.noise_q_knob)
+        self._register_cc_parameter('noise_attack', self.noise_attack_slider)
+        self._register_cc_parameter('noise_decay', self.noise_decay_slider)
         
         # Velocity section
-        self._register_cc_parameter('osc_vel', self.osc_vel_slider, 0, 100)
-        self._register_cc_parameter('noise_vel', self.noise_vel_slider, 0, 100)
-        self._register_cc_parameter('mod_vel', self.mod_vel_slider, 0, 100)
+        self._register_cc_parameter('osc_vel', self.osc_vel_slider)
+        self._register_cc_parameter('noise_vel', self.noise_vel_slider)
+        self._register_cc_parameter('mod_vel', self.mod_vel_slider)
         
         # Mix slider
-        self._register_cc_parameter('osc_noise_mix', self.mix_slider, 0, 100)
+        self._register_cc_parameter('osc_noise_mix', self.mix_slider)
         
         # Master volume
-        self._register_cc_parameter('master_volume', self.master_knob, -60, 10)
+        self._register_cc_parameter('master_volume', self.master_knob)
         
         # Morph slider (global parameter)
-        self._register_cc_parameter('sound_morph', self.morph_slider, 0, 100)
+        self._register_cc_parameter('sound_morph', self.morph_slider)
         
         # LFO 1
-        self._register_cc_parameter('lfo1_rate', self.lfo1_rate_knob, 0.01, 50)
-        self._register_cc_parameter('lfo1_depth', self.lfo1_depth_knob, 0, 100)
+        self._register_cc_parameter('lfo1_rate', self.lfo1_rate_knob)
+        self._register_cc_parameter('lfo1_depth', self.lfo1_depth_knob)
         
         # LFO 2
-        self._register_cc_parameter('lfo2_rate', self.lfo2_rate_knob, 0.01, 50)
-        self._register_cc_parameter('lfo2_depth', self.lfo2_depth_knob, 0, 100)
+        self._register_cc_parameter('lfo2_rate', self.lfo2_rate_knob)
+        self._register_cc_parameter('lfo2_depth', self.lfo2_depth_knob)
         
         # Pump
-        self._register_cc_parameter('pump_amount', self.pump_amount_knob, 0, 100)
-        self._register_cc_parameter('pump_attack', self.pump_attack_knob, 0.1, 100)
-        self._register_cc_parameter('pump_release', self.pump_release_knob, 1, 1000)
-        self._register_cc_parameter('pump_curve', self.pump_curve_knob, 0, 100)
+        self._register_cc_parameter('pump_amount', self.pump_amount_knob)
+        self._register_cc_parameter('pump_attack', self.pump_attack_knob)
+        self._register_cc_parameter('pump_release', self.pump_release_knob)
+        self._register_cc_parameter('pump_curve', self.pump_curve_knob)
 
     def _update_midi_indicator(self):
         """Update the MIDI activity indicator LED"""
@@ -4236,8 +4000,9 @@ class PythonicGUI:
                 fg=self.COLORS['text'],
                 bg=self.COLORS['bg_dark']).pack(anchor='w')
         
-        available_ports = self.midi_manager.get_available_ports()
-        current_port = self.midi_manager.port_name or "(Auto-detect)"
+        # The core's last device scan; a rescan below refreshes the list
+        available_ports = self.core.describe('midi.device')['labels']
+        current_port = self.core.get('midi.device') or "(Auto-detect)"
         
         device_var = tk.StringVar(value=current_port)
         device_options = ["(Auto-detect)"] + available_ports
@@ -4245,8 +4010,12 @@ class PythonicGUI:
                                     values=device_options, width=40, state='readonly')
         device_combo.pack(fill='x', pady=(2, 0))
         
+        def connection_status():
+            device = self.core.get('midi.device')
+            return f"Status: {'Connected to ' + device if device else 'Not connected'}"
+        
         # Connection status
-        status_text = f"Status: {'Connected to ' + self.midi_manager.port_name if self.midi_manager.is_connected else 'Not connected'}"
+        status_text = connection_status()
         status_label = tk.Label(device_frame, text=status_text,
                                font=('Segoe UI', 8),
                                fg=self.COLORS['text_dim'],
@@ -4262,7 +4031,7 @@ class PythonicGUI:
                 fg=self.COLORS['text'],
                 bg=self.COLORS['bg_dark']).pack(anchor='w')
         
-        current_base = self.midi_manager.get_base_note()
+        current_base = self.core.get('midi.base_note')
         note_names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
         
         # Generate note options (C-1 to C8)
@@ -4306,7 +4075,7 @@ class PythonicGUI:
         sync_frame = tk.Frame(dialog, bg=self.COLORS['bg_dark'])
         sync_frame.pack(fill='x', padx=20, pady=10)
         
-        clock_sync_var = tk.BooleanVar(value=self.midi_manager.is_clock_sync_enabled())
+        clock_sync_var = tk.BooleanVar(value=self.core.get('midi.clock_sync'))
         clock_sync_cb = tk.Checkbutton(sync_frame, text="Sync BPM to MIDI Clock", 
                                        variable=clock_sync_var,
                                        font=('Segoe UI', 9),
@@ -4317,9 +4086,12 @@ class PythonicGUI:
                                        activeforeground=self.COLORS['text'])
         clock_sync_cb.pack(anchor='w')
         
+        def sync_status_text():
+            synced_bpm = self.core.get('midi.synced_tempo')
+            return f"Current synced BPM: {synced_bpm:.1f}" if synced_bpm > 0 else "Not receiving MIDI clock"
+        
         # Show current synced BPM if available
-        synced_bpm = self.midi_manager.get_synced_bpm()
-        sync_status = f"Current synced BPM: {synced_bpm:.1f}" if synced_bpm > 0 else "Not receiving MIDI clock"
+        sync_status = sync_status_text()
         sync_status_label = tk.Label(sync_frame, text=sync_status,
                                      font=('Segoe UI', 8),
                                      fg=self.COLORS['text_dim'],
@@ -4364,43 +4136,41 @@ class PythonicGUI:
             # Get clock sync setting
             clock_sync = clock_sync_var.get()
             
-            # Apply settings
-            self.midi_manager.set_base_note(base_note)
-            self.midi_manager.set_clock_sync_enabled(clock_sync)
+            # Apply settings (the core saves them in the preferences)
+            self.core.set('midi.base_note', base_note)
+            self.core.set('midi.clock_sync', clock_sync)
             
-            # Reconnect if device changed
-            current_connected = self.midi_manager.port_name
-            if selected_device != current_connected:
-                self.midi_manager.disconnect()
-                if selected_device:
-                    self.midi_manager.connect(selected_device)
+            def show_status(event=None):
+                if not dialog.winfo_exists():
+                    return
+                if event is not None and event['status'] == 'error':
+                    status_label.config(text=f"Status: {event.get('error')}")
                 else:
-                    self.midi_manager.auto_connect()
+                    status_label.config(text=connection_status())
+                sync_status_label.config(text=sync_status_text())
             
-            # Save preferences
-            self.preferences_manager.set('midi_base_note', base_note)
-            self.preferences_manager.set('midi_input_device', selected_device)
-            self.preferences_manager.set('midi_clock_sync', clock_sync)
-            self.preferences_manager.set('midi_enabled', True)
+            # Reconnect if device changed (the core opens it and saves the choice)
+            if selected_device != self.core.get('midi.device'):
+                status_label.config(text="Status: connecting...")
+                self._when_action_done(self.core.act('midi.open', device=selected_device),
+                                       show_status)
+            else:
+                show_status()
             
-            # Update status
-            status_text = f"Status: {'Connected to ' + self.midi_manager.port_name if self.midi_manager.is_connected else 'Not connected'}"
-            status_label.config(text=status_text)
-            
-            # Update sync status
-            synced_bpm = self.midi_manager.get_synced_bpm()
-            sync_status = f"Current synced BPM: {synced_bpm:.1f}" if synced_bpm > 0 else "Not receiving MIDI clock"
-            sync_status_label.config(text=sync_status)
-            
-            print(f"MIDI settings updated: base note {base_note}, clock sync: {clock_sync}, device: {self.midi_manager.port_name or 'None'}")
+            print(f"MIDI settings updated: base note {base_note}, clock sync: {clock_sync}, "
+                  f"device: {selected_device or 'auto'}")
         
         def on_ok():
             apply_settings()
             dialog.destroy()
         
         def refresh_devices():
-            available_ports = self.midi_manager.get_available_ports()
-            device_combo['values'] = ["(Auto-detect)"] + available_ports
+            def show(event):
+                if event['status'] == 'done' and device_combo.winfo_exists():
+                    device_combo['values'] = ["(Auto-detect)"] + event['result']['devices']
+            self._when_action_done(self.core.act('midi.rescan'), show)
+        
+        refresh_devices()
         
         tk.Button(button_frame, text="Refresh Devices", 
                  command=refresh_devices,
@@ -4429,9 +4199,7 @@ class PythonicGUI:
         dialog.geometry(f"+{x}+{y}")
     
     def _show_cc_mapping_dialog(self):
-        """Show MIDI CC mapping configuration dialog"""
-        from pythonic.midi_manager import get_cc_name, CC_NAMES
-        
+        """Show MIDI CC mapping configuration dialog (the core's midi.cc_map)"""
         dialog = tk.Toplevel(self.root)
         dialog.title("MIDI CC Mappings")
         dialog.geometry("500x450")
@@ -4485,19 +4253,16 @@ class PythonicGUI:
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
         
-        # Get available parameters and current mappings
-        available_params = self._get_available_parameters()
-        current_mappings = self.midi_manager.get_cc_mappings()
+        # Controls are shown by their parameter names; a target no tkinter
+        # control offers (mapped by another front-end) is shown as its address
+        current_mappings = self.core.get('midi.cc_map')
+        target_of = {name: cc_parameter_target(name) for name in self._get_available_parameters()}
+        name_of = {target: name for name, target in target_of.items()}
+        available_params = sorted(target_of) + sorted(
+            {t for t in current_mappings.values() if t not in name_of})
         
-        # Common CC options
-        cc_options = ["(None)"]
-        for cc in [1, 2, 4, 7, 10, 11, 12, 13, 16, 17, 18, 19, 71, 74]:
-            cc_options.append(get_cc_name(cc))
-        # Add any other CCs that are currently mapped
-        for cc in current_mappings.keys():
-            cc_name = get_cc_name(cc)
-            if cc_name not in cc_options:
-                cc_options.append(cc_name)
+        # Any CC 0-127
+        cc_options = ["(None)"] + [cc_name(cc) for cc in range(128)]
         
         # Store mapping widgets for later access
         mapping_widgets = []
@@ -4529,18 +4294,15 @@ class PythonicGUI:
             mapping_widgets.append((cc_var, param_var))
             return row
         
-        # Create 8 mapping rows
-        for i in range(8):
+        # One row per mapping (no limit), plus empty rows to add more
+        for i in range(max(8, len(current_mappings) + 2)):
             create_mapping_row(i)
         
         # Populate existing mappings
-        mapping_idx = 0
-        for cc_num, param_name in current_mappings.items():
-            if mapping_idx < len(mapping_widgets):
-                cc_var, param_var = mapping_widgets[mapping_idx]
-                cc_var.set(get_cc_name(cc_num))
-                param_var.set(param_name)
-                mapping_idx += 1
+        for (cc_num, target), (cc_var, param_var) in zip(sorted(current_mappings.items()),
+                                                         mapping_widgets):
+            cc_var.set(cc_name(cc_num))
+            param_var.set(name_of.get(target, target))
         
         # Info text
         info_frame = tk.Frame(dialog, bg=self.COLORS['bg_dark'])
@@ -4557,10 +4319,8 @@ class PythonicGUI:
         button_frame.pack(fill='x', padx=20, pady=15)
         
         def apply_mappings():
-            # Clear existing mappings
-            self.midi_manager.clear_cc_mappings()
-            
-            # Add new mappings
+            # The rows replace the whole map
+            mapping = {}
             for cc_var, param_var in mapping_widgets:
                 cc_str = cc_var.get()
                 param = param_var.get()
@@ -4571,14 +4331,13 @@ class PythonicGUI:
                 # Extract CC number from string like "CC1 (Mod Wheel)"
                 try:
                     cc_num = int(cc_str.split('(')[0].replace('CC', '').strip())
-                    self.midi_manager.add_cc_mapping(cc_num, param)
                 except (ValueError, IndexError):
-                    pass
+                    continue
+                mapping[cc_num] = target_of.get(param, param)
             
-            # Save to preferences
-            self._save_cc_mappings()
-            
-            print(f"Applied {len(self.midi_manager.get_cc_mappings())} CC mappings")
+            # The core saves the map in the preferences
+            self.core.set('midi.cc_map', mapping)
+            print(f"Applied {len(mapping)} CC mappings")
         
         def on_ok():
             apply_mappings()
@@ -4702,11 +4461,22 @@ class PythonicGUI:
             self._show_changes(state['changes'])
         
         for event in state['events']:
+            if event.get('kind') == 'cc_burst':
+                self._push_cc_burst(event)
+                continue
             callback = self._action_callbacks.pop(event.get('id'), None)
             if callback is not None:
                 callback(event)
-        
+
+        self._show_midi(state['midi'])
+
         transport = state['transport']
+        shown = (transport['playing'], transport['selected_pattern'],
+                 transport['queued_pattern'])
+        if shown != self._last_transport:
+            previous, self._last_transport = self._last_transport, shown
+            if previous is not None:
+                self._show_transport(transport, previous)
         if transport['playing']:
             position = transport['position']
             
@@ -4735,6 +4505,22 @@ class PythonicGUI:
         # Schedule next update (every 50ms to reduce load)
         self.ui_update_timer = self.root.after(50, self._ui_update_tick)
     
+    def _show_transport(self, transport, previous):
+        """The transport or the selected pattern changed outside the GUI's
+        own buttons (MIDI program change, start, stop, continue)."""
+        playing = transport['playing']
+        if playing and not previous[0]:
+            self._last_playing_pattern_idx = transport['playing_pattern']
+        if transport['selected_pattern'] != previous[1]:
+            self._update_pattern_editors()
+        if not playing and hasattr(self, 'pattern_editors'):
+            for editor in self.pattern_editors:
+                editor.set_current_position(0)
+        self._update_pattern_button_states()
+        if hasattr(self, 'play_btn') and hasattr(self.play_btn, 'set_active'):
+            self.play_btn.set_active(playing)
+            self.stop_btn.set_active(not playing)
+
     def _update_mod_indicators(self, offsets):
         """Show the selected channel's modulation offsets (from poll) on the knobs."""
         # Update widgets that have active modulation
@@ -4812,11 +4598,8 @@ class PythonicGUI:
                 except tk.TclError:
                     pass  # the window is already gone
                 self.ui_update_timer = None
-            # Stop the audio stream and release the synth
+            # Stop the audio stream and MIDI input, release the synth
             self.core.close()
-            # Cleanup MIDI
-            if hasattr(self, 'midi_manager'):
-                self.midi_manager.cleanup()
 
 
 def main():
