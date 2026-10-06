@@ -1,16 +1,16 @@
 <!doctype html>
 <!--
-  PROTOTYPE, throwaway. Answers "What is the inner layout of the AI drum generator edit rack page?" (map #1,
-  ticket "Inner layout of the AI drum generator rack page"). Settled: a rack page, 8 lanes under the 8 strips,
-  generate controls left, patterns and apply right, face live above.
-  A = parity lanes (arrows + one-shot), B = candidate dots, C = try on the face (tried candidates play on the panel).
-  Switch with ?variant=A|B|C, the bottom bar, or the left/right arrow keys. "no ML?" shows the missing-extras state.
-  In-memory only: generate takes a fake 0.9 s (the AI runs in a subprocess), names are made up.
+  PROTOTYPE, throwaway. Answers "What is the inner layout of the setup overlay sheet?" (map #1, ticket
+  "Inner layout of the setup sheet"). Settled: setup is an overlay sheet, the panel keeps playing but is
+  blocked, values apply live except the audio stream settings, which wait for "restart audio".
+  A = tabs on top (sheet sizes to the tab), B = side tabs at a fixed size, C = one sheet, no tabs.
+  Switch with ?variant=A|B|C, the bottom bar, or the left/right arrow keys. Click a list to cycle its values.
+  "alert: error" and "alert: ask" show the shared alert sheet. In-memory only.
 -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>PROTOTYPE AI generator page</title>
+<title>PROTOTYPE setup sheet</title>
 <style>
   :root {
     --bg: #050506; --panel: #17181a; --panel-hi: #1e1f22; --box: #34363a; --label: #e8e8e4; --dim: #8f9194;
@@ -257,7 +257,7 @@
 <div id="stage"></div>
 <div id="desk"></div>
 <div id="nat"></div>
-<div id="switcher"><button id="prev" title="previous (←)">◀</button><span id="vlabel"></span><button id="mlsim" style="width:auto;border-radius:12px;padding:0 10px;font-size:11px" title="prototype only">no ML?</button><button id="next" title="next (→)">▶</button></div>
+<div id="switcher"><button id="prev" title="previous (←)">◀</button><span id="vlabel"></span><button id="al1" style="width:auto;border-radius:12px;padding:0 10px;font-size:11px">alert: error</button><button id="al2" style="width:auto;border-radius:12px;padding:0 10px;font-size:11px">alert: ask</button><button id="next" title="next (→)">▶</button></div>
 <script>
 // ---------------------------------------------------------------- parameters (engine units)
 const P = {};
@@ -849,13 +849,101 @@ function aiC() {
     ${laneHead(c)}${L.busy ? busy : L.cands.length ? `<div class="row" style="gap:3px">${ab('prev:' + c, '‹')}<span class="note">${L.idx + 1}/${L.cands.length}</span>${ab('next:' + c, '›')}</div>
     <b class="nm">${L.cands[L.idx]}</b>${ab('try:' + c, L.tried ? 'trying ✓' : 'try', L.tried)}<span class="note">${L.tried ? 'face plays this' : 'face plays ' + CH[c][0]}</span>` : '<span class="note">no candidates</span>'}</div>`).join('')}</div>`, AM) + aiRight(1);
 }
+// ---------------------------------------------------------------- setup sheet (mock preference state)
+const OPTS = {
+  out: ['(system default)', 'USB Audio CODEC', 'HDA Intel PCH: ALC892', 'pipewire'],
+  in: ['(system default)', 'USB Audio CODEC', 'HDA Intel PCH: mic'],
+  buf: ['2 ms', '5 ms', '10 ms', '15 ms', '23.8 ms', '30 ms', '50 ms', '75 ms', '100 ms'],
+  sr: ['96000 Hz', '48000 Hz', '44100 Hz', '32000 Hz', '22050 Hz'],
+  syn: ['same as output', '22050 Hz', '11025 Hz', '8000 Hz'],
+  midi: ['(auto-detect)', 'BeatStep MIDI 1', 'Midi Through Port-0'],
+  base: ['C-1 (0)', 'C0 (12)', 'C1 (24)', 'C2 (36)', 'C3 (48)'],
+  cc: ['CC 1', 'CC 2', 'CC 4', 'CC 7', 'CC 10', 'CC 11', 'CC 71', 'CC 74'],
+  par: ['osc freq', 'noise freq', 'reverb mix', 'sound morph', 'decay', 'pitch', 'master volume', 'delay mix'],
+  pb: ['(none)', 'pitch', 'osc freq', 'noise freq'],
+};
+const AUDIO_KEYS = new Set(['out', 'buf', 'sr', 'syn']);
+const su = { out: 0, in: 0, buf: 4, sr: 2, syn: 0, mono: 0, midi: 1, base: 3, clock: 1, pb: 1, smooth: 20, ptemp: 0.8,
+  cc: [[0, 0], [1, 1], [7, 2], [6, 3]], pending: new Set() };
+function suCmd(cmd) {
+  const [k, a, b] = cmd.split(':');
+  if (k === 'cyc') { su[a] = (su[a] + 1) % OPTS[a].length; if (AUDIO_KEYS.has(a)) su.pending.add(a); else say(`SETUP\n${a.toUpperCase()} ${OPTS[a][su[a]].toUpperCase()}`); }
+  else if (k === 'tog') { su[a] = su[a] ? 0 : 1; say(`SETUP\n${a.toUpperCase()} ${su[a] ? 'ON' : 'OFF'}`); }
+  else if (k === 'restart') { su.pending.clear(); say('AUDIO\nRESTARTED'); }
+  else if (k === 'cc') { const r = su.cc[+a]; r[+b] = (r[+b] + 1) % OPTS[+b ? 'par' : 'cc'].length; }
+  else if (k === 'ccdel') su.cc.splice(+a, 1);
+  else if (k === 'ccadd') su.cc.push([4, 4]);
+  else if (k === 'ccclear') su.cc = [];
+  else if (k === 'rescan') say('SETUP\nDEVICES RESCANNED');
+  else if (k === 'tab') state.ftab.setup = +a;
+  else if (k === 'smooth') { su.smooth = [5, 10, 20, 50, 100][([5, 10, 20, 50, 100].indexOf(su.smooth) + 1) % 5]; say(`SETUP\nSMOOTHING ${su.smooth} MS`); }
+  render();
+}
+const sb = (cmd, t, on, cls = '', a = '') => btn(t, on, cls, `data-su="${cmd}" ${a}`);
+const pend = (k) => su.pending.has(k) ? '<i title="waits for restart audio" style="width:7px;height:7px;border-radius:50%;background:#22e384;display:inline-block;box-shadow:0 0 5px #22e384"></i>' : '';
+const SL = (k, w) => `<div class="list" data-su="cyc:${k}"><div class="lbox" style="--lw:${w || 150}px">${OPTS[k][su[k]]}</div></div>${pend(k)}`;
+const sCK = (k, l) => `<span data-su="tog:${k}" style="cursor:pointer">${CK(l, su[k])}</span>`;
+const SEC = {
+  out: () => ['Audio output', FL('device', SL('out', 170) + sb('rescan', 'rescan'), 80) + FL('buffer', SL('buf', 90), 80) + FL('sample rate', SL('sr', 90), 80)
+    + '<div class="note" style="margin-left:86px">this device takes 5 of 7 rates</div>' + FL('synth rate', SL('syn', 120), 80) + FL('', sCK('mono', 'mono output'), 80)
+    + `<div class="row" style="gap:8px">${sb('restart', 'restart audio', su.pending.size > 0, '', su.pending.size ? '' : 'style="opacity:.5"')}<span class="note">${su.pending.size ? 'device, buffer and rates wait for a restart' : 'audio running: 44100 Hz, 23.8 ms'}</span></div>`],
+  in: () => ['Audio input (PO-32)', FL('device', SL('in', 170), 80) + '<div class="note">used by PO-32 import</div>'],
+  midi: () => ['MIDI input', FL('device', SL('midi', 170) + sb('rescan', 'rescan'), 80) + `<div class="row" style="gap:6px;margin-left:86px"><span class="mled on"></span><span class="note">connected</span></div>`
+    + FL('base note', SL('base', 90), 80) + `<div class="note" style="margin-left:86px">channels 1–8 play on notes ${12 * su.base}–${12 * su.base + 7}</div>`
+    + FL('clock', sCK('clock', 'follow MIDI clock'), 80) + (su.clock ? '<div class="note" style="margin-left:86px">synced tempo 122.0</div>' : '')
+    + '<div class="note">Also responds to program change 0–11 (patterns A–L), start, stop, continue.</div>'],
+  cc: () => ['CC mappings', `<div class="col" style="gap:4px">${su.cc.map(([c, p], i) => `<div class="row" style="gap:6px">
+      <div class="list" data-su="cc:${i}:0"><div class="lbox" style="--lw:56px;border-color:#ffb020;color:#ffb020">${OPTS.cc[c]}</div></div><span>→</span>
+      <div class="list" data-su="cc:${i}:1"><div class="lbox" style="--lw:120px">${OPTS.par[p]}</div></div>${sb('ccdel:' + i, '✕')}</div>`).join('') || '<div class="note">no mappings</div>'}</div>
+    <div class="row" style="gap:6px">${sb('ccadd', '+ add')}${sb('ccclear', 'clear all')}</div>
+    ${FL('pitch bend', SL('pb', 110), 70)}<div class="note">Sound parameters follow the selected channel. To learn, right-click any control on the panel ▸ MIDI learn.</div>`],
+  syn: () => ['Synthesis', `<div class="row" style="gap:12px"><div data-su="smooth" style="cursor:pointer">${KN('smoothing', su.smooth + ' ms', 40)}</div><span class="note">Parameter smoothing, all 8 channels, applies at once.</span></div>`],
+  ai: () => ['AI', FL('pattern model', '<span class="note">bundled ✓</span>' + NB('browse…', 'ckpt-open') + btn('clear'), 90)
+    + `<div class="row" style="gap:12px">${KN('temperature', su.ptemp, 34)}<span class="note">used by pattern menu ▸ randomize (AI); the AI generator page has its own copy of both</span></div>`],
+};
+const TABS = [['audio', ['out', 'in']], ['midi', ['midi', 'cc']], ['synthesis', ['syn']], ['ai', ['ai']]];
+const secH = (k, st = '') => { const [t, h] = SEC[k](); return `<section class="fsec" style="${st}"><h4>${t}</h4>${h}</section>`; };
+const shHead = (tabs) => `<div class="fx-h"><span class="t">Setup</span>${tabs || ''}<span class="sp"></span>${btn('✕', false, '', 'data-fclose')}</div>`;
+const tabBtns = () => `<div class="tabs">${TABS.map(([t], i) => sb('tab:' + i, t, state.ftab.setup === i)).join('')}</div>`;
+// A: tabs on top, the sheet sizes to the tab; MIDI input and CC mappings share one tab
+function sheetA() {
+  const [, ks] = TABS[state.ftab.setup] || TABS[0];
+  return { w: ks.length > 1 ? 820 : 520, h: shHead(tabBtns()) + `<div class="fxg" style="grid-template-columns:repeat(${ks.length},1fr)">${ks.map((k) => secH(k)).join('')}</div>` };
+}
+// B: tabs down the side, fixed size so nothing jumps between tabs
+function sheetB() {
+  const [, ks] = TABS[state.ftab.setup] || TABS[0];
+  const side = `<div class="col" style="gap:4px;width:130px;flex:none">${TABS.map(([t], i) => sb('tab:' + i, t, state.ftab.setup === i, '', 'style="text-align:left;padding:8px 10px;font-size:11px"')).join('')}</div>`;
+  return { w: 980, h: shHead() + `<div style="display:flex;gap:10px;height:430px">${side}<div class="fxg" style="flex:1;grid-template-columns:repeat(${ks.length},1fr);align-content:start">${ks.map((k) => secH(k)).join('')}</div></div>` };
+}
+// C: no tabs, every setting on one big sheet
+function sheetC() {
+  return { w: 1340, h: shHead() + `<div class="fxg" style="grid-template-columns:1.15fr 1fr 1fr;align-items:start">
+    <div class="col">${secH('out')}${secH('in')}</div><div class="col">${secH('midi')}${secH('syn')}</div><div class="col">${secH('cc')}${secH('ai')}</div></div>` };
+}
+// the alert sheet (shared by every variant)
+const ALERTS = {
+  error: ['Could not load the preset', '“Glitch Kit.json” is not a preset file: line 3, unexpected character. Nothing was changed.', [['OK', 1]]],
+  ask: ['Keep the tried sounds?', 'Channels 1, 3 and 5 are trying AI candidates. Keep them (one undo step) or put the old sounds back?', [['revert', 0], ['keep', 1]]],
+};
+function showAlert(kind) {
+  const [t, m, bs] = ALERTS[kind];
+  const el = document.createElement('div'); el.id = 'al';
+  el.style.cssText = 'position:absolute;inset:0;z-index:40;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.55)';
+  el.innerHTML = `<div style="width:460px;background:#0d0d0f;border:1px solid #3a3a3e;border-top:3px solid ${kind === 'error' ? '#ff4a4a' : '#22e384'};border-radius:10px;padding:14px 16px;box-shadow:0 20px 60px rgba(0,0,0,.8)">
+    <div style="font-weight:700;font-size:15px;margin-bottom:8px">${t}</div><div class="note" style="font-size:12px;color:#d0d0d2;margin-bottom:14px">${m}</div>
+    <div class="row" style="justify-content:flex-end;gap:8px">${bs.map(([l, p]) => `<button class="btn ${p ? 'on' : ''}" data-alx style="padding:7px 16px;font-size:11px">${l}</button>`).join('')}</div></div>`;
+  stage.querySelector('#al')?.remove(); stage.appendChild(el);
+}
+document.addEventListener('click', (e) => { if (e.target.closest('[data-alx]')) { document.querySelector('#al')?.remove(); e.stopPropagation(); } }, true);
+
 const VARIANTS = {
-  A: { name: 'Parity lanes', page: aiA,
-    note: 'Each lane: type, generate, ‹ i/n ›, ▶ one-shot, name, apply checkbox. Candidates only reach the channel during ▶ or loop preview and are put back afterwards; apply selected keeps them.' },
-  B: { name: 'Candidate dots', page: aiB,
-    note: 'Same as A, but each lane shows all candidates as dots: click one to pick and hear it. Seeing 8–32 options at a glance replaces stepping with arrows.' },
-  C: { name: 'Try on the face (WINNER, as decided, with arrows)', page: aiC,
-    note: 'Picking a candidate tries it: the face strip plays it and its tab shows the candidate name in italics, so the running pattern auditions the kit. Keep tried sounds commits; revert or ✕ puts the old sounds back.' },
+  A: { name: 'Tabs on top', sheet: sheetA,
+    note: 'Four tabs (audio, midi, synthesis, ai) on top; the sheet sizes to the tab: two columns for audio and for MIDI + CC mappings, one for the small ones.' },
+  B: { name: 'Side tabs, fixed size', sheet: sheetB,
+    note: 'The same four tabs down the left; the sheet keeps one size (980 wide) so nothing moves when switching tabs.' },
+  C: { name: 'One sheet, no tabs', sheet: sheetC,
+    note: 'Every setting on one big sheet in three columns: audio, MIDI + synthesis, CC mappings + AI. Nothing hidden, the panel mostly covered.' },
 };
 for (const k in VARIANTS) VARIANTS[k].how = (f) => FEAT[f].mix;
 Object.assign(state, { open: null, ftab: { po32: 0, setup: 0 }, wins: [], native: null, front: null });
@@ -866,13 +954,14 @@ function body(f, form) {
   const tabs = F.tabs ? `<div class="tabs">${F.tabs.map((t, i) => btn(t, i === tab, '', `data-ftab="${f}:${i}"`)).join('')}</div>` : '';
   const back = form === 'rack' ? btn(`◀ ch ${state.sel + 1} edit`, false, '', 'data-fclose') : '';
   const head = `<div class="fx-h">${back}<span class="t">${F.title}</span>${tabs}<span class="tk">${F.tk}</span><span class="sp"></span>${form === 'win' ? '' : btn('✕', false, '', 'data-fclose')}</div>`;
+  if (form === 'card' && f === 'setup') return cfg().sheet().h;
   if (form === 'rack' && f === 'ai') return `<div class="fx">${head}<div class="fxs">${cfg().page(tab)}</div></div>`;
   if (form === 'rack' && f === 'po32') return `<div class="fx">${head}<div class="fxs">${cfg().page(tab)}</div></div>`;
   if (form === 'rack') return `<div class="fx">${head}<div class="fxs">${secs.map((s) => `<section class="fsec" style="${s.w ? `flex:0 0 ${s.w}px` : `flex:${s.f || 1} 1 0`};${s.pad ? `padding:${s.pad}` : ''}">${s.t ? `<h4>${s.t}</h4>` : ''}${s.h}</section>`).join('')}</div></div>`;
   const cols = (F.cols[tab] ?? F.cols[0]);
   return `<div class="fx">${head}<div class="fxg" style="grid-template-columns:repeat(${cols},1fr)">${secs.map((s) => `<section class="fsec" style="grid-column:span ${Math.min(cols, s.span || 1)}">${s.t ? `<h4>${s.t}</h4>` : ''}${s.h}</section>`).join('')}</div></div>`;
 }
-const widthOf = (f) => { const F = FEAT[f], t = state.ftab[f] || 0; return F.w[t] ?? F.w[0]; };
+const widthOf = (f) => { if (f === 'setup' && cfg().sheet) return cfg().sheet().w; const F = FEAT[f], t = state.ftab[f] || 0; return F.w[t] ?? F.w[0]; };
 function openFeature(f, tab, anchor) {
   if (tab != null) state.ftab[f] = tab;
   const m = modeOf(f);
@@ -920,7 +1009,7 @@ function nativeClose(ok) {
 
 // ---------------------------------------------------------------- render + fit
 const keys = Object.keys(VARIANTS);
-let cur = new URLSearchParams(location.search).get('variant'); if (!keys.includes(cur)) cur = 'C';
+let cur = new URLSearchParams(location.search).get('variant'); if (!keys.includes(cur)) cur = 'A';
 const cfg = () => VARIANTS[cur];
 for (const k in VARIANTS) Object.assign(VARIANTS[k], { theme: 't8', face: faceT, ks: 30, fh: 112, ind: 'arc' });
 const stage = document.getElementById('stage');
@@ -953,7 +1042,8 @@ function go(d) {
   render(); if (was) openFeature(was);
 }
 document.getElementById('prev').onclick = () => go(-1);
-document.getElementById('mlsim').onclick = () => aiCmd('ml');
+document.getElementById('al1').onclick = () => showAlert('error');
+document.getElementById('al2').onclick = () => showAlert('ask');
 document.getElementById('next').onclick = () => go(1);
 addEventListener('resize', fit);
 addEventListener('keydown', (e) => {
@@ -1062,10 +1152,11 @@ stage.addEventListener('click', (e) => {
   if (!e.target.closest('#pop')) { pop().style.display = 'none'; popFor = null; }
   const t = e.target;
   if (t.id === 'ov') { closeFeature(state.open); return; }
-  const fx = t.closest('[data-ai],[data-po],[data-fclose],[data-ftab],[data-native],[data-act],[data-menu]');
+  const fx = t.closest('[data-su],[data-ai],[data-po],[data-fclose],[data-ftab],[data-native],[data-act],[data-menu]');
   if (fx) {
     const d = fx.dataset;
-    if (d.ai) aiCmd(d.ai);
+    if (d.su) suCmd(d.su);
+    else if (d.ai) aiCmd(d.ai);
     else if (d.po) po32(d.po);
     else if (d.fclose !== undefined) closeFeature(state.open);
     else if (d.ftab) { const [f, i] = d.ftab.split(':'); state.ftab[f] = +i; render(); }
@@ -1114,7 +1205,7 @@ stage.addEventListener('click', (e) => {
 
 stage.addEventListener('contextmenu', (e) => {
   const el = e.target.closest('[data-k]'); if (!el) return; e.preventDefault(); popFor = null;
-  openPop(el, [['MIDI learn (CC)', 'say:MIDI LEARN\nMOVE A CONTROLLER'], ['Reset to default', 'say:RESET'], ['CC mappings…', 'open:setup:2']].map(([x, k]) => `<div class="it" data-act="${k}">${x}</div>`).join(''));
+  openPop(el, [['MIDI learn (CC)', 'say:MIDI LEARN\nMOVE A CONTROLLER'], ['Reset to default', 'say:RESET'], ['CC mappings…', 'open:setup:1']].map(([x, k]) => `<div class="it" data-act="${k}">${x}</div>`).join(''));
 });
 
 // ---------------------------------------------------------------- fake modulation + playhead
@@ -1176,7 +1267,7 @@ setInterval(() => {
   stage.querySelectorAll('[data-trig]').forEach((l) => l.classList.toggle('on', STEPS[+l.dataset.trig].includes(state.ph)));
 }, 125);
 render();
-openFeature('ai');
+openFeature('setup', 0);
 requestAnimationFrame(frame);
 </script>
 </body>
