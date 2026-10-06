@@ -10,7 +10,10 @@ the audio stream, driven through an address-based interface (ADR 0001).
   core's action thread and its result or error arrives through ``poll``.
 - ``trigger(channel, velocity, at)`` queues a hit with its arrival time.
 - ``poll(since)`` returns everything newer than version ``since``: changed
-  addresses, action events, plus the transport, modulation and audio readouts.
+  addresses, action events, plus the transport, modulation, audio and MIDI
+  readouts.
+- MIDI input (``midi.*`` addresses and verbs) is routed by ``MidiInput`` on
+  the core's MIDI thread (see ``midi.py``).
 
 The core never calls into a UI thread: front-ends poll on their own timer.
 """
@@ -31,6 +34,7 @@ from pythonic.sequencer import StepSequencer
 from pythonic.synthesizer import PythonicSynthesizer
 
 from .audio import AudioEngine
+from .midi import MidiInput, import_mido
 from .registry import Address, Registry
 from .sound import SOUND_PARAMS, SOUND_SUFFIXES
 
@@ -51,11 +55,17 @@ def _import_sounddevice():
 class AppCore:
     """UI-free app core. One per process; front-ends drive it via its interface."""
 
-    def __init__(self, preferences=None, audio_backend=_DEFAULT, *,
+    # A verb handler returns this when its action finishes later (MIDI learn);
+    # the handler posts the action's event itself.
+    DEFERRED = object()
+
+    def __init__(self, preferences=None, audio_backend=_DEFAULT, *, midi_backend=_DEFAULT,
                  clock=time.perf_counter, stream_timeout=2.0, stall_timeout=2.0):
         self.preferences = preferences if preferences is not None else PreferencesManager()
         if audio_backend is _DEFAULT:
             audio_backend = _import_sounddevice()
+        if midi_backend is _DEFAULT:
+            midi_backend = import_mido()
         self._clock = clock
         self.stall_timeout = stall_timeout
         prefs = self.preferences
@@ -99,13 +109,17 @@ class AppCore:
 
         self.registry = Registry()
         self._register_addresses()
+        self.midi = MidiInput(self, midi_backend, clock, prefs)
+        self.midi.register(self.registry)
         self._verbs = {
             'audio.start': self._verb_audio_start,
             'audio.stop': self._verb_audio_stop,
             'audio.apply': self._verb_audio_apply,
             # Temporary until the undo journal lands (slice 5)
             'legacy.restore_snapshot': self._verb_restore_snapshot,
+            **self.midi.verbs(),
         }
+        self._running_action = None  # id of the verb running on the action thread
 
         self._jobs = queue.Queue()
         self._closed = False
@@ -152,7 +166,7 @@ class AppCore:
         value = entry.coerce(value)
         if not entry.queued:
             entry.set(value)
-            self._note_change(address, value)
+            self._note_change(address, entry.get())
             return
         others = self._edit_all_others(address, edit_all)
         if not others:
@@ -202,12 +216,24 @@ class AppCore:
             at = self._clock()
         self.audio.submit_trigger(at, channel, velocity)
 
+    def _latest(self, address):
+        """The newest value of an address: a queued set the audio thread has
+        not applied yet, else the current value."""
+        with self._cond:
+            for _seq, names, value in reversed(self._pending):
+                if address in names:
+                    return value
+        return self.get(address)
+
     def poll(self, since=0):
         """Everything newer than `since`, plus the transport and readouts.
 
         ``changes`` maps each address changed since then to its new value;
         a queued set shows up here once the audio thread has applied it.
+        ``midi`` holds the MIDI activity and per-channel note counters and the
+        pickup state of each CC-driven control (controller position, linked).
         """
+        self.midi.close_idle_bursts(self._clock())
         self._collect_audio_reports()
         with self._cond:
             self._promote_applied()
@@ -234,6 +260,7 @@ class AppCore:
                 'offsets': {target.value: value for target, value in offsets.items()},
             },
             'audio': self.audio.status(),
+            'midi': self.midi.readout(),
         }
 
     def wait(self, action_id, timeout=10.0):
@@ -245,16 +272,31 @@ class AppCore:
             return self._results[action_id]
 
     def start(self):
-        """Freeze the start-up heap and open the audio stream (returns the action id)."""
+        """Freeze the start-up heap, open the audio stream and, when MIDI input
+        is enabled, the saved MIDI input (else the first). Returns the id of
+        the audio start action."""
         gc.collect()
         gc.freeze()
-        return self.act('audio.start')
+        action_id = self.act('audio.start')
+        prefs = self.preferences
+        if self.midi.backend is not None and prefs.get('midi_enabled', True):
+            self.act('midi.open', device=prefs.get('midi_input_device'), fallback=True)
+        return action_id
+
+    def legacy_snapshot(self):
+        """Temporary until the undo journal (slice 5): a deep copy of the synth
+        preset data, the patterns and the morph, the form legacy.restore_snapshot
+        takes."""
+        return (copy.deepcopy(self.synth.get_preset_data()),
+                copy.deepcopy(self.pattern_manager.to_dict()),
+                copy.deepcopy(self.morph_manager.to_dict()))
 
     def close(self):
         """Stop the action thread and the stream, release the synth."""
         if self._closed:
             return
         self._closed = True
+        self.midi.close()
         self._jobs.put(None)
         self._worker.join(timeout=self.audio.stream_timeout + 5.0)
         self.audio.stop()
@@ -332,6 +374,7 @@ class AppCore:
 
     def _monitor(self):
         """Periodic work on the action thread: reports, perf print, stall check."""
+        self.midi.close_idle_bursts(self._clock())
         self._collect_audio_reports()
         audio = self.audio
         now = time.monotonic()
@@ -382,10 +425,18 @@ class AppCore:
             if handler is None:
                 event.update(status='error', error=f'unknown verb: {verb}')
             else:
+                self._running_action = action_id
                 try:
-                    event.update(status='done', result=handler(**args))
+                    result = handler(**args)
                 except Exception as exc:
                     event.update(status='error', error=str(exc) or type(exc).__name__)
+                else:
+                    event.update(status='done', result=result)
+                finally:
+                    self._running_action = None
+                if event.get('result') is self.DEFERRED:
+                    self._monitor()
+                    continue  # the handler posts the event when the action ends
             self._post(event)
             self._monitor()
 

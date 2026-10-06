@@ -96,6 +96,10 @@ _Avoid_: Shuffle, groove
 Mapping a hardware controller to a control by touching the control and then moving the controller.
 _Avoid_: Morph learn, assign, map
 
+**Pickup**:
+A mapped hardware controller moves its control only once it has reached or crossed the control's current value; after any other change to the value it lets go again until the next crossing.
+_Avoid_: Soft takeover, catch, scaling
+
 **Edit all**:
 A mode in which a change to any sound parameter of the selected channel is applied to every unmuted channel as well. It does not reach pattern steps.
 _Avoid_: Link, gang, global edit

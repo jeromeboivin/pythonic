@@ -84,6 +84,64 @@ class Address:
             return number
         return value
 
+    # ---------------------------------------------------------------- 0..1 position
+    @property
+    def continuous(self) -> bool:
+        """A number with a range: it has a 0..1 position (knobs, MIDI CC)."""
+        return (self.kind in ('float', 'int') and self.minimum is not None
+                and self.maximum is not None and self.maximum > self.minimum)
+
+    @property
+    def positional(self) -> bool:
+        """Any value with a 0..1 position: a ranged number, a switch or an enum."""
+        return self.continuous or self.kind == 'bool' or (self.kind == 'enum'
+                                                          and len(self.labels) > 0)
+
+    def _log_floor(self):
+        # A log range starting at 0 (attack times) starts its curve at 1e-5 of
+        # the maximum (0.1 ms for 0..10 000 ms), as the knobs do
+        return self.minimum if self.minimum > 0 else self.maximum * 1e-5
+
+    def normalize(self, value) -> float:
+        """The 0..1 position of a value, following ``curve`` (linear or log)."""
+        kind = self.kind
+        if kind == 'bool':
+            return 1.0 if value else 0.0
+        if kind == 'enum':
+            labels = list(self.labels)
+            if len(labels) < 2:
+                return 0.0
+            return labels.index(value) / (len(labels) - 1)
+        lo, hi = self.minimum, self.maximum
+        value = float(value)
+        if self.curve == 'log':
+            floor = self._log_floor()
+            n = math.log(max(value, floor) / floor) / math.log(hi / floor)
+        else:
+            n = (value - lo) / (hi - lo)
+        return min(1.0, max(0.0, n))
+
+    def denormalize(self, position):
+        """The value at a 0..1 position (the inverse of ``normalize``)."""
+        n = min(1.0, max(0.0, float(position)))
+        kind = self.kind
+        if kind == 'bool':
+            return n >= 0.5
+        if kind == 'enum':
+            labels = list(self.labels)
+            return labels[int(round(n * (len(labels) - 1)))]
+        lo, hi = self.minimum, self.maximum
+        if n >= 1.0:
+            return self.coerce(hi)
+        if self.curve == 'log':
+            if n <= 0.0:
+                return self.coerce(lo)
+            floor = self._log_floor()
+            value = floor * (hi / floor) ** n
+        else:
+            value = lo + n * (hi - lo)
+        return self.coerce(value)
+
 
 class Registry:
     """Name -> Address table. Lookups of unknown names raise KeyError."""

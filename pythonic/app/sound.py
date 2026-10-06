@@ -237,8 +237,26 @@ GLOBAL_CC_PARAMETERS = {
 }
 
 
-def cc_parameter_address(name, selected_channel):
-    """The address of a saved CC parameter name (selected_channel is 1..8)."""
+# A controller target on the selected channel: ``selected.osc.decay`` is the
+# osc.decay of whichever channel is selected when the message arrives
+SELECTED_PREFIX = 'selected.'
+
+
+def cc_parameter_target(name):
+    """The controller target of a saved CC parameter name (global address or
+    ``selected.<suffix>``)."""
     if name in GLOBAL_CC_PARAMETERS:
         return GLOBAL_CC_PARAMETERS[name]
-    return f'ch{selected_channel}.{CHANNEL_CC_PARAMETERS[name]}'
+    return SELECTED_PREFIX + CHANNEL_CC_PARAMETERS[name]
+
+
+def resolve_target(target, selected_channel):
+    """The address a controller target names now (selected_channel is 1..8)."""
+    if target.startswith(SELECTED_PREFIX):
+        return f'ch{selected_channel}.{target[len(SELECTED_PREFIX):]}'
+    return target
+
+
+def cc_parameter_address(name, selected_channel):
+    """The address of a saved CC parameter name (selected_channel is 1..8)."""
+    return resolve_target(cc_parameter_target(name), selected_channel)
