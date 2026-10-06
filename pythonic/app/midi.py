@@ -445,7 +445,7 @@ class MidiInput:
             self._on_pitchbend(msg.pitch / 8192.0)
         elif kind == 'program_change':
             if msg.program < NUM_PATTERNS:
-                self._select_pattern(msg.program)
+                self._core.patterns.select(msg.program)
         elif kind == 'clock':
             if self.clock_sync:
                 bpm = self._tempo.tick(at)
@@ -567,21 +567,9 @@ class MidiInput:
         entry = core.registry[address]
         core.set(address, entry.denormalize(entry.normalize(original) + bend * 0.5))
 
-    # ------------------------------------------------------------------ patterns, transport
-    # Pattern selection and the transport move into the core with slice 4;
-    # until then MIDI applies them here, at block start, as the buttons do.
-    def _select_pattern(self, index):
-        pm = self._core.pattern_manager
-
-        def apply(i):
-            pm.select_pattern(i)
-            if pm.is_playing:
-                pm.queued_pattern_index = i if i != pm.playing_pattern_index else None
-            else:
-                pm.play_position = 0
-                pm.current_step = 0
-        self._core.audio.submit_call(apply, index)
-
+    # ------------------------------------------------------------------ transport
+    # The transport moves into the core with slice 4b; until then MIDI
+    # applies it here, at block start, as the buttons do.
     def _transport(self, command):
         pm = self._core.pattern_manager
 

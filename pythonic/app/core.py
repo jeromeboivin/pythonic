@@ -14,6 +14,8 @@ the audio stream, driven through an address-based interface (ADR 0001).
   readouts.
 - MIDI input (``midi.*`` addresses and verbs) is routed by ``MidiInput`` on
   the core's MIDI thread (see ``midi.py``).
+- Pattern steps, lanes, pattern ops, selection, the queue and chains
+  (``pattern.*``) are in ``patterns.py``.
 
 The core never calls into a UI thread: front-ends poll on their own timer.
 """
@@ -35,6 +37,7 @@ from pythonic.synthesizer import PythonicSynthesizer
 
 from .audio import AudioEngine
 from .midi import MidiInput, import_mido
+from .patterns import Patterns
 from .registry import Address, Registry
 from .sound import SOUND_PARAMS, SOUND_SUFFIXES
 
@@ -91,7 +94,7 @@ class AppCore:
         self._cond = threading.Condition()
         self._version = 0
         self._changes = {}
-        self._pending = []  # (queue seq, addresses, value) not yet applied
+        self._pending = []  # (queue seq, addresses, value, related) not yet applied
         self._edit_all = False
         self._events = []
         self._results = {}
@@ -109,6 +112,8 @@ class AppCore:
 
         self.registry = Registry()
         self._register_addresses()
+        self.patterns = Patterns(self)
+        self.patterns.register(self.registry)
         self.midi = MidiInput(self, midi_backend, clock, prefs)
         self.midi.register(self.registry)
         self._verbs = {
@@ -117,6 +122,7 @@ class AppCore:
             'audio.apply': self._verb_audio_apply,
             # Temporary until the undo journal lands (slice 5)
             'legacy.restore_snapshot': self._verb_restore_snapshot,
+            **self.patterns.verbs(),
             **self.midi.verbs(),
         }
         self._running_action = None  # id of the verb running on the action thread
@@ -159,6 +165,7 @@ class AppCore:
         the core's Edit all mode, ``global.edit_all``) also applies the value
         to the same parameter of every unmuted channel, in the same block.
         Callers restoring state pass ``edit_all=False``.
+        The addresses an address names as ``related`` are reported with it.
         """
         entry = self.registry[address]
         if entry.readonly:
@@ -167,6 +174,7 @@ class AppCore:
         if not entry.queued:
             entry.set(value)
             self._note_change(address, entry.get())
+            self.note_changes(entry.related)
             return
         others = self._edit_all_others(address, edit_all)
         if not others:
@@ -189,7 +197,7 @@ class AppCore:
                         names.append(name)
             seq = self.audio.submit_call(apply_all, value)
         with self._cond:
-            self._pending.append((seq, names, value))
+            self._pending.append((seq, names, value, entry.related))
 
     def _edit_all_others(self, address, edit_all):
         """(channel index, address) of the same sound parameter on the other
@@ -220,7 +228,7 @@ class AppCore:
         """The newest value of an address: a queued set the audio thread has
         not applied yet, else the current value."""
         with self._cond:
-            for _seq, names, value in reversed(self._pending):
+            for _seq, names, value, _related in reversed(self._pending):
                 if address in names:
                     return value
         return self.get(address)
@@ -230,6 +238,9 @@ class AppCore:
 
         ``changes`` maps each address changed since then to its new value;
         a queued set shows up here once the audio thread has applied it.
+        ``transport`` holds the playing state, the play position (0-based
+        step of the playing pattern), the playing, selected and queued
+        pattern indexes (0..11) and the indexes of the chain being played.
         ``midi`` holds the MIDI activity and per-channel note counters and the
         pickup state of each CC-driven control (controller position, linked).
         """
@@ -250,10 +261,11 @@ class AppCore:
             'events': events,
             'transport': {
                 'playing': pm.is_playing,
-                'position': self.audio.play_position,
+                'position': pm.play_position,
                 'playing_pattern': pm.playing_pattern_index,
                 'selected_pattern': pm.selected_pattern_index,
                 'queued_pattern': pm.queued_pattern_index,
+                'chain': self.patterns.chain(),
             },
             'modulation': {
                 'channel': channel_idx,
@@ -308,6 +320,49 @@ class AppCore:
             self._version += 1
             self._changes[address] = (self._version, value)
 
+    def note_changes(self, addresses):
+        """Report the current values of several addresses as one change."""
+        if not addresses:
+            return
+        values = {name: self.registry[name].get() for name in addresses}
+        with self._cond:
+            self._version += 1
+            for name, value in values.items():
+                self._changes[name] = (self._version, value)
+
+    def at_block_start(self, fn, timeout=None):
+        """Run fn() on the audio thread at the next block start (at once when
+        no stream runs) and return its result, or raise its exception. Called
+        from the action thread by verbs that edit engine state. If the stream
+        does not get to it within ``timeout`` (the stream timeout), it is
+        cancelled and TimeoutError is raised."""
+        if timeout is None:
+            timeout = self.audio.stream_timeout
+        box = {}
+        token = [True]  # popped by whichever side wins: block start or a timeout
+
+        def apply(_):
+            try:
+                token.pop()
+            except IndexError:
+                return  # cancelled
+            try:
+                box['result'] = fn()
+            except Exception as exc:  # handed to the caller
+                box['error'] = exc
+
+        seq = self.audio.submit_call(apply)
+        if not self.audio.wait_applied(seq, timeout):
+            try:
+                token.pop()
+            except IndexError:  # the audio thread is applying it right now
+                self.audio.wait_applied(seq, 60.0)
+            else:
+                raise TimeoutError('the audio stream did not apply the change in time')
+        if 'error' in box:
+            raise box['error']
+        return box.get('result')
+
     def _promote_applied(self):
         """Move queued sets the audio thread has applied into the changes
         (lock held). Version order follows the queue order."""
@@ -317,10 +372,12 @@ class AppCore:
             return
         self._pending = [p for p in self._pending if p[0] > drained]
         ready.sort(key=lambda p: p[0])
-        for _seq, names, value in ready:
+        for _seq, names, value, related in ready:
             self._version += 1
             for name in names:
                 self._changes[name] = (self._version, value)
+            for name in related:
+                self._changes[name] = (self._version, self.registry[name].get())
 
     def _note_audio_changes(self):
         self._stall_count = -1  # a new or stopped stream restarts the stall watch
@@ -601,13 +658,7 @@ class AppCore:
         patterns = [Pattern.from_dict(p) for p in pattern_data['patterns']]
         morph_data = copy.deepcopy(morph_data)
 
-        token = [True]  # popped by whichever side wins: block start or a timeout
-
-        def apply(_):
-            try:
-                token.pop()
-            except IndexError:
-                return  # cancelled
+        def apply():
             self.synth.load_preset_data(synth_data)
             pm = self.pattern_manager
             pm.patterns = patterns
@@ -620,13 +671,9 @@ class AppCore:
             if morph_data:
                 self.morph_manager.from_dict(morph_data)
 
-        seq = self.audio.submit_call(apply)
-        if not self.audio.wait_applied(seq, self.audio.stream_timeout):
-            try:
-                token.pop()
-            except IndexError:  # the audio thread is applying it right now
-                self.audio.wait_applied(seq, 60.0)
-            else:
-                raise TimeoutError('the audio stream did not apply the snapshot in time')
+        try:
+            self.at_block_start(apply)
+        except TimeoutError:
+            raise TimeoutError('the audio stream did not apply the snapshot in time') from None
         gc.freeze()
         return {'morph_position': self.morph_manager.position}

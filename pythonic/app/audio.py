@@ -84,7 +84,7 @@ class AudioEngine:
         # Sequencer; replaced together with the synth
         self.sequencer = StepSequencer(pattern_manager, synth.sr)
         self._seq_generation = -1
-        self.play_position = 0
+        self._followed_pattern = None  # playing pattern the selection last followed
 
         # Performance counters (written by the callback only)
         self.enable_sample_dropping = True
@@ -225,12 +225,17 @@ class AudioEngine:
             if not sequencer.running or generation != self._seq_generation:
                 self._seq_generation = generation
                 sequencer.start(None, synth_clock=synth.sample_clock)
+                self._followed_pattern = pm.playing_pattern_index
             trigger_start = time.perf_counter()
             events = sequencer.advance(synth_frames)
+            playing = pm.playing_pattern_index
+            if playing != self._followed_pattern:
+                # A chain or the queue moved on: the selection follows it
+                self._followed_pattern = playing
+                pm.selected_pattern_index = playing
             if drop_this_callback:
                 events = []
             if events:
-                self.play_position = pm.play_position
                 trigger_time = (time.perf_counter() - trigger_start) * 1000.0
         elif sequencer.running:
             sequencer.stop()

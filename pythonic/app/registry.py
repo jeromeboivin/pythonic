@@ -23,6 +23,9 @@ class Address:
     once on the caller's thread.
 
     Enum values are the names in ``labels``; ``coerce`` also takes an index.
+    ``convert`` checks and normalises a ``str`` or ``list`` value (raising
+    ValueError). ``related`` names other addresses a set of this one changes as
+    well; ``poll`` reports them with their values once the set is applied.
     """
 
     name: str
@@ -36,6 +39,8 @@ class Address:
     curve: str = 'linear'
     labels: Sequence[str] = field(default_factory=tuple)
     queued: bool = True
+    convert: Optional[Callable[[Any], Any]] = None
+    related: Sequence[str] = field(default_factory=tuple)
 
     @property
     def readonly(self) -> bool:
@@ -82,6 +87,8 @@ class Address:
             if self.maximum is not None and number > self.maximum:
                 number = self.maximum
             return number
+        if self.convert is not None:
+            return self.convert(value)
         return value
 
     # ---------------------------------------------------------------- 0..1 position
@@ -144,10 +151,18 @@ class Address:
 
 
 class Registry:
-    """Name -> Address table. Lookups of unknown names raise KeyError."""
+    """Name -> Address table. Lookups of unknown names raise KeyError.
+
+    A family of addresses too large to list (pattern steps) is served by a
+    resolver: ``add_resolver(prefix, resolve)`` makes ``resolve(name)`` build
+    the Address of a name under ``prefix`` on first use (None if the name is
+    not valid); ``names()`` lists only registered addresses.
+    """
 
     def __init__(self):
         self._addresses: Dict[str, Address] = {}
+        self._resolvers: List = []
+        self._resolved: Dict[str, Address] = {}
 
     def register(self, address: Address) -> Address:
         if address.name in self._addresses:
@@ -155,14 +170,30 @@ class Registry:
         self._addresses[address.name] = address
         return address
 
+    def add_resolver(self, prefix: str, resolve: Callable[[str], Optional[Address]]):
+        self._resolvers.append((prefix, resolve))
+
+    def _lookup(self, name):
+        address = self._addresses.get(name) or self._resolved.get(name)
+        if address is None and isinstance(name, str):
+            for prefix, resolve in self._resolvers:
+                if name.startswith(prefix):
+                    address = resolve(name)
+                    if address is not None:
+                        # Cached: the grammar bounds the family, and lookups
+                        # are dict reads (any thread may resolve concurrently)
+                        address = self._resolved.setdefault(name, address)
+                        break
+        return address
+
     def __contains__(self, name: str) -> bool:
-        return name in self._addresses
+        return self._lookup(name) is not None
 
     def __getitem__(self, name: str) -> Address:
-        try:
-            return self._addresses[name]
-        except KeyError:
-            raise KeyError(f'unknown address: {name}') from None
+        address = self._lookup(name)
+        if address is None:
+            raise KeyError(f'unknown address: {name}')
+        return address
 
     def names(self, prefix: str = '') -> List[str]:
         return sorted(n for n in self._addresses if n.startswith(prefix))
