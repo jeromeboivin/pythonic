@@ -154,35 +154,41 @@ class AppCore:
             entry.set(value)
             self._note_change(address, value)
             return
-        names = self._edit_all_targets(address, edit_all)
-        if len(names) == 1:
+        others = self._edit_all_others(address, edit_all)
+        if not others:
             seq = self.audio.submit_call(entry.set, value)
+            names = (address,)
         else:
-            setters = tuple(self.registry[name].set for name in names)
+            # Which channels are unmuted is read at block start, after any
+            # mute queued before this change
+            names = [address]
+            source = entry.set
+            channels = tuple((index, name, self.registry[name].set) for index, name in others)
+            audio = self.audio
 
             def apply_all(v):
-                for setter in setters:
-                    setter(v)
+                source(v)
+                synth_channels = audio.synth.channels
+                for index, name, setter in channels:
+                    if not synth_channels[index].muted:
+                        setter(v)
+                        names.append(name)
             seq = self.audio.submit_call(apply_all, value)
         with self._cond:
             self._pending.append((seq, names, value))
 
-    def _edit_all_targets(self, address, edit_all):
-        """The addresses one set writes: the address, plus the same sound
-        parameter of every unmuted channel when Edit all applies."""
+    def _edit_all_others(self, address, edit_all):
+        """(channel index, address) of the same sound parameter on the other
+        channels when Edit all applies to this set, else None."""
         if edit_all is None:
             edit_all = self._edit_all
         if not edit_all or not address.startswith('ch'):
-            return (address,)
+            return None
         channel, _, suffix = address.partition('.')
         if suffix not in SOUND_SUFFIXES:
-            return (address,)
-        names = [address]
-        for i, ch in enumerate(self.synth.channels):
-            name = f'ch{i + 1}.{suffix}'
-            if name != address and not ch.muted:
-                names.append(name)
-        return tuple(names)
+            return None
+        return [(i, f'ch{i + 1}.{suffix}') for i in range(PythonicSynthesizer.NUM_CHANNELS)
+                if f'ch{i + 1}' != channel]
 
     def act(self, verb, **args):
         """Start an action; returns its id. The result arrives through poll()."""

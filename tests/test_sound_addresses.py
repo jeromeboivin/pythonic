@@ -297,6 +297,19 @@ def test_edit_all_applies_a_sound_change_to_every_unmuted_channel(make_core, bac
     assert changes == {f'ch{n}.fx.reverb_mix': 0.7 for n in (1, 2, 4, 5, 6, 7, 8)}
 
 
+def test_edit_all_honours_a_mute_queued_in_the_same_block(make_core, backend):
+    core = started(make_core())
+    core.set('global.edit_all', True)
+    v0 = core.poll()['version']
+    core.set('ch6.mute', True)
+    core.set('ch1.fx.delay_mix', 0.4)
+    backend.stream.pull()
+    assert [ch.delay_mix for ch in core.synth.channels] == [0.4] * 5 + [0.0] + [0.4] * 2
+    changes = core.poll(since=v0)['changes']
+    assert 'ch6.fx.delay_mix' not in changes and changes['ch6.mute'] is True
+    assert len(changes) == 8
+
+
 def test_edit_all_covers_every_sound_address(make_core):
     core = make_core(audio_backend=None)
     core.set('global.edit_all', True)
