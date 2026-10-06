@@ -454,11 +454,12 @@ class MidiInput:
                     self._core._note_change('midi.synced_tempo', bpm)
         elif kind == 'start':
             self._tempo.reset(full=True)
-            self._transport('start')
+            self._core.patterns.stop()  # drops the queue, then plays from step 1
+            self._core.patterns.play()
         elif kind == 'stop':
-            self._transport('stop')
+            self._core.patterns.stop()
         elif kind == 'continue':
-            self._transport('continue')
+            self._core.patterns.resume()
 
     # ------------------------------------------------------------------ CC
     def _on_cc(self, control, value, at):
@@ -566,23 +567,6 @@ class MidiInput:
         address, original = self._bend
         entry = core.registry[address]
         core.set(address, entry.denormalize(entry.normalize(original) + bend * 0.5))
-
-    # ------------------------------------------------------------------ transport
-    # The transport moves into the core with slice 4b; until then MIDI
-    # applies it here, at block start, as the buttons do.
-    def _transport(self, command):
-        pm = self._core.pattern_manager
-
-        def apply(_):
-            if command == 'start':
-                selected = pm.selected_pattern_index
-                pm.stop_playback()
-                pm.start_playback(selected)
-            elif command == 'stop':
-                pm.stop_playback()
-            elif not pm.is_playing:  # continue, from where it stopped
-                pm.is_playing = True
-        self._core.audio.submit_call(apply)
 
     # ================================================================== poll
     def readout(self):

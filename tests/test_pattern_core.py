@@ -70,10 +70,7 @@ def run_live(core, stream, verb, **args):
 
 def play(core, stream, pattern=None):
     """Start playback of a pattern (the selected one by default)."""
-    pm = core.pattern_manager
-    index = pm.selected_pattern_index if pattern is None else 'ABCDEFGHIJKL'.index(pattern)
-    core.audio.submit_call(pm.start_playback, index)
-    stream.pull()
+    assert run_live(core, stream, 'transport.play', pattern=pattern)['playing']
 
 
 def lane(core, pattern, channel, field):

@@ -1,6 +1,7 @@
 """
-Patterns of the app core: step-lane addresses, pattern ops, selection, the
-queued pattern and chains (inventory clusters E and F).
+Patterns and transport of the app core: step-lane addresses, pattern ops,
+selection, the queued pattern, chains, play and stop (inventory clusters D, E
+and F).
 
 Addresses (patterns ``A``..``L``, channels 1..8, steps 1..64):
 
@@ -32,6 +33,16 @@ audio thread, so they apply in order with the queued sets:
   back to step 1. ``pattern.queue`` (pattern or None) only queues.
 - ``pattern.chain_prev|chain_next`` (pattern): toggle the chain from the
   previous pattern or to the next one; ``pattern.chain_clear`` unlinks all.
+- ``transport.play`` (pattern, default the selected one): start it from its
+  first step (again from the first step when already playing).
+  ``transport.stop``: stop, back to step 1, the queue dropped.
+  ``transport.toggle``: play the selected pattern or stop.
+  ``transport.continue``: play again the pattern that was playing, without
+  touching the selection (does nothing while playing).
+
+Pad hits are ``AppCore.trigger(channel, velocity, at)``. MIDI calls
+``select`` and ``play`` / ``stop`` / ``resume`` directly: they queue the change
+for block start without waiting.
 
 During playback the selection follows the playing pattern when a chain or the
 queue moves on (the audio engine does this at the pattern change).
@@ -247,6 +258,10 @@ class Patterns:
             'pattern.chain_prev': self._verb_chain_prev,
             'pattern.chain_next': self._verb_chain_next,
             'pattern.chain_clear': self._verb_chain_clear,
+            'transport.play': self._verb_play,
+            'transport.stop': self._verb_stop,
+            'transport.toggle': self._verb_toggle,
+            'transport.continue': self._verb_continue,
         })
         return verbs
 
@@ -360,6 +375,53 @@ class Patterns:
                 pattern.chained_from_prev = False
         self._core.at_block_start(clear)
         self._core.note_changes([f'pattern.{n}.chained' for n in PATTERN_NAMES])
+
+    # ------------------------------------------------------------------ transport
+    def _apply_play(self, index=None):
+        pm = self.pm
+        pm.start_playback(pm.selected_pattern_index if index is None else index)
+        return self._playing()
+
+    def _apply_stop(self, _=None):
+        self.pm.stop_playback()
+        return {'playing': False}
+
+    def _apply_resume(self, _=None):
+        pm = self.pm
+        if not pm.is_playing:
+            pm.is_playing = True
+        return self._playing()
+
+    def _apply_toggle(self):
+        return self._apply_stop() if self.pm.is_playing else self._apply_play()
+
+    def _playing(self):
+        return {'playing': True, 'pattern': PATTERN_NAMES[self.pm.playing_pattern_index]}
+
+    def play(self):
+        """Start the selected pattern, from any thread (MIDI start)."""
+        self._core.audio.submit_call(self._apply_play)
+
+    def stop(self):
+        """Stop, from any thread (MIDI stop)."""
+        self._core.audio.submit_call(self._apply_stop)
+
+    def resume(self):
+        """Continue, from any thread (MIDI continue)."""
+        self._core.audio.submit_call(self._apply_resume)
+
+    def _verb_play(self, pattern=None):
+        index = None if pattern is None else pattern_index(pattern)
+        return self._core.at_block_start(lambda: self._apply_play(index))
+
+    def _verb_stop(self):
+        return self._core.at_block_start(self._apply_stop)
+
+    def _verb_toggle(self):
+        return self._core.at_block_start(self._apply_toggle)
+
+    def _verb_continue(self):
+        return self._core.at_block_start(self._apply_resume)
 
     # ================================================================== poll
     def chain(self):
