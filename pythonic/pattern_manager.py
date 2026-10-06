@@ -9,6 +9,16 @@ import json
 from typing import List, Dict, Optional, Tuple
 from enum import Enum
 
+# Velocity of an unaccented step unless set otherwise (1-127); an accented
+# step always plays at ACCENT_VELOCITY.
+DEFAULT_VELOCITY = 64
+ACCENT_VELOCITY = 127
+MAX_PATTERN_LENGTH = 64
+
+
+def clamp_velocity(value) -> int:
+    return max(1, min(127, int(value)))
+
 
 class PatternStep:
     """Represents a single step in a pattern"""
@@ -18,9 +28,15 @@ class PatternStep:
         self.fill = False         # Does this step have a fill?
         self.probability = 100    # Step probability (0-100%, default 100%)
         self.substeps = ""        # Sub-step pattern: 'o' = play, '-' = don't play (e.g., "oo-" or "o-o-")
+        self.velocity = DEFAULT_VELOCITY  # Velocity of the unaccented hit (1-127)
 
     def __repr__(self):
-        return f"Step(trig={self.trigger}, acc={self.accent}, fill={self.fill}, prob={self.probability}, sub={self.substeps})"
+        return (f"Step(trig={self.trigger}, acc={self.accent}, fill={self.fill}, "
+                f"prob={self.probability}, sub={self.substeps}, vel={self.velocity})")
+
+    def hit_velocity(self) -> int:
+        """The velocity this step plays at: 127 when accented, else its velocity."""
+        return ACCENT_VELOCITY if self.accent else self.velocity
 
     def copy(self):
         """Create a deep copy of this step"""
@@ -30,6 +46,7 @@ class PatternStep:
         new_step.fill = self.fill
         new_step.probability = self.probability
         new_step.substeps = self.substeps
+        new_step.velocity = self.velocity
         return new_step
 
 
@@ -74,7 +91,11 @@ class PatternChannel:
     def get_probabilities(self) -> List[int]:
         """Get all probability values as list"""
         return [step.probability for step in self.steps]
-    
+
+    def get_velocities(self) -> List[int]:
+        """Get all velocity values as list"""
+        return [step.velocity for step in self.steps]
+
     def set_triggers(self, triggers: List[bool]):
         """Set all trigger values from list"""
         for i, val in enumerate(triggers):
@@ -99,6 +120,12 @@ class PatternChannel:
             if i < len(self.steps):
                 self.steps[i].probability = max(0, min(100, val))
 
+    def set_velocities(self, velocities: List[int]):
+        """Set all velocity values from list (1-127)"""
+        for i, val in enumerate(velocities):
+            if i < len(self.steps):
+                self.steps[i].velocity = clamp_velocity(val)
+
     def copy(self):
         """Create a deep copy of this channel"""
         new_channel = PatternChannel(self.channel_id, len(self.steps))
@@ -115,7 +142,8 @@ class PatternChannel:
                     'accent': step.accent,
                     'fill': step.fill,
                     'probability': step.probability,
-                    'substeps': step.substeps
+                    'substeps': step.substeps,
+                    'velocity': step.velocity,
                 }
                 for step in self.steps
             ]
@@ -131,6 +159,7 @@ class PatternChannel:
             channel.steps[i].fill = step_data['fill']
             channel.steps[i].probability = step_data.get('probability', 100)
             channel.steps[i].substeps = step_data.get('substeps', '')
+            channel.steps[i].velocity = clamp_velocity(step_data.get('velocity', DEFAULT_VELOCITY))
         return channel
 
 
@@ -152,7 +181,8 @@ class Pattern:
         return None
 
     def set_pattern_length(self, length: int):
-        """Change the pattern length for all channels"""
+        """Change the pattern length for all channels (1-64 steps)"""
+        length = max(1, min(MAX_PATTERN_LENGTH, int(length)))
         if length == self.length:
             return
 
@@ -181,12 +211,14 @@ class Pattern:
         return new_pattern
 
     def clear(self):
-        """Clear all steps in all channels"""
+        """Clear all steps in all channels (triggers, accents, fills and
+        velocities; probabilities and substeps stay)"""
         for channel in self.channels:
             for step in channel.steps:
                 step.trigger = False
                 step.accent = False
                 step.fill = False
+                step.velocity = DEFAULT_VELOCITY
 
     def is_empty(self) -> bool:
         """Check if pattern has any triggers"""
@@ -375,9 +407,8 @@ class PatternManager:
     def cut_channel(self, pattern_index: int, channel_id: int):
         """Cut a channel to clipboard"""
         self.clipboard_channel = self.patterns[pattern_index].get_channel(channel_id).copy()
-        self.patterns[pattern_index].get_channel(channel_id).steps = [
-            PatternStep() for _ in range(self.pattern_length)
-        ]
+        channel = self.patterns[pattern_index].get_channel(channel_id)
+        channel.steps = [PatternStep() for _ in channel.steps]
 
     def copy_pattern(self, pattern_index: int):
         """Copy pattern to clipboard"""
@@ -871,6 +902,7 @@ class PatternManager:
                     channel.steps[step].fill = (
                         step < len(fills_str) and fills_str[step] == "#"
                     )
+                    channel.steps[step].velocity = DEFAULT_VELOCITY
 
         # Fix chained_from_prev flags
         for i in range(1, len(self.patterns)):
@@ -880,7 +912,7 @@ class PatternManager:
     def apply_single_pattern(self, pattern_index: int, pat_data: dict):
         """Replace a single pattern slot from generated pattern data.
 
-        Wipes all existing trigger/accent/fill content before applying.
+        Wipes all existing trigger/accent/fill/velocity content before applying.
 
         Args:
             pattern_index: Index (0-11) of the pattern to replace.
@@ -919,7 +951,7 @@ class PatternManager:
                              pat_data: dict):
         """Replace a single channel within a pattern from generated data.
 
-        Wipes the channel's existing trigger/accent/fill content before applying.
+        Wipes the channel's existing trigger/accent/fill/velocity content before applying.
 
         Args:
             pattern_index: Index (0-11) of the pattern.
@@ -940,6 +972,7 @@ class PatternManager:
             step.trigger = False
             step.accent = False
             step.fill = False
+            step.velocity = DEFAULT_VELOCITY
 
         ch_key = str(channel_id + 1)
         ch_data = pat_data.get(ch_key, {})

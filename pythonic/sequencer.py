@@ -9,9 +9,14 @@ are stretched linearly.  Events inside a block are placed by linear
 interpolation between the block's first and last tick, then snapped down to the
 4-sample trigger grid of the voices.
 
+A step plays at 127 when accented, else at its own velocity (1-127, 64 by
+default, the fixed unaccented velocity of patterns without velocities).
 Fills retrigger a step every step_ticks / fill_rate ticks with a velocity
-that drops by 64 / fill_rate on each hit (127 -> 64 accented, 64 -> 0 normal).
-Probability and sub-steps are Pythonic extensions and use the same clock.
+that drops by 64 / fill_rate on each hit (127 -> 64 accented, 64 -> 0 at the
+default velocity).  Patterns run 1 to 64 steps; pattern ticks keep counting
+across the loop, so a long pattern's steps fall where a short one repeats.
+Probability, sub-steps and velocity are Pythonic extensions and use the same
+clock.
 """
 
 from __future__ import annotations
@@ -98,7 +103,7 @@ class StepSequencer:
             prob = getattr(step, 'probability', 100)
             if prob < 100 and self.rng.randint(1, 100) > prob:
                 continue
-            vel = 127 if step.accent else 64
+            vel = step.hit_velocity()
             subs = getattr(step, 'substeps', '') or ''
             if subs:
                 n = len(subs)

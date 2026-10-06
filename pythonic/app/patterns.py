@@ -6,9 +6,12 @@ and F).
 Addresses (patterns ``A``..``L``, channels 1..8, steps 1..64):
 
 - ``pattern.<P>.ch<N>.step<S>.<field>``: one step. Fields: ``trig``, ``acc``,
-  ``fill`` (bools), ``prob`` (0..100 %) and ``sub`` (substeps: ``o`` plays,
-  ``-`` rests, ``''`` for none). Turning ``trig`` off clears ``acc`` and
-  ``fill``. A step past the pattern length reads as empty and ignores sets.
+  ``fill`` (bools), ``vel`` (1..127, default 64: the velocity of the hit
+  when it is not accented; an accented step plays at 127), ``prob``
+  (0..100 %) and ``sub`` (substeps: ``o`` plays, ``-`` rests, ``''`` for
+  none). Turning ``trig`` off clears ``acc`` and ``fill`` (``vel`` and
+  ``prob`` stay). A step past the pattern length reads as its default and
+  ignores sets.
 - ``pattern.<P>.ch<N>.<field>``: the whole lane of that field, a list with one
   value per step of the pattern. A shorter list sets the first steps.
 - ``pattern.<P>.length`` (1..64), ``pattern.<P>.chained`` (chained to the next
@@ -25,9 +28,12 @@ audio thread, so they apply in order with the queued sets:
 
 - ``pattern.cut|copy|paste|exchange`` (pattern clipboard), ``pattern.clear``,
   ``pattern.shift_left|shift_right|reverse``, ``pattern.randomize``,
-  ``pattern.alter``, ``pattern.randomize_accents_fills``.
+  ``pattern.alter``, ``pattern.randomize_accents_fills``. They cover the
+  whole length (up to 64 steps); ``clear`` and ``cut`` also set the
+  velocities back to 64, the randomizers leave them.
 - ``pattern.copy_lane|paste_lane`` (pattern, channel): the lane clipboard,
-  triggers, accents, fills and probabilities of one channel (not substeps).
+  triggers, accents, velocities, fills and probabilities of one channel (not
+  substeps).
 - ``pattern.select`` (pattern): select it; while playing it is also queued
   (the playing pattern cancels the queue), while stopped the position goes
   back to step 1. ``pattern.queue`` (pattern or None) only queues.
@@ -52,13 +58,13 @@ import re
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from pythonic.pattern_manager import PatternManager
+from pythonic.pattern_manager import DEFAULT_VELOCITY, MAX_PATTERN_LENGTH, PatternManager
 
 from .registry import Address
 
 PATTERN_NAMES = tuple(PatternManager.PATTERN_NAMES)
 NUM_CHANNELS = 8
-MAX_STEPS = 64
+MAX_STEPS = MAX_PATTERN_LENGTH
 
 _STEP_ADDRESS = re.compile(
     r'pattern\.([A-L])\.ch([1-8])\.(?:step([1-9][0-9]?)\.)?([a-z]+)$')
@@ -91,6 +97,7 @@ class StepField:
 STEP_FIELDS = {f.name: f for f in (
     StepField('trig', 'trigger', 'bool', False),
     StepField('acc', 'accent', 'bool', False),
+    StepField('vel', 'velocity', 'int', DEFAULT_VELOCITY, 1, 127),
     StepField('fill', 'fill', 'bool', False),
     StepField('prob', 'probability', 'int', 100, 0, 100, '%'),
     StepField('sub', 'substeps', 'str', ''),
@@ -295,6 +302,7 @@ class Patterns:
             self._lane_clipboard = {
                 'triggers': lane.get_triggers(),
                 'accents': lane.get_accents(),
+                'velocities': lane.get_velocities(),
                 'fills': lane.get_fills(),
                 'probabilities': lane.get_probabilities(),
             }
@@ -310,6 +318,7 @@ class Patterns:
             lane = self.pm.patterns[index].channels[ch]
             lane.set_triggers(data['triggers'])
             lane.set_accents(data['accents'])
+            lane.set_velocities(data['velocities'])
             lane.set_fills(data['fills'])
             lane.set_probabilities(data['probabilities'])
             return True
