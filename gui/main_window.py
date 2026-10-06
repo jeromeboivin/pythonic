@@ -5,25 +5,20 @@ Visual interface of the drum synthesizer
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-import threading
 import numpy as np
 import json
 import os
 import time
 import random
 import copy
-from collections import deque
 
 # Import our synthesizer
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pythonic.sequencer import StepSequencer, STEP_TICKS
-from pythonic.synthesizer import PythonicSynthesizer
 from pythonic.oscillator import WaveformType, PitchModMode
 from pythonic.noise import NoiseFilterMode, NoiseEnvelopeMode
-from pythonic.preset_manager import PresetManager
-from pythonic.preferences_manager import PreferencesManager
 from pythonic.pattern_manager import PatternManager
 from pythonic.lfo import (
     LFOWaveform, LFORetrigger, LFOPolarity, SyncDivision,
@@ -56,7 +51,7 @@ except ImportError:
 
 # Import MIDI input manager
 from pythonic.midi_manager import MidiManager
-from pythonic.morph_manager import MorphManager
+from pythonic.app import AppCore
 
 class PythonicGUI:
     """
@@ -78,7 +73,7 @@ class PythonicGUI:
         'orange': '#ffaa44',
     }
     
-    def __init__(self):
+    def __init__(self, core=None):
         # Create main window
         self.root = tk.Tk()
         self.root.title("Pythonic Drum Synthesizer")
@@ -86,52 +81,21 @@ class PythonicGUI:
         self.root.resizable(True, True)
         self.root.minsize(800, 480)  # Compact minimum window size
         self.root.geometry("960x600")  # Compact default window size
-        
-        # Initialize preferences first (needed for sample rate)
-        self.preferences_manager = PreferencesManager()
-        
-        # Audio output rate (must match device) and internal synthesis rate
-        self.sample_rate = self.preferences_manager.get('audio_sample_rate', 44100)
-        self.synth_sample_rate = self.preferences_manager.get('synth_sample_rate', 44100)
-        # Synth rate should not exceed output rate (would waste CPU)
-        if self.synth_sample_rate > self.sample_rate:
-            self.synth_sample_rate = self.sample_rate
-        self._resample_ratio = self.sample_rate / self.synth_sample_rate
-        
-        # Initialize synthesizer at the internal synthesis rate
-        self.synth = PythonicSynthesizer(self.synth_sample_rate,
-                                         parallel_channel_processing=True)
-        
-        # Apply mono mode
-        mono_mode = self.preferences_manager.get('audio_mono', False)
-        self.synth.set_mono(mono_mode)
-        
-        # Apply saved parameter smoothing time to all channels
-        smoothing_ms = self.preferences_manager.get('param_smoothing_ms', 30.0)
-        for channel in self.synth.channels:
-            channel.set_smoothing_time(smoothing_ms)
-        
-        # Preset manager
-        self.preset_manager = PresetManager(self.synth)
-        
-        # Pattern manager
-        self.pattern_manager = PatternManager(num_channels=8, pattern_length=16)
-        
+
+        # The app core builds the preferences, synth, patterns, morph and
+        # preset manager, and owns the audio stream. The GUI reads transport,
+        # play position, modulation and action results through core.poll().
+        self.core = core if core is not None else AppCore()
+        self._poll_version = 0
+        self._action_callbacks = {}  # action id -> callback(event), run by the UI tick
+        self._audio_start_action = None
+
         # MIDI input manager
         self.midi_manager = MidiManager()
         self._midi_activity_time = 0  # For activity indicator
         self._midi_learn_target = None  # Parameter name being learned
         self._init_midi()
-        
-        # Morph manager
-        self.morph_manager = MorphManager(self.synth)
-        self.synth.set_morph_manager(self.morph_manager)
-        
-        # Audio state
-        self.audio_stream = None
-        self.audio_buffer = np.zeros((2048, 2), dtype=np.float32)
-        self.buffer_lock = threading.Lock()
-        
+
         # UI state
         self.selected_channel = 0
         self.updating_ui = False  # Prevent feedback loops
@@ -142,6 +106,7 @@ class PythonicGUI:
         self._redo_stack = []
         self._max_undo = 50  # Maximum undo levels
         self._undo_pending = False  # Debounce flag for coalescing rapid changes
+        self._restore_pending = False  # A snapshot restore is queued in the core
         
         # Parameter registry for MIDI CC mapping
         # Maps parameter_name -> (widget, min_val, max_val, setter_function)
@@ -152,42 +117,10 @@ class PythonicGUI:
         self._pitchbend_active = False  # True when pitch bend is away from center
         self._pitchbend_center_threshold = 0.02  # Consider centered if within this range
         
-        # Playback state (thread-safe)
+        # Playback display state
         self.button_flash_state = False  # For flashing playing pattern button
-        self.current_play_position = 0  # Atomic position for UI updates
-        self.position_lock = threading.Lock()  # Protect position updates
         self.ui_update_timer = None  # Timer for UI updates
-        
-        # Pattern playback (steps, fills, sub-steps) is scheduled by the
-        # sample-accurate sequencer inside the audio callback
-        self.sequencer = None  # created once the synth sample rate is known
-        self._seq_generation = -1
-        
-        # Performance monitoring
-        self.callback_times = deque(maxlen=100)  # Last 100 callback times
-        self.trigger_times = deque(maxlen=100)  # Time spent triggering
-        self.process_times = deque(maxlen=100)  # Time spent processing audio
-        self.underrun_count = 0
-        self.callback_count = 0
-        self.last_perf_report = time.perf_counter()
-        
-        # Audio buffer size from preferences
-        buffer_ms = self.preferences_manager.get('audio_buffer_ms', 23.8)
-        self._audio_block_size = max(64, int(round(buffer_ms / 1000.0 * self.sample_rate)))
-        self._buffer_time_ms = (self._audio_block_size / self.sample_rate) * 1000
 
-        # Adaptive processing - drop samples to prevent underruns
-        self.enable_sample_dropping = True  # Enable adaptive processing
-        self.dropped_callback_count = 0
-        self._last_good_audio = np.zeros((self._audio_block_size, 2), dtype=np.float32)
-        
-        # Resampling state (for synth_rate != output_rate)
-        self._resample_out_frames = 0
-        self._resample_in_frames = 0
-        self._resample_x_out = None
-        self._resample_x_in = None
-        self._resample_buffer = None
-        
         # Build the interface
         self._build_ui()
         
@@ -202,26 +135,55 @@ class PythonicGUI:
         self.root.bind('<Control-z>', lambda e: self._on_undo())
         self.root.bind('<Control-y>', lambda e: self._on_redo())
         
-        # Start audio if available
-        if AUDIO_AVAILABLE:
-            self._start_audio()
-        
-        # Initialize synth BPM from pattern manager (for tempo-synced delay)
-        self.synth.set_bpm(self.pattern_manager.bpm)
-        
         # Update UI with current channel
         self._update_ui_from_channel()
         self._update_morph_ui()
-        
+
         # Start button state updates
         self.root.after(250, self._toggle_button_flash)
-        
+
         # Start UI position update timer (separate from audio thread)
         self._start_ui_update_timer()
-        
+
         # Load the last preset if available
         self._load_last_preset()
-    
+
+        # Start-up is done: the core freezes the GC heap and opens the stream
+        self._audio_start_action = self.core.start()
+
+    # ============== App core services ==============
+    # Code not yet moved into the core still reaches these engine objects
+    # directly; they are looked up on the core because the synth is replaced
+    # when the synth rate changes.
+
+    @property
+    def synth(self):
+        return self.core.synth
+
+    @property
+    def pattern_manager(self):
+        return self.core.pattern_manager
+
+    @property
+    def preset_manager(self):
+        return self.core.preset_manager
+
+    @property
+    def morph_manager(self):
+        return self.core.morph_manager
+
+    @property
+    def preferences_manager(self):
+        return self.core.preferences
+
+    @property
+    def synth_sample_rate(self):
+        return self.core.get('audio.synth_rate')
+
+    def _when_action_done(self, action_id, callback):
+        """Run callback(event) on the UI tick once the core reports the action."""
+        self._action_callbacks[action_id] = callback
+
     def _build_ui(self):
         """Build the complete user interface
         
@@ -1590,25 +1552,37 @@ class PythonicGUI:
         morph_data = copy.deepcopy(self.morph_manager.to_dict())
         return (synth_data, pattern_data, morph_data)
 
-    def _restore_state_snapshot(self, snapshot):
-        """Restore synth + pattern + morph state from a snapshot"""
-        if len(snapshot) == 3:
-            synth_data, pattern_data, morph_data = snapshot
-        else:
-            # Backward compat with old 2-tuple snapshots
-            synth_data, pattern_data = snapshot
-            morph_data = None
-        self.synth.load_preset_data(copy.deepcopy(synth_data))
-        self.pattern_manager.from_dict(copy.deepcopy(pattern_data))
-        if morph_data:
-            self.morph_manager.from_dict(copy.deepcopy(morph_data))
-            # Update morph slider position
-            self.morph_slider.set(int(self.morph_manager.position * 100))
-        self._update_ui_from_channel()
-        self._update_pattern_editors()
-        self._update_matrix_editor()
+    def _restore_state_snapshot(self, snapshot, revert=None):
+        """Restore synth + pattern + morph state from a snapshot.
+
+        The core applies the snapshot at the next audio block start; the
+        widgets are refreshed by the UI tick once the core reports it, and
+        revert() puts the undo/redo stacks back if the core reports a failure.
+        (Temporary core verb until the undo journal moves into the core.)
+        """
+        has_morph = len(snapshot) == 3 and bool(snapshot[2])
+        action_id = self.core.act('legacy.restore_snapshot', snapshot=snapshot)
+        self._restore_pending = True
         self._update_undo_redo_buttons()
-        self._update_morph_ui()
+
+        def refresh(event):
+            self._restore_pending = False
+            if event['status'] != 'done':
+                print(f"Undo/redo failed: {event.get('error')}", flush=True)
+                if revert is not None:
+                    revert()
+                self._update_undo_redo_buttons()
+                return
+            if has_morph:
+                # Update morph slider position
+                self.morph_slider.set(int(self.morph_manager.position * 100))
+            self._update_ui_from_channel()
+            self._update_pattern_editors()
+            self._update_matrix_editor()
+            self._update_undo_redo_buttons()
+            self._update_morph_ui()
+
+        self._when_action_done(action_id, refresh)
 
     def _push_undo_state(self):
         """Push current state onto the undo stack (call BEFORE making a change)"""
@@ -1652,23 +1626,33 @@ class PythonicGUI:
 
     def _on_undo(self):
         """Handle undo button click"""
-        if not self._undo_stack:
+        if not self._undo_stack or self._restore_pending:
             return
         # Save current state to redo stack
         self._redo_stack.append(self._get_full_state_snapshot())
         # Pop and restore previous state
         snapshot = self._undo_stack.pop()
-        self._restore_state_snapshot(snapshot)
+
+        def revert():
+            if self._redo_stack:
+                self._redo_stack.pop()
+            self._undo_stack.append(snapshot)
+        self._restore_state_snapshot(snapshot, revert)
 
     def _on_redo(self):
         """Handle redo button click"""
-        if not self._redo_stack:
+        if not self._redo_stack or self._restore_pending:
             return
         # Save current state to undo stack
         self._undo_stack.append(self._get_full_state_snapshot())
         # Pop and restore next state
         snapshot = self._redo_stack.pop()
-        self._restore_state_snapshot(snapshot)
+
+        def revert():
+            if self._undo_stack:
+                self._undo_stack.pop()
+            self._redo_stack.append(snapshot)
+        self._restore_state_snapshot(snapshot, revert)
     
     def _on_preset_prev(self):
         """Navigate to previous preset in the list"""
@@ -3698,29 +3682,14 @@ class PythonicGUI:
         self._update_ui_from_channel()
         self._update_pattern_editors()
     
-    def _get_audio_output_devices(self):
-        """Get list of available audio output devices"""
-        devices = []
-        try:
-            all_devices = sd.query_devices()
-            for i, dev in enumerate(all_devices):
-                if dev['max_output_channels'] > 0:
-                    devices.append((i, dev['name']))
-        except Exception as e:
-            print(f"Error querying audio devices: {e}", flush=True)
-        return devices
-
-    def _get_audio_input_devices(self):
-        """Get list of available audio input devices"""
-        devices = []
-        try:
-            all_devices = sd.query_devices()
-            for i, dev in enumerate(all_devices):
-                if dev['max_input_channels'] > 0:
-                    devices.append((i, dev['name']))
-        except Exception as e:
-            print(f"Error querying audio input devices: {e}", flush=True)
-        return devices
+    def _current_audio_device_text(self):
+        """'Currently using: ...' line of the audio settings dialog."""
+        if not self.core.get('audio.running'):
+            return "Audio stream not running"
+        name = self.core.get('audio.device')
+        if self.core.get('audio.device_is_default'):
+            return f"Currently using: {name} (default)"
+        return f"Currently using: {name}"
     
     def _show_audio_preferences(self):
         """Show audio settings dialog"""
@@ -3748,8 +3717,7 @@ class PythonicGUI:
                 bg=self.COLORS['bg_dark']).pack(anchor='w')
         
         # Get available devices
-        available_devices = self._get_audio_output_devices()
-        device_names = [name for _, name in available_devices]
+        device_names = self.core.get('audio.output_devices')
         
         # Get current setting
         current_device = self.preferences_manager.get('audio_output_device')
@@ -3765,19 +3733,7 @@ class PythonicGUI:
         device_combo.pack(fill='x', pady=(2, 0))
         
         # Show current device info
-        try:
-            if self.audio_stream:
-                current_stream_device = self.audio_stream.device
-                if current_stream_device is not None:
-                    dev_info = sd.query_devices(current_stream_device)
-                    current_info = f"Currently using: {dev_info['name']}"
-                else:
-                    default_dev = sd.query_devices(sd.default.device[1])
-                    current_info = f"Currently using: {default_dev['name']} (default)"
-            else:
-                current_info = "Audio stream not running"
-        except Exception:
-            current_info = "Audio stream not running"
+        current_info = self._current_audio_device_text()
             
         info_label = tk.Label(device_frame, text=current_info,
                              font=('Segoe UI', 8),
@@ -3802,8 +3758,7 @@ class PythonicGUI:
                 fg=self.COLORS['text'],
                 bg=self.COLORS['bg_dark']).pack(anchor='w')
         
-        available_input_devices = self._get_audio_input_devices()
-        input_device_names = [name for _, name in available_input_devices]
+        input_device_names = self.core.get('audio.input_devices')
         
         current_input_device = self.preferences_manager.get('audio_input_device')
         if current_input_device is None:
@@ -4035,11 +3990,9 @@ class PythonicGUI:
         button_frame.pack(fill='x', padx=20, pady=20)
         
         def refresh_devices():
-            available_devices = self._get_audio_output_devices()
-            device_names = [name for _, name in available_devices]
+            device_names = self.core.get('audio.output_devices')
             device_combo['values'] = ["(System Default)"] + device_names
-            available_input = self._get_audio_input_devices()
-            input_names = [name for _, name in available_input]
+            input_names = self.core.get('audio.input_devices')
             input_device_combo['values'] = ["(System Default)"] + input_names
             _update_sr_combo()
             _refresh_sr_status()
@@ -4085,70 +4038,33 @@ class PythonicGUI:
             dialog.destroy()
         
         def apply_now():
-            """Apply changes and restart audio stream"""
+            """Apply changes: the core saves the audio preferences, rebuilds the
+            synth if its rate changed and restarts the stream."""
             selected = device_var.get()
-            if selected == "(System Default)":
-                self.preferences_manager.set('audio_output_device', None)
-            else:
-                self.preferences_manager.set('audio_output_device', selected)
-            
             selected_input = input_device_var.get()
+            # The input device is only a preference (read by the PO-32 dialogs)
             if selected_input == "(System Default)":
                 self.preferences_manager.set('audio_input_device', None)
             else:
                 self.preferences_manager.set('audio_input_device', selected_input)
             
-            # Save and apply buffer size
-            new_buffer_ms = _get_selected_buffer_ms()
-            self.preferences_manager.set('audio_buffer_ms', new_buffer_ms)
+            action_id = self.core.act(
+                'audio.apply',
+                device=None if selected == "(System Default)" else selected,
+                sample_rate=_get_selected_sample_rate(),
+                synth_rate=_get_selected_synth_rate(),
+                buffer_ms=_get_selected_buffer_ms(),
+                mono=mono_var.get())
             
-            # Save and apply output sample rate
-            new_sr = _get_selected_sample_rate()
-            self.preferences_manager.set('audio_sample_rate', new_sr)
-            if new_sr != self.sample_rate:
-                self._apply_sample_rate(new_sr)
-                print(f"Output sample rate changed to {new_sr} Hz", flush=True)
+            def on_applied(event):
+                # Update info label
+                if info_label.winfo_exists():
+                    info_label.config(text=self._current_audio_device_text())
+                if event['status'] == 'done':
+                    print(f"Audio output device changed to: {selected}", flush=True)
+                    print(f"Audio input device changed to: {selected_input}", flush=True)
             
-            # Save and apply internal synth rate
-            synth_sr_sel = _get_selected_synth_rate()
-            effective_synth_sr = synth_sr_sel if synth_sr_sel > 0 else self.sample_rate
-            # Cap at output rate
-            effective_synth_sr = min(effective_synth_sr, self.sample_rate)
-            self.preferences_manager.set('synth_sample_rate', effective_synth_sr)
-            if effective_synth_sr != self.synth_sample_rate:
-                self._apply_synth_rate(effective_synth_sr)
-                print(f"Synth rate changed to {effective_synth_sr} Hz (synth recreated)", flush=True)
-            
-            # Save and apply mono mode
-            new_mono = mono_var.get()
-            self.preferences_manager.set('audio_mono', new_mono)
-            if new_mono != self.synth.mono:
-                self.synth.set_mono(new_mono)
-                print(f"Mono mode {'enabled' if new_mono else 'disabled'}", flush=True)
-            
-            self._audio_block_size = max(64, int(round(new_buffer_ms / 1000.0 * self.sample_rate)))
-            self._buffer_time_ms = (self._audio_block_size / self.sample_rate) * 1000
-            self._last_good_audio = np.zeros((self._audio_block_size, 2), dtype=np.float32)
-            
-            # Restart audio stream
-            self._stop_audio()
-            self._start_audio()
-            
-            # Update info label
-            try:
-                if self.audio_stream:
-                    current_stream_device = self.audio_stream.device
-                    if current_stream_device is not None:
-                        dev_info = sd.query_devices(current_stream_device)
-                        info_label.config(text=f"Currently using: {dev_info['name']}")
-                    else:
-                        default_dev = sd.query_devices(sd.default.device[1])
-                        info_label.config(text=f"Currently using: {default_dev['name']} (default)")
-            except Exception:
-                pass
-            
-            print(f"Audio output device changed to: {selected}", flush=True)
-            print(f"Audio input device changed to: {selected_input}", flush=True)
+            self._when_action_done(action_id, on_applied)
         
         tk.Button(button_frame, text="Refresh", 
                  command=refresh_devices,
@@ -4851,287 +4767,13 @@ class PythonicGUI:
                 # Silently fail if last preset can't be loaded
                 print(f"Warning: Could not load last preset: {e}")
     
-    # ============== Audio ==============
-    
-    def _audio_callback(self, outdata, frames, time_info, status):
-        """Audio callback for sounddevice - adaptive processing with sample dropping"""
-        callback_start = time.perf_counter()
-        trigger_time = 0
-        process_time = 0
-        
-        self.callback_count += 1
-        
-        if status:
-            # Count underruns
-            self.underrun_count += 1
-            if self.underrun_count <= 5:  # Only print first 5
-                print(f"[Callback #{self.callback_count}] UNDERRUN! Status: {status}", flush=True)
-        
-        # Adaptive: If we're consistently running behind, drop audio processing
-        drop_this_callback = False
-        if self.enable_sample_dropping and len(self.callback_times) > 10:
-            # Sum last 10 entries directly from deque (avoids list alloc + numpy)
-            recent_total = 0.0
-            for _i in range(1, 11):
-                recent_total += self.callback_times[-_i]
-            # Equivalent to avg_recent > buffer_time_ms * 0.9
-            if recent_total > self._buffer_time_ms * 9.0:
-                drop_this_callback = True
-                self.dropped_callback_count += 1
-                if self.dropped_callback_count <= 3:
-                    print(f"[Callback #{self.callback_count}] DROPPING audio processing to prevent cascade", flush=True)
-        
-        # Sample-accurate pattern sequencing
-        if self._resample_ratio == 1.0:
-            synth_frames = frames
-        else:
-            synth_frames = max(1, int(round(frames / self._resample_ratio)))
-        events = []
-        if self.sequencer is None:
-            self.sequencer = StepSequencer(self.pattern_manager, self.synth.sr)
-        pm = self.pattern_manager
-        if pm.is_playing:
-            generation = getattr(pm, 'playback_generation', 0)
-            if not self.sequencer.running or generation != self._seq_generation:
-                self._seq_generation = generation
-                self.sequencer.start(None, synth_clock=self.synth.sample_clock)
-            trigger_start = time.perf_counter()
-            events = self.sequencer.advance(synth_frames)
-            if drop_this_callback:
-                events = []
-            if events:
-                with self.position_lock:
-                    self.current_play_position = pm.play_position
-                trigger_time = (time.perf_counter() - trigger_start) * 1000  # ms
-        elif self.sequencer.running:
-            self.sequencer.stop()
-
-        # Generate audio from synthesizer (skip if dropping)
-        if drop_this_callback:
-            # Return last good audio or silence
-            outdata[:] = self._last_good_audio[:frames] if frames <= len(self._last_good_audio) else 0
-            # Record minimal timing
-            total_time = (time.perf_counter() - callback_start) * 1000
-            self.callback_times.append(total_time)
-            return
-        
-        process_start = time.perf_counter()
-        # Synthesize at internal rate, then upsample if needed
-        if self._resample_ratio == 1.0:
-            audio = self.synth.process_audio_events(frames, events)
-        else:
-            synth_audio = self.synth.process_audio_events(synth_frames, events)
-            audio = self._upsample_linear(synth_audio, synth_frames, frames)
-        process_time = (time.perf_counter() - process_start) * 1000  # ms
-        
-        # Copy to output buffer
-        outdata[:]  = audio
-        
-        # Store as last good audio for potential reuse
-        if frames <= len(self._last_good_audio):
-            self._last_good_audio[:frames] = audio
-        
-        # Record timing
-        total_time = (time.perf_counter() - callback_start) * 1000  # ms
-        self.callback_times.append(total_time)
-        if trigger_time > 0:
-            self.trigger_times.append(trigger_time)
-        self.process_times.append(process_time)
-        
-        # Report performance periodically or after first underrun
-        now = time.perf_counter()
-        if (now - self.last_perf_report > 5.0) or (self.underrun_count == 1 and self.callback_count > 50):
-            # Force immediate output
-            import sys
-            sys.stdout.flush()
-            self._report_performance()
-    
-    def _report_performance(self):
-        """Report audio callback performance metrics"""
-        self.last_perf_report = time.perf_counter()
-        
-        if len(self.callback_times) == 0:
-            return
-        
-        avg_callback = np.mean(self.callback_times)
-        max_callback = np.max(self.callback_times)
-        avg_process = np.mean(self.process_times) if self.process_times else 0
-        avg_trigger = np.mean(self.trigger_times) if self.trigger_times else 0
-        
-        buffer_time_ms = self._buffer_time_ms
-        utilization = (avg_callback / buffer_time_ms) * 100
-        
-        # Count active channels
-        active_count = sum(1 for ch in self.synth.channels if ch.is_active)
-        
-        print(f"\n=== Audio Performance (last {len(self.callback_times)} callbacks) ===", flush=True)
-        print(f"Callbacks: {self.callback_count}, Underruns: {self.underrun_count}, Dropped: {self.dropped_callback_count}", flush=True)
-        print(f"Buffer time available: {buffer_time_ms:.2f}ms", flush=True)
-        print(f"Active channels: {active_count}/8", flush=True)
-        print(f"Sample dropping: {'ENABLED' if self.enable_sample_dropping else 'DISABLED'}", flush=True)
-        if self._resample_ratio != 1.0:
-            print(f"Synth rate: {self.synth_sample_rate} Hz → output: {self.sample_rate} Hz (upsample {self._resample_ratio:.1f}x)", flush=True)
-        print(f"Mono: {'YES' if self.synth.mono else 'NO'}", flush=True)
-        print(f"Avg callback time: {avg_callback:.3f}ms ({utilization:.1f}% utilization)", flush=True)
-        print(f"Max callback time: {max_callback:.3f}ms", flush=True)
-        print(f"Avg process_audio: {avg_process:.3f}ms", flush=True)
-        print(f"Avg trigger_step: {avg_trigger:.3f}ms", flush=True)
-        
-        if max_callback > buffer_time_ms:
-            print(f"WARNING: Max callback time ({max_callback:.3f}ms) exceeds buffer time ({buffer_time_ms:.2f}ms)!", flush=True)
-        if avg_callback > buffer_time_ms * 0.8:
-            print(f"WARNING: High CPU utilization ({utilization:.1f}%)", flush=True)
-        print("="*60, flush=True)
-    
-    def _start_audio(self):
-        """Start the audio stream with fallback for unsupported configurations."""
-        try:
-            # Get preferred audio device from preferences
-            preferred_device = self.preferences_manager.get('audio_output_device')
-            device_param = None  # None = system default
-            
-            if preferred_device:
-                # Try to find the device by name
-                try:
-                    devices = sd.query_devices()
-                    for i, dev in enumerate(devices):
-                        if dev['max_output_channels'] > 0 and dev['name'] == preferred_device:
-                            device_param = i
-                            break
-                    
-                    if device_param is None:
-                        print(f"Audio device '{preferred_device}' not found, using system default", flush=True)
-                except Exception as e:
-                    print(f"Error querying audio devices: {e}", flush=True)
-            
-            blocksize = self._audio_block_size
-            
-            # Validate sample rate against device
-            try:
-                sd.check_output_settings(device=device_param, channels=2, samplerate=self.sample_rate)
-            except Exception:
-                # Requested sample rate not supported — fall back to device default
-                dev_info = sd.query_devices(device_param if device_param is not None else sd.default.device[1])
-                fallback_sr = int(dev_info['default_samplerate'])
-                print(f"WARNING: {self.sample_rate} Hz not supported by device, falling back to {fallback_sr} Hz", flush=True)
-                self._apply_sample_rate(fallback_sr)
-                blocksize = self._audio_block_size
-            
-            # Try opening the stream — may still fail even after check_output_settings
-            stream = None
-            attempts = [
-                (device_param, self.sample_rate, "requested"),
-                (device_param, 44100, "44100 Hz fallback"),
-                (None, 44100, "system default @ 44100 Hz"),
-            ]
-            for dev, sr, desc in attempts:
-                try:
-                    if sr != self.sample_rate:
-                        self._apply_sample_rate(sr)
-                        blocksize = self._audio_block_size
-                    stream = sd.OutputStream(
-                        device=dev,
-                        channels=2,
-                        callback=self._audio_callback,
-                        samplerate=self.sample_rate,
-                        blocksize=blocksize,
-                        dtype=np.float32
-                    )
-                    stream.start()
-                    device_param = dev
-                    break
-                except Exception as e:
-                    print(f"Failed to open audio ({desc}): {e}", flush=True)
-                    stream = None
-            
-            if stream is None:
-                print("ERROR: Could not open any audio device!", flush=True)
-                return
-            
-            self.audio_stream = stream
-            
-            # Show which device is being used
-            latency_ms = blocksize / self.sample_rate * 1000
-            synth_info = f", synth @ {self.synth_sample_rate} Hz" if self.synth_sample_rate != self.sample_rate else ""
-            mono_info = ", MONO" if self.synth.mono else ""
-            if device_param is not None:
-                device_name = sd.query_devices(device_param)['name']
-                print(f"Audio stream started on '{device_name}' @ {self.sample_rate} Hz (buffer: {blocksize} samples, ~{latency_ms:.1f}ms latency{synth_info}{mono_info})", flush=True)
-            else:
-                default_device = sd.query_devices(sd.default.device[1])
-                print(f"Audio stream started on '{default_device['name']}' [default] @ {self.sample_rate} Hz (buffer: {blocksize} samples, ~{latency_ms:.1f}ms latency{synth_info}{mono_info})", flush=True)
-        except Exception as e:
-            print(f"Failed to start audio: {e}", flush=True)
-    
-    def _apply_sample_rate(self, new_sr: int):
-        """Change the output sample rate (device rate). Does NOT recreate the synth.
-        Call _apply_synth_rate() separately if synthesis rate also changes."""
-        if new_sr == self.sample_rate:
-            return
-        self.sample_rate = new_sr
-        self._resample_ratio = self.sample_rate / self.synth_sample_rate
-        buffer_ms = self.preferences_manager.get('audio_buffer_ms', 23.8)
-        self._audio_block_size = max(64, int(round(buffer_ms / 1000.0 * self.sample_rate)))
-        self._buffer_time_ms = (self._audio_block_size / self.sample_rate) * 1000
-        self._last_good_audio = np.zeros((self._audio_block_size, 2), dtype=np.float32)
-        # Reset resampling cache so it gets rebuilt
-        self._resample_out_frames = 0
-    
-    def _apply_synth_rate(self, new_sr: int):
-        """Recreate the synth at a new internal synthesis rate, preserving preset state."""
-        if new_sr == self.synth_sample_rate:
-            return
-        preset_data = self.synth.get_preset_data()
-        was_mono = self.synth.mono
-        self.synth_sample_rate = new_sr
-        self.synth = PythonicSynthesizer(self.synth_sample_rate, parallel_channel_processing=True)
-        self.synth.set_mono(was_mono)
-        self.preset_manager.synth = self.synth
-        self.morph_manager.synth = self.synth
-        self.synth.set_morph_manager(self.morph_manager)
-        self.synth.load_preset_data(preset_data)
-        smoothing_ms = self.preferences_manager.get('param_smoothing_ms', 30.0)
-        for channel in self.synth.channels:
-            channel.set_smoothing_time(smoothing_ms)
-        self._resample_ratio = self.sample_rate / self.synth_sample_rate
-        # Reset resampling cache
-        self._resample_out_frames = 0
-        # Sequencer timing depends on the synth rate; rebuild it (restarts in sync)
-        self.sequencer = None
-        self._seq_generation = -1
-    
-    def _upsample_linear(self, audio, in_frames, out_frames):
-        """Upsample stereo audio using linear interpolation (lo-fi preserving)."""
-        if in_frames == out_frames:
-            return audio
-        # Lazy-init or resize pre-computed arrays
-        if out_frames != self._resample_out_frames or in_frames != self._resample_in_frames:
-            self._resample_x_out = np.linspace(0, in_frames - 1, out_frames)
-            self._resample_x_in = np.arange(in_frames, dtype=np.float64)
-            self._resample_buffer = np.empty((out_frames, 2), dtype=np.float32)
-            self._resample_out_frames = out_frames
-            self._resample_in_frames = in_frames
-        self._resample_buffer[:, 0] = np.interp(self._resample_x_out, self._resample_x_in, audio[:, 0])
-        self._resample_buffer[:, 1] = np.interp(self._resample_x_out, self._resample_x_in, audio[:, 1])
-        return self._resample_buffer
-    
-    def _stop_audio(self):
-        """Stop the audio stream"""
-        if self.audio_stream:
-            self.audio_stream.stop()
-            self.audio_stream.close()
-            self.audio_stream = None
-        
-        # Stop UI update timer
-        if self.ui_update_timer:
-            self.root.after_cancel(self.ui_update_timer)
-            self.ui_update_timer = None
+    # ============== UI tick ==============
     
     def _start_ui_update_timer(self):
         """Start timer for UI updates (runs on main thread)"""
         # Build target → widget mapping for modulation visual feedback.
         # Only RotaryKnob / VerticalSlider support set_mod_offset.
-        self._mod_target_widget_map = {
+        self._mod_target_widget_map = {target.value: widget for target, widget in {
             ModTarget.OSC_FREQUENCY: self.osc_freq_knob,
             ModTarget.PITCH_SEMITONES: self.pitch_knob,
             ModTarget.PITCH_MOD_AMOUNT: self.pitch_amount_knob,
@@ -5153,19 +4795,30 @@ class PythonicGUI:
             ModTarget.REVERB_WIDTH: self.reverb_width_knob,
             ModTarget.DELAY_FEEDBACK: self.delay_feedback_knob,
             ModTarget.DELAY_MIX: self.delay_mix_knob,
-        }
+        }.items()}
         self._mod_active_targets = set()  # Track which widgets have active mod indicators
         self._ui_update_tick()
     
     def _ui_update_tick(self):
-        """Periodic UI update tick - runs on main thread only"""
-        if self.pattern_manager.is_playing:
-            # Get current position safely
-            with self.position_lock:
-                position = self.current_play_position
+        """Periodic UI update tick - runs on main thread only.
+
+        Reads the transport, play position, modulation readouts and action
+        results from the app core's poll; it never touches the audio state.
+        """
+        state = self.core.poll(self._poll_version)
+        self._poll_version = state['version']
+        
+        for event in state['events']:
+            callback = self._action_callbacks.pop(event.get('id'), None)
+            if callback is not None:
+                callback(event)
+        
+        transport = state['transport']
+        if transport['playing']:
+            position = transport['position']
             
             # Check if playing pattern changed (due to chaining)
-            current_playing_idx = self.pattern_manager.playing_pattern_index
+            current_playing_idx = transport['playing_pattern']
             if not hasattr(self, '_last_playing_pattern_idx'):
                 self._last_playing_pattern_idx = current_playing_idx
             
@@ -5184,16 +4837,13 @@ class PythonicGUI:
                     editor.set_current_position(position)
         
         # Update modulation visual indicators on knobs/sliders
-        self._update_mod_indicators()
+        self._update_mod_indicators(state['modulation']['offsets'])
         
         # Schedule next update (every 50ms to reduce load)
         self.ui_update_timer = self.root.after(50, self._ui_update_tick)
     
-    def _update_mod_indicators(self):
-        """Read mod offsets from the selected channel and update knob indicators."""
-        channel = self.synth.get_selected_channel()
-        offsets = channel._last_mod_offsets
-        
+    def _update_mod_indicators(self, offsets):
+        """Show the selected channel's modulation offsets (from poll) on the knobs."""
         # Update widgets that have active modulation
         new_active = set()
         for target, offset in offsets.items():
@@ -5209,17 +4859,6 @@ class PythonicGUI:
                 widget.set_mod_offset(0.0)
         
         self._mod_active_targets = new_active
-    
-    def _update_pattern_position_display(self):
-        """Update the visual position indicator in pattern editors"""
-        # This method is now handled by _ui_update_tick
-        # Kept for compatibility but delegates to thread-safe version
-        with self.position_lock:
-            position = self.current_play_position
-        
-        if hasattr(self, 'pattern_editors'):
-            for editor in self.pattern_editors:
-                editor.set_current_position(position)
     
     def _update_pattern_button_states(self):
         """Update visual states of pattern buttons"""
@@ -5273,13 +4912,18 @@ class PythonicGUI:
         try:
             self.root.mainloop()
         finally:
-            self._stop_audio()
+            # Stop UI update timer
+            if self.ui_update_timer:
+                try:
+                    self.root.after_cancel(self.ui_update_timer)
+                except tk.TclError:
+                    pass  # the window is already gone
+                self.ui_update_timer = None
+            # Stop the audio stream and release the synth
+            self.core.close()
             # Cleanup MIDI
             if hasattr(self, 'midi_manager'):
                 self.midi_manager.cleanup()
-            # Cleanup synthesizer thread pool
-            if hasattr(self.synth, 'cleanup'):
-                self.synth.cleanup()
 
 
 def main():
