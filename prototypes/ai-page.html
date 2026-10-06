@@ -854,7 +854,7 @@ const VARIANTS = {
     note: 'Each lane: type, generate, ‹ i/n ›, ▶ one-shot, name, apply checkbox. Candidates only reach the channel during ▶ or loop preview and are put back afterwards; apply selected keeps them.' },
   B: { name: 'Candidate dots', page: aiB,
     note: 'Same as A, but each lane shows all candidates as dots: click one to pick and hear it. Seeing 8–32 options at a glance replaces stepping with arrows.' },
-  C: { name: 'Try on the face', page: aiC,
+  C: { name: 'Try on the face (WINNER, as decided, with arrows)', page: aiC,
     note: 'Picking a candidate tries it: the face strip plays it and its tab shows the candidate name in italics, so the running pattern auditions the kit. Keep tried sounds commits; revert or ✕ puts the old sounds back.' },
 };
 for (const k in VARIANTS) VARIANTS[k].how = (f) => FEAT[f].mix;
@@ -920,7 +920,7 @@ function nativeClose(ok) {
 
 // ---------------------------------------------------------------- render + fit
 const keys = Object.keys(VARIANTS);
-let cur = new URLSearchParams(location.search).get('variant'); if (!keys.includes(cur)) cur = 'A';
+let cur = new URLSearchParams(location.search).get('variant'); if (!keys.includes(cur)) cur = 'C';
 const cfg = () => VARIANTS[cur];
 for (const k in VARIANTS) Object.assign(VARIANTS[k], { theme: 't8', face: faceT, ks: 30, fh: 112, ind: 'arc' });
 const stage = document.getElementById('stage');
