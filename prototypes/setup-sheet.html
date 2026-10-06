@@ -938,7 +938,7 @@ function showAlert(kind) {
 document.addEventListener('click', (e) => { if (e.target.closest('[data-alx]')) { document.querySelector('#al')?.remove(); e.stopPropagation(); } }, true);
 
 const VARIANTS = {
-  A: { name: 'Tabs on top', sheet: sheetA,
+  A: { name: 'Tabs on top (WINNER, as decided)', sheet: sheetA,
     note: 'Four tabs (audio, midi, synthesis, ai) on top; the sheet sizes to the tab: two columns for audio and for MIDI + CC mappings, one for the small ones.' },
   B: { name: 'Side tabs, fixed size', sheet: sheetB,
     note: 'The same four tabs down the left; the sheet keeps one size (980 wide) so nothing moves when switching tabs.' },
