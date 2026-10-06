@@ -1,16 +1,16 @@
 <!doctype html>
 <!--
-  PROTOTYPE, throwaway. Answers "Where do the secondary features open?" (map #1, ticket "Where secondary features open").
-  A = overlay sheets on the panel, B = pages in the edit rack drawer, C = separate Qt windows,
-  D = mixed by weight (popover for one-choice prompts, rack pages for channel tools, an overlay for setup).
-  Switch with ?variant=A|B|C|D, the bottom bar, or the left/right arrow keys. In-memory only, no engine.
-  Entry points: PRESET menu, pattern MENU, PO-32, SETUP, the MIDI LED, right-click any knob.
-  Items marked with an arrow open a mock native file dialog. Inner layouts are rough: they only show size.
+  PROTOTYPE, throwaway. Answers "What is the inner layout of the PO-32 edit rack page?" (map #1, ticket
+  "Inner layout of the PO-32 rack page"). Containers are settled: PO-32 is one edit rack page with
+  transfer and import tabs, the face stays live above it.
+  A = strip-aligned, B = pad-aligned patterns (transfer follows the face MUTE), C = stage flow.
+  Switch with ?variant=A|B|C, the bottom bar, or the left/right arrow keys. In-memory only, no engine:
+  record "decodes" after 3 s, transfer runs a fake 4 s progress. Items with an arrow open a mock native dialog.
 -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>PROTOTYPE secondary features</title>
+<title>PROTOTYPE PO-32 page</title>
 <style>
   :root {
     --bg: #050506; --panel: #17181a; --panel-hi: #1e1f22; --box: #34363a; --label: #e8e8e4; --dim: #8f9194;
@@ -624,17 +624,144 @@ const MENUS = {
     ['Export to MIDI…', 'native:midi-save', 1], ['Export to audio…', 'open:wav']],
 };
 
-// ---------------------------------------------------------------- containers
+// ---------------------------------------------------------------- PO-32 page (mock decode / transfer state)
+const PO_NAMES = [['Kick 1', 'Snare 3', 'Hat C', 'Hat O', 'Tom Lo', 'Clap', 'Rim', 'Cymbal'], ['Kick 2', 'Snare 1', 'Shaker', 'Ride', 'Tom Hi', 'Snap', 'Cowbell', 'Zap']];
+const PO_PATS = [...Array(16)].map((_, p) => [...Array(8)].map((_, c) => {
+  if (p >= 7) return [];
+  const r = (k) => (Math.sin(p * 31.7 + c * 7.3 + k * 3.1) * 43758.5) % 1;
+  const base = [[0, 4, 8, 12], [4, 12], [0, 2, 4, 6, 8, 10, 12, 14], [2, 6, 10, 14], [], [4, 12], [3, 11], [0]][c];
+  return [...Array(16).keys()].filter((k) => base.includes(k) ? r(k) > -0.6 : r(k) > 0.82);
+}));
+const LETTERS = 'ABCDEFGHIJKL';
+const po = { decoded: true, rec: false, mon: true, bank: 0, sel: new Map([[0, 'A'], [1, 'B'], [2, 'C'], [3, 'D'], [4, 'E']]), focus: 0,
+  sto: 0, inc: [true, true, true, true, true, false, true, true], tx: 0, sending: false };
+function poSelect(i) {
+  po.focus = i;
+  if (po.sel.has(i)) { po.sel.delete(i); return; }
+  if (po.sel.size >= 12) return;
+  const used = new Set(po.sel.values()); po.sel.set(i, [...LETTERS].find((l) => !used.has(l)));
+}
+function poDest(i) {  // cycle the destination letter, swapping on conflict
+  const cur = po.sel.get(i), nxt = LETTERS[(LETTERS.indexOf(cur) + 1) % 12];
+  for (const [k, v] of po.sel) if (v === nxt) po.sel.set(k, cur);
+  po.sel.set(i, nxt);
+}
+let txTimer = null, recTimer = null;
+function po32(cmd) {
+  const [k, a] = cmd.split(':'), n = +a;
+  if (k === 'sel') poSelect(n);
+  else if (k === 'focus') po.focus = n;
+  else if (k === 'dest') { poDest(n); po.focus = n; }
+  else if (k === 'first12') { po.sel.clear(); for (let i = 0; i < 12; i++) po.sel.set(i, LETTERS[i]); }
+  else if (k === 'clear') po.sel.clear();
+  else if (k === 'bank') po.bank = n;
+  else if (k === 'mon') po.mon = !po.mon;
+  else if (k === 'rec') { po.rec = true; po.decoded = false; po.mon = true; say('PO-32 IMPORT\nLISTENING…'); clearTimeout(recTimer);
+    recTimer = setTimeout(() => { po.rec = false; po.decoded = true; say('PO-32 IMPORT\nDECODED 16+7'); render(); }, 3000); }
+  else if (k === 'stoprec') { po.rec = false; clearTimeout(recTimer); }
+  else if (k === 'import') say(`PO-32 IMPORT\n8 SOUNDS ${po.sel.size} PATS`);
+  else if (k === 'preview') say('PO-32 PREVIEW\nPATTERN ' + (po.focus + 1));
+  else if (k === 'inc') po.inc[n] = !po.inc[n];
+  else if (k === 'sto') po.sto = n;
+  else if (k === 'tx') { po.sending = true; po.tx = 0; clearInterval(txTimer);
+    txTimer = setInterval(() => { po.tx = Math.min(100, po.tx + 2.5); poTick(); if (po.tx >= 100) { clearInterval(txTimer); po.sending = false; say('PO-32 SEND\nDONE'); render(); } }, 100); }
+  else if (k === 'stoptx') { clearInterval(txTimer); po.sending = false; say('PO-32 SEND\nSTOPPED'); }
+  render();
+}
+function poTick() {
+  document.querySelectorAll('[data-txp]').forEach((e) => { e.style.width = po.tx + '%'; });
+  document.querySelectorAll('[data-txs]').forEach((e) => { e.textContent = po.sending ? `sending… ${po.tx.toFixed(0)} %` : po.tx >= 100 ? 'done' : 'ready: 6.4 s of signal'; });
+  const g = document.getElementById('lcd2'); if (g && po.sending) g.textContent = `PO-32 SEND\n${'█'.repeat(Math.round(po.tx / 10)).padEnd(10, '·')} ${po.tx.toFixed(0)}%`;
+}
+setInterval(() => { document.querySelectorAll('.vu i').forEach((e) => { e.style.width = po.mon ? (po.rec ? 55 + Math.random() * 35 : 8 + Math.random() * 10) + '%' : '0%'; }); }, 80);
+
+const pb = (cmd, t, on, cls = '', a = '') => btn(t, on, cls, `data-po="${cmd}" ${a}`);
+const mini = (pat, cell = 4, gap = 1) => `<div style="display:grid;grid-template-columns:repeat(16,${cell}px);gap:${gap}px">${pat.map((st, c) => [...Array(16)].map((_, k) => `<i style="height:${cell}px;border-radius:1px;background:${st.includes(k) ? CC[c] : '#1d1d20'}"></i>`).join('')).join('')}</div>`;
+const lane = (st, c, w = 6) => `<div style="display:grid;grid-template-columns:repeat(16,1fr);gap:1px;width:100%">${[...Array(16)].map((_, k) => `<i style="height:${w}px;border-radius:1px;background:${st.includes(k) ? CC[c] : '#1d1d20'};${k % 4 === 0 ? 'box-shadow:-1px 0 0 #444' : ''}"></i>`).join('')}</div>`;
+const empty = (i) => PO_PATS[i].every((l) => !l.length);
+const poSource = () => FL('input', LB('USB Audio CODEC', 118) + btn('rescan'), 34)
+  + `<div class="row" style="gap:6px">${pb('mon', 'monitor', po.mon)}<div class="vu" style="width:84px"><i></i></div></div>`
+  + `<div class="row" style="gap:4px">${po.rec ? pb('stoprec', '■ stop', false) : pb('rec', '● record', false, 'red')}${NB('import wav…', 'po32-wav-open')}</div>`
+  + `<div class="note">${po.rec ? 'listening: play the PO-32 into the input' : po.decoded ? 'decoded: 16 sounds, 7 patterns' : 'nothing decoded yet'}</div>` + CK('keep recordings (debug)');
+const poCount = () => `<span class="note">${po.sel.size} / 12 selected</span>`;
+const poImportBtn = () => pb('import', `import 8 sounds + ${po.sel.size} patterns`, true);
+const poSummary = () => `<div class="note">Bank ${po.bank} replaces the sounds of channels 1–8; ${po.sel.size} patterns land on ${[...po.sel.values()].sort().join(' ') || '—'}. One undo step.</div>`;
+const poPatBtns = (cols) => `<div style="display:grid;grid-template-columns:repeat(${cols},1fr);gap:3px">${[...Array(16)].map((_, i) => {
+  const d = po.sel.get(i), e = empty(i);
+  return `<button class="btn sq ${d ? 'on' : ''}" data-po="sel:${i}" style="font-size:10px;padding:4px 0;${e ? 'opacity:.45;' : ''}${po.focus === i ? 'outline:1px solid #f2f2f2;' : ''}">${i + 1}${d ? '→' + d : ''}</button>`; }).join('')}</div>`;
+const poSendBox = (big) => `<div class="note" style="${big ? 'font-size:13px;color:#f2f2f2' : ''}">On the PO-32: hold <b>write</b> and press <b>sound</b> to receive, then start.</div>`
+  + `<div class="pbar"><i data-txp style="width:${po.tx}%"></i></div><div class="note" data-txs>${po.sending ? `sending… ${po.tx.toFixed(0)} %` : po.tx >= 100 ? 'done' : 'ready: 6.4 s of signal'}</div>`
+  + `<div class="row" style="gap:4px">${po.sending ? pb('stoptx', '■ stop', false) : pb('tx', '▶ transfer', true)}${NB('save wav…', 'po32-wav-save')}</div>`;
+const poTarget = () => FL('sounds to', `<div class="seg"><div class="opts">${['1–8', '9–16'].map((x, i) => pb('sto:' + i, x, po.sto === i)).join('')}</div></div>`, 60)
+  + FL('pattern chain', LB('A – B', 70), 60) + '<div class="note">Chain slots are sent empty: the encoder sends sounds only.</div>';
+const sec2 = (t, h, st = '') => `<section class="fsec" style="${st}">${t ? `<h4>${t}</h4>` : ''}${h}</section>`;
+const L = 'flex:0 0 226px', R = 'flex:0 0 266px', MID = 'flex:1 1 0;padding:6px 0';
+
+// A: everything per channel sits under its strip; patterns on the right
+function pageA(tab) {
+  if (tab === 0) return sec2('Target', poTarget(), L)
+    + sec2('Sounds sent: one column per strip', `<div class="lanes8">${CH.map(([nm], c) => `<div class="lane8" style="--cc:${CC[c]}">
+        ${pb('inc:' + c, po.inc[c] ? 'send' : 'silent', po.inc[c])}<span class="nm" style="${po.inc[c] ? '' : 'opacity:.4'}">${nm}</span>
+        <span class="note">→ PO-32 sound ${po.sto * 8 + c + 1}</span></div>`).join('')}</div>`, MID)
+    + sec2('Send', poSendBox(), R);
+  const pat = PO_PATS[po.focus], names = PO_NAMES[po.bank];
+  return sec2('Source', poSource(), L)
+    + sec2(`Bank <span style="margin-left:6px;display:inline-flex;gap:2px">${['bank 0 (1–8)', 'bank 1 (9–16)'].map((x, i) => pb('bank:' + i, x, po.bank === i)).join('')}</span><span class="note" style="margin-left:10px;text-transform:none;letter-spacing:0;font-weight:400">pattern ${po.focus + 1}${po.sel.get(po.focus) ? ' → ' + po.sel.get(po.focus) : ''}, one lane per channel</span>`,
+      `<div class="lanes8">${CH.map(([nm], c) => `<div class="lane8" style="--cc:${CC[c]}">
+        <span class="note">ch ${c + 1} becomes</span><b class="nm" style="font-size:12px">${po.decoded ? names[c] : '—'}</b><span class="note" style="opacity:.6">was ${nm}</span>
+        ${po.decoded ? lane(pat[c], c) : ''}</div>`).join('')}</div>`, MID)
+    + sec2('Patterns', poPatBtns(4) + `<div class="row" style="gap:3px">${pb('first12', 'first 12')}${pb('clear', 'clear')}${poCount()}</div>`
+      + `<div class="row" style="gap:3px">${pb('preview', '▶')}${poImportBtn()}</div>`, R);
+}
+// B: the 16 PO-32 patterns sit under the 16 pads; patch names under the strips
+function pageB(tab) {
+  if (tab === 0) return sec2('Target', poTarget() + '<div class="note" style="color:#f2f2f2">Muted channels on the face are sent silent.</div>', L)
+    + sec2('Sounds sent: follows the face MUTE', `<div class="lanes8">${CH.map(([nm], c) => { const m = state.mutes.has(c); return `<div class="lane8" style="--cc:${m ? '#3a3a3a' : CC[c]}">
+        <b class="nm" style="${m ? 'opacity:.4' : ''}">${nm}</b><span class="note">${m ? 'muted: sent silent' : '→ PO-32 sound ' + (po.sto * 8 + c + 1)}</span></div>`; }).join('')}</div>`, MID)
+    + sec2('Send', poSendBox(), R);
+  const cells = [...Array(16)].map((_, i) => {
+    const d = po.sel.get(i), e = empty(i);
+    return `<div data-po="sel:${i}" style="cursor:pointer;border-radius:4px;padding:3px 4px 4px;background:${d ? '#10291b' : '#141416'};box-shadow:inset 0 0 0 ${d ? 2 : 1}px ${d ? '#22e384' : '#2a2a2d'};${e ? 'opacity:.45' : ''}">
+      <div class="row" style="justify-content:space-between;gap:2px;margin-bottom:3px"><b style="font-size:11px">${i + 1}</b>${d ? `<button class="btn on" data-po="dest:${i}" style="padding:1px 5px;font-size:10px" title="click to change the letter">→${d}</button>` : `<span class="note">${e ? 'empty' : ''}</span>`}</div>
+      ${po.decoded ? mini(PO_PATS[i], 3.4, .6) : ''}</div>`;
+  }).join('');
+  return sec2('Source', poSource(), L)
+    + `<div style="flex:1 1 0;display:flex;flex-direction:column;gap:6px;min-width:0">
+      <section class="fsec" style="padding:5px 0 6px"><h4 style="padding:0 6px">PO-32 patterns, one under each pad · click to pick (max 12), click the letter to change it</h4>
+        <div style="display:grid;grid-template-columns:repeat(16,1fr);gap:8px;margin-right:-10px">${cells}</div></section>
+      <div style="display:flex;gap:6px;flex:1;min-height:0">
+        <section class="fsec" style="flex:1 1 0;padding:5px 0"><div class="lanes8">${PO_NAMES[po.bank].map((nm, c) => `<div class="lane8" style="--cc:${CC[c]};padding-top:2px"><b class="nm">${po.decoded ? nm : '—'}</b><span class="note">→ ch ${c + 1}</span></div>`).join('')}</div></section>
+        <section class="fsec" style="flex:0 0 266px;flex-direction:row;flex-wrap:wrap;align-content:flex-start;gap:4px">${['b0', 'b1'].map((x, i) => pb('bank:' + i, 'bank ' + i, po.bank === i)).join('')}${pb('first12', 'first 12')}${pb('clear', 'clear')}${poCount()}${pb('preview', '▶ preview')}${poImportBtn()}</section>
+      </div></div>`;
+}
+// C: a numbered left-to-right flow; the current stage is lit, later ones dimmed
+function pageC(tab) {
+  const stage = (n, t, h, st, f) => `<section class="fsec" style="flex:${f} 1 0;${st === 'now' ? 'border-color:#22e384;box-shadow:0 0 12px rgba(34,227,132,.2)' : ''};${st === 'later' ? 'opacity:.45' : ''}">
+    <h4><span style="display:inline-block;width:16px;height:16px;border-radius:50%;text-align:center;line-height:16px;margin-right:6px;background:${st === 'done' ? '#22e384' : st === 'now' ? '#f2f2f2' : '#333'};color:#000">${st === 'done' ? '✓' : n}</span>${t}</h4>${h}</section>`;
+  const arrow = '<div style="align-self:center;color:#555;font-size:18px">›</div>';
+  if (tab === 0) {
+    const s3 = po.sending || po.tx > 0 ? 'now' : 'later';
+    return [stage(1, 'Choose', poTarget() + `<div style="display:grid;grid-template-columns:1fr 1fr;gap:3px 8px">${CH.map(([nm], c) => `<span data-po="inc:${c}" style="cursor:pointer">${CK(`<span style="color:${CC[c]}">${c + 1}</span> ${nm}`, po.inc[c])}</span>`).join('')}</div>`, s3 === 'now' ? 'done' : 'now', 1.6),
+      stage(2, 'Prepare the PO-32', `<div class="note" style="font-size:14px;color:#f2f2f2;line-height:1.5">Turn its volume up.<br>Hold <b>write</b> and press <b>sound</b>.<br>It waits for the signal.</div>`, s3 === 'now' ? 'done' : 'later', 1.1),
+      stage(3, 'Send', poSendBox(), s3, 1.2)].join(arrow);
+  }
+  const s = !po.decoded ? 1 : po.sel.size ? 4 : 3, st = (n) => n < s ? 'done' : n === s ? 'now' : 'later';
+  return [stage(1, 'Listen', poSource(), st(1), 1.15),
+    stage(2, 'Bank', `${['bank 0 (1–8)', 'bank 1 (9–16)'].map((x, i) => pb('bank:' + i, x, po.bank === i)).join('')}<div class="note" style="columns:2">${PO_NAMES[po.bank].map((x, i) => `${i + 1} ${x}`).join('<br>')}</div>`, st(2), .9),
+    stage(3, 'Pick patterns', poPatBtns(8) + `<div class="row" style="gap:3px">${pb('first12', 'first 12')}${pb('clear', 'clear')}${poCount()}${pb('preview', '▶')}</div>${po.decoded ? mini(PO_PATS[po.focus], 9, 1) : ''}`, st(3), 1.7),
+    stage(4, 'Import', poSummary() + poImportBtn(), st(4), .95)].join(arrow);
+}
+
+// ---------------------------------------------------------------- variants of the page
 const VARIANTS = {
-  A: { name: 'Overlay sheets on the panel', how: () => 'card',
-    note: 'Every feature opens as a sheet over the dimmed panel. The panel keeps playing and animating behind, but cannot be touched until the sheet closes (✕, Esc or a click outside).' },
-  B: { name: 'Pages in the edit rack drawer', how: () => 'rack',
-    note: 'Every feature replaces the channel edit in the edit rack drawer (opening it if closed). The whole face stays live and usable. Wide and short: everything must fit in one 1568×260 row.' },
-  C: { name: 'Separate Qt windows', how: () => 'win',
-    note: 'Every feature is its own non-modal window (its own web view), movable, several at once. The panel stays live. Windows can hide behind the panel and must be sized and placed.' },
-  D: { name: 'Mixed by weight (WINNER, as decided)', how: (f) => FEAT[f].mix,
-    note: 'One-choice prompts (export tail) as a popover on the button; channel tools (PO-32, AI generator) as rack pages so the face stays live and their 8 lanes line up with the 8 strips; setup as an overlay sheet.' },
+  A: { name: 'Strip-aligned', page: pageA,
+    note: 'Per-channel things sit under their strip: transfer has a send/silent toggle per strip; import shows what each channel becomes plus the focused pattern\'s lane. Pattern picking is a 4×4 grid on the right.' },
+  B: { name: 'Pad-aligned patterns', page: pageB,
+    note: 'Import puts the 16 PO-32 patterns under the 16 pads, each with a thumbnail and its destination letter; patch names sit under the strips. Transfer has no toggles: the face MUTE decides what is sent silent.' },
+  C: { name: 'Stage flow', page: pageC,
+    note: 'A numbered left-to-right flow (listen › bank › pick patterns › import; choose › prepare › send). The current stage is lit, later ones dimmed. Nothing lines up with the face.' },
 };
+for (const k in VARIANTS) VARIANTS[k].how = (f) => FEAT[f].mix;
 Object.assign(state, { open: null, ftab: { po32: 0, setup: 0 }, wins: [], native: null, front: null });
 const modeOf = (f) => cfg().how(f);
 const isOpen = (f) => state.open === f || state.wins.some((w) => w.f === f);
@@ -643,6 +770,7 @@ function body(f, form) {
   const tabs = F.tabs ? `<div class="tabs">${F.tabs.map((t, i) => btn(t, i === tab, '', `data-ftab="${f}:${i}"`)).join('')}</div>` : '';
   const back = form === 'rack' ? btn(`◀ ch ${state.sel + 1} edit`, false, '', 'data-fclose') : '';
   const head = `<div class="fx-h">${back}<span class="t">${F.title}</span>${tabs}<span class="tk">${F.tk}</span><span class="sp"></span>${form === 'win' ? '' : btn('✕', false, '', 'data-fclose')}</div>`;
+  if (form === 'rack' && f === 'po32') return `<div class="fx">${head}<div class="fxs">${cfg().page(tab)}</div></div>`;
   if (form === 'rack') return `<div class="fx">${head}<div class="fxs">${secs.map((s) => `<section class="fsec" style="${s.w ? `flex:0 0 ${s.w}px` : `flex:${s.f || 1} 1 0`};${s.pad ? `padding:${s.pad}` : ''}">${s.t ? `<h4>${s.t}</h4>` : ''}${s.h}</section>`).join('')}</div></div>`;
   const cols = (F.cols[tab] ?? F.cols[0]);
   return `<div class="fx">${head}<div class="fxg" style="grid-template-columns:repeat(${cols},1fr)">${secs.map((s) => `<section class="fsec" style="grid-column:span ${Math.min(cols, s.span || 1)}">${s.t ? `<h4>${s.t}</h4>` : ''}${s.h}</section>`).join('')}</div></div>`;
@@ -695,7 +823,7 @@ function nativeClose(ok) {
 
 // ---------------------------------------------------------------- render + fit
 const keys = Object.keys(VARIANTS);
-let cur = new URLSearchParams(location.search).get('variant'); if (!keys.includes(cur)) cur = 'D';
+let cur = new URLSearchParams(location.search).get('variant'); if (!keys.includes(cur)) cur = 'A';
 const cfg = () => VARIANTS[cur];
 for (const k in VARIANTS) Object.assign(VARIANTS[k], { theme: 't8', face: faceT, ks: 30, fh: 112, ind: 'arc' });
 const stage = document.getElementById('stage');
@@ -836,10 +964,11 @@ stage.addEventListener('click', (e) => {
   if (!e.target.closest('#pop')) { pop().style.display = 'none'; popFor = null; }
   const t = e.target;
   if (t.id === 'ov') { closeFeature(state.open); return; }
-  const fx = t.closest('[data-fclose],[data-ftab],[data-native],[data-act],[data-menu]');
+  const fx = t.closest('[data-po],[data-fclose],[data-ftab],[data-native],[data-act],[data-menu]');
   if (fx) {
     const d = fx.dataset;
-    if (d.fclose !== undefined) closeFeature(state.open);
+    if (d.po) po32(d.po);
+    else if (d.fclose !== undefined) closeFeature(state.open);
     else if (d.ftab) { const [f, i] = d.ftab.split(':'); state.ftab[f] = +i; render(); }
     else if (d.native) { pop().style.display = 'none'; nativeOpen(d.native); }
     else if (d.act) act(d.act, fx);
@@ -948,6 +1077,7 @@ setInterval(() => {
   stage.querySelectorAll('[data-trig]').forEach((l) => l.classList.toggle('on', STEPS[+l.dataset.trig].includes(state.ph)));
 }, 125);
 render();
+openFeature('po32', 1);
 requestAnimationFrame(frame);
 </script>
 </body>
