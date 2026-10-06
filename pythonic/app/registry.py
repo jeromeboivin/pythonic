@@ -7,6 +7,7 @@ to read its value, how to write it (on the audio thread, at block start) and
 how to describe it to a front-end. Slices register their addresses here.
 """
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
@@ -17,7 +18,11 @@ class Address:
 
     ``get`` runs on the caller's thread. ``set`` is never called directly by
     the caller: the core queues it and the audio thread runs it at block start.
-    An address without ``set`` is read-only.
+    An address without ``set`` is read-only. ``queued=False`` marks core state
+    the audio thread never reads (a mode such as Edit all): its ``set`` runs at
+    once on the caller's thread.
+
+    Enum values are the names in ``labels``; ``coerce`` also takes an index.
     """
 
     name: str
@@ -30,6 +35,7 @@ class Address:
     unit: str = ''
     curve: str = 'linear'
     labels: Sequence[str] = field(default_factory=tuple)
+    queued: bool = True
 
     @property
     def readonly(self) -> bool:
@@ -47,6 +53,36 @@ class Address:
             'labels': list(self.labels),
             'readonly': self.readonly,
         }
+
+    def coerce(self, value):
+        """The value this address accepts for `value`: numbers clamped to the
+        range, enum indexes turned into names. Raises ValueError otherwise."""
+        kind = self.kind
+        if kind == 'bool':
+            return bool(value)
+        if kind == 'enum':
+            labels = list(self.labels)
+            if isinstance(value, str) and value in labels:
+                return value
+            if (isinstance(value, int) and not isinstance(value, bool)
+                    and 0 <= value < len(labels)):
+                return labels[value]
+            raise ValueError(f'{self.name}: {value!r} is not one of {labels}')
+        if kind in ('float', 'int'):
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                raise ValueError(f'{self.name}: {value!r} is not a number') from None
+            if not math.isfinite(number):
+                raise ValueError(f'{self.name}: {value!r} is not a finite number')
+            if kind == 'int':
+                number = int(round(number))
+            if self.minimum is not None and number < self.minimum:
+                number = self.minimum
+            if self.maximum is not None and number > self.maximum:
+                number = self.maximum
+            return number
+        return value
 
 
 class Registry:

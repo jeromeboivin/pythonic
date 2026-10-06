@@ -2,8 +2,10 @@
 The app core: a UI-free owner of the synth, patterns, morph, preferences and
 the audio stream, driven through an address-based interface (ADR 0001).
 
-- ``get(addr)`` / ``set(addr, value)`` / ``describe(addr)`` on registered
-  addresses. ``set`` is queued and applied by the audio thread at block start.
+- ``get(addr)`` / ``set(addr, value, edit_all=None)`` / ``describe(addr)`` on
+  registered addresses. ``set`` is queued and applied by the audio thread at
+  block start; ``poll`` reports the change once it has been applied. With Edit
+  all, a sound change of one channel also goes to every unmuted channel.
 - ``act(verb, **args)`` returns an action id at once; the verb runs on the
   core's action thread and its result or error arrives through ``poll``.
 - ``trigger(channel, velocity, at)`` queues a hit with its arrival time.
@@ -20,6 +22,7 @@ import queue
 import threading
 import time
 
+from pythonic.drum_channel import DrumChannel
 from pythonic.morph_manager import MorphManager
 from pythonic.pattern_manager import Pattern, PatternManager
 from pythonic.preferences_manager import PreferencesManager
@@ -29,6 +32,7 @@ from pythonic.synthesizer import PythonicSynthesizer
 
 from .audio import AudioEngine
 from .registry import Address, Registry
+from .sound import SOUND_PARAMS, SOUND_SUFFIXES
 
 _DEFAULT = object()
 _MAX_EVENTS = 256
@@ -77,6 +81,8 @@ class AppCore:
         self._cond = threading.Condition()
         self._version = 0
         self._changes = {}
+        self._pending = []  # (queue seq, addresses, value) not yet applied
+        self._edit_all = False
         self._events = []
         self._results = {}
         self._action_ids = itertools.count(1)
@@ -131,13 +137,52 @@ class AppCore:
     def get(self, address):
         return self.registry[address].get()
 
-    def set(self, address, value):
-        """Queue a change; the audio thread applies it at the next block start."""
+    def set(self, address, value, *, edit_all=None):
+        """Queue a change; the audio thread applies it at the next block start.
+
+        The value is clamped to the address range (ValueError if it is not a
+        valid value). For a per-channel sound address, ``edit_all`` (default:
+        the core's Edit all mode, ``global.edit_all``) also applies the value
+        to the same parameter of every unmuted channel, in the same block.
+        Callers restoring state pass ``edit_all=False``.
+        """
         entry = self.registry[address]
         if entry.readonly:
             raise ValueError(f'address is read-only: {address}')
-        self.audio.submit_call(entry.set, value)
-        self._note_change(address, value)
+        value = entry.coerce(value)
+        if not entry.queued:
+            entry.set(value)
+            self._note_change(address, value)
+            return
+        names = self._edit_all_targets(address, edit_all)
+        if len(names) == 1:
+            seq = self.audio.submit_call(entry.set, value)
+        else:
+            setters = tuple(self.registry[name].set for name in names)
+
+            def apply_all(v):
+                for setter in setters:
+                    setter(v)
+            seq = self.audio.submit_call(apply_all, value)
+        with self._cond:
+            self._pending.append((seq, names, value))
+
+    def _edit_all_targets(self, address, edit_all):
+        """The addresses one set writes: the address, plus the same sound
+        parameter of every unmuted channel when Edit all applies."""
+        if edit_all is None:
+            edit_all = self._edit_all
+        if not edit_all or not address.startswith('ch'):
+            return (address,)
+        channel, _, suffix = address.partition('.')
+        if suffix not in SOUND_SUFFIXES:
+            return (address,)
+        names = [address]
+        for i, ch in enumerate(self.synth.channels):
+            name = f'ch{i + 1}.{suffix}'
+            if name != address and not ch.muted:
+                names.append(name)
+        return tuple(names)
 
     def act(self, verb, **args):
         """Start an action; returns its id. The result arrives through poll()."""
@@ -152,9 +197,14 @@ class AppCore:
         self.audio.submit_trigger(at, channel, velocity)
 
     def poll(self, since=0):
-        """Everything newer than `since`, plus the transport and readouts."""
+        """Everything newer than `since`, plus the transport and readouts.
+
+        ``changes`` maps each address changed since then to its new value;
+        a queued set shows up here once the audio thread has applied it.
+        """
         self._collect_audio_reports()
         with self._cond:
+            self._promote_applied()
             version = self._version
             changes = {a: val for a, (v, val) in self._changes.items() if v > since}
             events = [e for e in self._events if e['version'] > since]
@@ -209,6 +259,20 @@ class AppCore:
         with self._cond:
             self._version += 1
             self._changes[address] = (self._version, value)
+
+    def _promote_applied(self):
+        """Move queued sets the audio thread has applied into the changes
+        (lock held). Version order follows the queue order."""
+        drained = self.audio.drained_seq
+        ready = [p for p in self._pending if p[0] <= drained]
+        if not ready:
+            return
+        self._pending = [p for p in self._pending if p[0] > drained]
+        ready.sort(key=lambda p: p[0])
+        for _seq, names, value in ready:
+            self._version += 1
+            for name in names:
+                self._changes[name] = (self._version, value)
 
     def _note_audio_changes(self):
         self._stall_count = -1  # a new or stopped stream restarts the stall watch
@@ -335,6 +399,68 @@ class AppCore:
         reg(Address('audio.mono', get=lambda: audio.synth.mono, kind='bool'))
         reg(Address('audio.output_devices', get=audio.output_devices, kind='list'))
         reg(Address('audio.input_devices', get=audio.input_devices, kind='list'))
+        self._register_sound_addresses()
+        self._register_global_addresses()
+
+    def _register_sound_addresses(self):
+        """ch1..ch8: every sound parameter, the mute and the patch name."""
+        reg = self.registry.register
+        fresh = DrumChannel(0, 44100)
+        defaults = {p.suffix: p.get(fresh) for p in SOUND_PARAMS}
+        for index in range(PythonicSynthesizer.NUM_CHANNELS):
+            prefix = f'ch{index + 1}'
+
+            def channel(i=index):
+                return self.synth.channels[i]
+
+            for param in SOUND_PARAMS:
+                reg(Address(f'{prefix}.{param.suffix}',
+                            get=lambda p=param, c=channel: p.get(c()),
+                            set=lambda v, p=param, c=channel: p.set(c(), v),
+                            kind=param.kind, minimum=param.minimum, maximum=param.maximum,
+                            default=defaults[param.suffix], unit=param.unit,
+                            curve=param.curve, labels=param.labels))
+            reg(Address(f'{prefix}.mute', get=lambda c=channel: bool(c().muted),
+                        set=lambda v, i=index: self.synth.mute_channel(i, v),
+                        kind='bool', default=False))
+            reg(Address(f'{prefix}.name', get=lambda c=channel: c().name, kind='str'))
+
+    def _register_global_addresses(self):
+        """Tempo, swing, step rate, fill rate, master, selection, Edit all, morph."""
+        reg = self.registry.register
+        pm = self.pattern_manager
+
+        def set_tempo(bpm):
+            pm.set_bpm(bpm)
+            self.synth.set_bpm(bpm)
+
+        def set_morph_position(position):
+            morph = self.morph_manager
+            if morph.is_learning():
+                morph._position = position  # the synth stays on the learned endpoint
+            else:
+                morph.set_position(position)
+
+        reg(Address('global.tempo', get=lambda: int(pm.bpm), set=set_tempo, kind='int',
+                    minimum=1, maximum=300, default=120, unit='BPM'))
+        reg(Address('global.swing', get=lambda: float(pm.swing), set=pm.set_swing,
+                    minimum=0.0, maximum=1.0, default=0.0, unit='ratio'))
+        reg(Address('global.step_rate', get=lambda: pm.step_rate, set=pm.set_step_rate,
+                    kind='enum', default='1/16', labels=tuple(pm.STEP_RATES)))
+        reg(Address('global.fill_rate', get=lambda: int(pm.fill_rate), set=pm.set_fill_rate,
+                    kind='int', minimum=2, maximum=8, default=4, unit='x'))
+        reg(Address('global.master', get=lambda: float(self.synth.master_volume_db),
+                    set=lambda v: self.synth.set_master_volume(v),
+                    minimum=-60.0, maximum=10.0, default=0.0, unit='dB'))
+        reg(Address('global.channel', get=lambda: self.synth.selected_channel + 1,
+                    set=lambda v: self.synth.select_channel(v - 1), kind='int',
+                    minimum=1, maximum=PythonicSynthesizer.NUM_CHANNELS, default=1))
+        reg(Address('global.edit_all', get=lambda: self._edit_all,
+                    set=lambda v: setattr(self, '_edit_all', v), kind='bool',
+                    default=False, queued=False))
+        reg(Address('morph.position', get=lambda: float(self.morph_manager.position),
+                    set=set_morph_position, minimum=0.0, maximum=1.0, default=0.0,
+                    unit='ratio'))
 
     # ================================================================== verbs
     def _verb_audio_start(self):
