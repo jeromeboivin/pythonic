@@ -5,7 +5,7 @@ Tests for main window handlers, run against stubs so no Tk window is needed.
 import collections
 import types
 
-from pythonic.pattern_manager import PatternManager
+from pythonic.app import AppCore
 
 
 def _gui_stub(is_playing):
@@ -15,7 +15,7 @@ def _gui_stub(is_playing):
     stub.scheduled = []
     stub.updates = 0
     stub.button_flash_state = False
-    stub.pattern_manager = types.SimpleNamespace(is_playing=is_playing)
+    stub._transport = {'playing': is_playing}
     stub.root = types.SimpleNamespace(after=lambda ms, fn: stub.scheduled.append(fn))
 
     def update():
@@ -34,17 +34,20 @@ def test_button_flash_keeps_a_single_timer_chain():
         assert len(stub.scheduled) == 5, playing
 
 
-def test_pattern_button_update_schedules_no_timer():
+def test_pattern_button_update_schedules_no_timer(prefs):
     from gui.main_window import PythonicGUI
 
     scheduled = []
-    pm = PatternManager(num_channels=8, pattern_length=16)
+    core = AppCore(preferences=prefs, audio_backend=None, midi_backend=None)
     btn = types.SimpleNamespace(config=lambda **kw: None)
     stub = types.SimpleNamespace(
-        pattern_manager=pm, pattern_buttons=[btn] * 12, button_flash_state=False,
+        core=core, _transport=core.poll()['transport'], _pattern=0,
+        pattern_buttons=[btn] * 12, button_flash_state=False,
         COLORS=collections.defaultdict(str),
         root=types.SimpleNamespace(after=lambda ms, fn: scheduled.append(fn)))
-
-    PythonicGUI._update_pattern_button_states(stub)
+    try:
+        PythonicGUI._update_pattern_button_states(stub)
+    finally:
+        core.close()
 
     assert scheduled == []

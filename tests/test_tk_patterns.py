@@ -1,0 +1,172 @@
+"""
+The tkinter GUI on the core's patterns (slice 4): the pattern buttons, lane
+and matrix editors, pattern menu, lane clipboard and chain buttons go through
+core.set() and core.act(), and the editors and buttons are refreshed from what
+core.poll() reports. Skips without a display.
+"""
+
+import pathlib
+import time
+
+import pytest
+
+from pythonic.app import AppCore
+from tests.fake_audio import FakeAudioBackend
+from tests.test_tk_smoke import _display_available
+
+pytestmark = pytest.mark.skipif(not _display_available(), reason='no display for tkinter')
+
+MAIN_WINDOW = pathlib.Path(__file__).resolve().parents[1] / 'gui' / 'main_window.py'
+
+
+@pytest.fixture
+def app(prefs):
+    from gui.main_window import PythonicGUI
+
+    prefs.set('midi_enabled', False)
+    backend = FakeAudioBackend()
+    core = AppCore(preferences=prefs, audio_backend=backend, stall_timeout=None)
+    gui = PythonicGUI(core=core)
+    core.wait(gui._audio_start_action)
+    gui.backend = backend
+    yield gui
+
+    def close():
+        for job in gui.root.tk.splitlist(gui.root.tk.call('after', 'info')):
+            gui.root.after_cancel(job)
+        gui.root.destroy()
+    gui.root.after(10, close)
+    gui.run()
+
+
+def tick(gui):
+    """One audio block (queued sets land), then one UI tick (poll)."""
+    gui.backend.stream.pull()
+    gui._ui_update_tick()
+
+
+def settle(gui, action_id=None):
+    """Pull blocks and tick until an action (or the newest one) has finished."""
+    end = time.monotonic() + 5.0
+    while time.monotonic() < end:
+        tick(gui)
+        if action_id is None or action_id in gui.core._results:
+            tick(gui)
+            return
+        time.sleep(0.002)
+    raise AssertionError('action did not finish')
+
+
+def last_action(gui):
+    return max(gui.core._results, default=None)
+
+
+def run_verb_from(gui, handler, *args):
+    """Call a GUI handler that starts a core verb and wait until it is shown."""
+    before = gui.core.act('pattern.queue', pattern=None)  # an id to compare with
+    settle(gui, before)
+    handler(*args)
+    settle(gui, before + 1)
+
+
+def test_no_pattern_handler_writes_the_patterns_directly():
+    source = MAIN_WINDOW.read_text()
+    for name in ('get_selected_pattern', 'clipboard_data', 'toggle_chain', '.select_pattern(',
+                 'shift_pattern', 'set_trigger(', '.cut_pattern(', '.paste_pattern(',
+                 'queued_pattern_index', '.randomize_pattern(', 'set_length('):
+        assert name not in source, name
+
+
+def test_pattern_button_selects_and_editors_follow(app):
+    app.core.set('pattern.C.ch1.step2.trig', True)
+    run_verb_from(app, app._on_pattern_select, 2)
+    assert app.core.get('pattern.selected') == 'C'
+    assert app._pattern == 2
+    assert app.pattern_editors[0].triggers[1] is True
+    assert app.pattern_buttons[2].cget('bg') == app.COLORS['highlight']
+
+
+def test_lane_edits_go_through_the_core(app):
+    app._on_pattern_edit(0, 4, 'trig', True)
+    app._on_pattern_edit(0, 4, 'acc', True)
+    app._on_pattern_edit(0, 4, 'prob', 30)
+    app._on_pattern_edit(0, 4, 'sub', 'oo')
+    tick(app)
+    assert app.core.get('pattern.A.ch1.step5.trig') is True
+    assert app.core.get('pattern.A.ch1.step5.acc') is True
+    assert app.core.get('pattern.A.ch1.step5.prob') == 30
+    assert app.core.get('pattern.A.ch1.step5.sub') == 'oo'
+    assert app._undo_stack  # each edit is an undo step
+
+    app._on_pattern_edit_all(0, 'trig', True, set())
+    tick(app)
+    assert all(app.core.get(f'pattern.A.ch{c}.step1.trig') for c in range(1, 9))
+    assert all(editor.triggers[0] for editor in app.pattern_editors)
+
+    app._on_matrix_edit(3, 7, True)
+    tick(app)
+    assert app.core.get('pattern.A.ch4.step8.trig') is True
+
+
+def test_a_lane_changed_elsewhere_refreshes_the_editor(app):
+    app.core.set('pattern.A.ch3.step9.trig', True)
+    tick(app)
+    assert app.pattern_editors[2].triggers[8] is True
+    # Not while that editor is dragged: it refreshes when the drag ends
+    app.pattern_editors[2].dragging = True
+    app.core.set('pattern.A.ch3.step10.trig', True)
+    tick(app)
+    assert app.pattern_editors[2].triggers[9] is False
+    app.pattern_editors[2].dragging = False
+    tick(app)
+    assert app.pattern_editors[2].triggers[9] is True
+
+
+def test_length_lane_sets_the_pattern_length(app):
+    app._on_pattern_length_change(12)
+    tick(app)
+    assert app.core.get('pattern.A.length') == 12
+    assert all(editor.pattern_length == 12 for editor in app.pattern_editors)
+    run_verb_from(app, app._on_pattern_select, 1)
+    assert all(editor.pattern_length == 16 for editor in app.pattern_editors)
+
+
+def test_pattern_menu_runs_core_verbs(app):
+    app.core.set('pattern.D.ch2.step1.trig', True)
+    run_verb_from(app, app._pattern_menu_action, 'shift_right', 3)
+    assert app.core.get('pattern.D.ch2.step2.trig') is True
+    run_verb_from(app, app._pattern_menu_action, 'copy_pattern', 3)
+    run_verb_from(app, app._pattern_menu_action, 'paste_pattern', 0)
+    assert app.pattern_editors[1].triggers[1] is True  # A is shown and was refreshed
+    assert app.pattern_buttons[0].cget('fg') == app.COLORS['text']  # no longer empty
+
+
+def test_lane_clipboard_copy_and_paste(app, monkeypatch):
+    from tkinter import messagebox
+    warnings = []
+    monkeypatch.setattr(messagebox, 'showwarning', lambda *a: warnings.append(a))
+    run_verb_from(app, app._on_pattern_paste)
+    assert warnings  # nothing in the clipboard yet
+
+    app.core.set('pattern.A.ch1.step3.trig', True)
+    tick(app)
+    run_verb_from(app, app._on_pattern_copy)
+    app.core.set('global.channel', 5)
+    tick(app)
+    run_verb_from(app, app._on_pattern_paste)
+    assert app.core.get('pattern.A.ch5.step3.trig') is True
+    assert app.pattern_editors[4].triggers[2] is True
+    assert len(warnings) == 1
+
+
+def test_chain_buttons_and_chained_colour(app):
+    for name in 'ABC':
+        app.core.set(f'pattern.{name}.ch1.step1.trig', True)
+    run_verb_from(app, app._on_chain_next)
+    assert app.core.get('pattern.A.chained') is True
+    for i in (0, 1):
+        assert app.pattern_buttons[i].cget('fg') == app.COLORS['highlight']
+    assert app.pattern_buttons[2].cget('fg') == app.COLORS['text']
+    run_verb_from(app, app._on_pattern_select, 1)
+    run_verb_from(app, app._on_chain_previous)
+    assert app.core.get('pattern.A.chained') is False

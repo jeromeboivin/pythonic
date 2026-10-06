@@ -90,7 +90,11 @@ class PythonicGUI:
         self._midi_learn_action = None  # id of the running learn action
         self._midi_learn_widget = None
         self._midi_learn_flash_id = None
-        self._last_transport = None  # (playing, selected, queued) last shown
+        self._last_transport = None  # (playing, selected, queued, playing pattern) last shown
+        # Transport as last reported by poll; the editors show pattern _pattern
+        self._transport = self.core.poll()['transport']
+        self._pattern = self._transport['selected_pattern']
+        self._dirty_lanes = set()  # channels whose lane refresh waits for a drag to end
 
         # UI state. The selected channel is a copy of the core's
         # global.channel (0-based here), updated from poll.
@@ -1726,7 +1730,7 @@ class PythonicGUI:
         self._push_undo_state()
         for channel in self.synth.channels:
             channel.randomize()
-        self.pattern_manager.randomize_pattern(self.pattern_manager.selected_pattern_index)
+        self.core.act('pattern.randomize', pattern=self._pattern)
         self.morph_manager._init_endpoints()
         self._after_preset_replaced()
 
@@ -1955,51 +1959,20 @@ class PythonicGUI:
     # ============ Pattern Callbacks ============
     
     def _on_pattern_select(self, pattern_index):
-        """Handle pattern selection.
-        
-        When playing, the selected pattern is queued and will start
-        playing after the current pattern finishes its bar.
-        When stopped, switches immediately.
-        """
-        self.pattern_manager.select_pattern(pattern_index)
-        
-        if self.pattern_manager.is_playing:
-            # Queue the pattern — audio callback will switch at bar end
-            if pattern_index != self.pattern_manager.playing_pattern_index:
-                self.pattern_manager.queued_pattern_index = pattern_index
-            else:
-                # Clicked the already-playing pattern → cancel any queue
-                self.pattern_manager.queued_pattern_index = None
-        else:
-            # Not playing — reset position immediately
-            self.pattern_manager.play_position = 0
-            self.pattern_manager.current_step = 0
-            if hasattr(self, 'pattern_editors'):
-                for editor in self.pattern_editors:
-                    editor.set_current_position(0)
-        
-        # Update button states and editors
-        self._update_pattern_button_states()
-        self._update_pattern_editors()
+        """Pattern button: the core selects the pattern (and queues it while
+        playing); the buttons and editors follow from poll."""
+        self.core.act('pattern.select', pattern=pattern_index)
+    
+    def _step_address(self, channel_id, step, lane_type):
+        """Address of a step of the pattern the editors show (lane types are
+        the address fields: trig, acc, fill, prob, sub)."""
+        name = PatternManager.PATTERN_NAMES[self._pattern]
+        return f'pattern.{name}.ch{channel_id + 1}.step{step + 1}.{lane_type}'
     
     def _on_pattern_edit(self, channel_id, step, lane_type, value):
-        """Handle pattern editor edits"""
+        """Handle pattern editor edits (the core applies them at block start)"""
         self._push_undo_state()
-        pattern = self.pattern_manager.get_selected_pattern()
-        channel = pattern.get_channel(channel_id)
-        
-        if lane_type == 'trig':
-            channel.set_trigger(step, value)
-        elif lane_type == 'acc':
-            channel.set_accent(step, value)
-        elif lane_type == 'fill':
-            channel.set_fill(step, value)
-        elif lane_type == 'prob':
-            channel.set_probability(step, value)
-        elif lane_type == 'sub':
-            # Update substeps pattern for the step
-            if step < len(channel.steps):
-                channel.steps[step].substeps = value
+        self.core.set(self._step_address(channel_id, step, lane_type), value)
     
     def _on_toggle_prob_mode(self):
         """Toggle probability editing mode for pattern editor"""
@@ -2016,45 +1989,17 @@ class PythonicGUI:
             editor.set_probability_mode(self.probability_mode_active)
     
     def _on_pattern_edit_all(self, step, lane_type, value, muted_channels):
-        """Handle pattern edit applied to all unmuted channels (Shift+Click)"""
+        """Shift+click: the same step on every channel not in muted_channels
+        (the editor passes none, so muted channels are included)"""
         self._push_undo_state()
-        pattern = self.pattern_manager.get_selected_pattern()
-        
         for ch_idx in range(8):
             if ch_idx not in muted_channels:
-                channel = pattern.get_channel(ch_idx)
-                
-                if lane_type == 'trig':
-                    channel.set_trigger(step, value)
-                elif lane_type == 'acc':
-                    channel.set_accent(step, value)
-                elif lane_type == 'fill':
-                    channel.set_fill(step, value)
-                elif lane_type == 'prob':
-                    channel.set_probability(step, value)
-                elif lane_type == 'sub':
-                    # Update substeps pattern for the step
-                    if step < len(channel.steps):
-                        channel.steps[step].substeps = value
-                
-                # Update that channel's editor with substeps
-                substeps = [s.substeps for s in channel.steps]
-                self.pattern_editors[ch_idx].set_pattern_data(
-                    channel.get_triggers(),
-                    channel.get_accents(),
-                    channel.get_fills(),
-                    channel.get_probabilities(),
-                    substeps
-                )
+                self.core.set(self._step_address(ch_idx, step, lane_type), value)
     
     def _on_pattern_length_change(self, new_length):
-        """Handle pattern length change"""
-        pattern = self.pattern_manager.get_selected_pattern()
-        pattern.set_length(new_length)
-        # Update all editors to reflect new length
-        for editor in self.pattern_editors:
-            editor.pattern_length = new_length
-            editor._draw()
+        """Handle pattern length change (the editors follow from poll)"""
+        name = PatternManager.PATTERN_NAMES[self._pattern]
+        self.core.set(f'pattern.{name}.length', new_length)
     
     def _on_pattern_play(self):
         """Start pattern playback"""
@@ -2081,12 +2026,11 @@ class PythonicGUI:
             self.play_btn.set_active(False)
             self.stop_btn.set_active(True)
     
-    def _on_pattern_menu(self):
-        """Show pattern menu"""
+    def _on_pattern_menu(self, idx=None):
+        """Show the pattern menu for pattern idx (default: the shown pattern)"""
         menu = tk.Menu(self.root, tearoff=0)
-        
-        # Get current pattern index
-        idx = self.pattern_manager.selected_pattern_index
+        if idx is None:
+            idx = self._pattern
         
         menu.add_command(label="Cut Pattern", 
                         command=lambda: self._pattern_menu_action('cut_pattern', idx))
@@ -2133,49 +2077,44 @@ class PythonicGUI:
         # First select the pattern
         self._on_pattern_select(pattern_idx)
         
-        # Then show the menu
-        self._on_pattern_menu()
+        # Then show the menu (for that pattern: the selection lands later)
+        self._on_pattern_menu(pattern_idx)
+    
+    # Pattern menu entries run as core verbs on the pattern they were opened for
+    _PATTERN_MENU_VERBS = {
+        'cut_pattern': 'pattern.cut', 'copy_pattern': 'pattern.copy',
+        'paste_pattern': 'pattern.paste', 'exchange_pattern': 'pattern.exchange',
+        'shift_left': 'pattern.shift_left', 'shift_right': 'pattern.shift_right',
+        'reverse': 'pattern.reverse', 'randomize': 'pattern.randomize',
+        'alter': 'pattern.alter', 'rand_accents': 'pattern.randomize_accents_fills',
+    }
     
     def _pattern_menu_action(self, action, pattern_idx):
-        """Handle pattern menu actions"""
+        """Handle pattern menu actions (the editors follow from poll)"""
+        verb = self._PATTERN_MENU_VERBS.get(action)
+        if verb is not None:
+            self._act_or_warn(verb, "Pattern operation failed", pattern=pattern_idx)
+            return
         try:
-            if action == 'cut_pattern':
-                self.pattern_manager.cut_pattern(pattern_idx)
-            elif action == 'copy_pattern':
-                self.pattern_manager.copy_pattern(pattern_idx)
-            elif action == 'paste_pattern':
-                self.pattern_manager.paste_pattern(pattern_idx)
-            elif action == 'exchange_pattern':
-                self.pattern_manager.exchange_pattern(pattern_idx)
-            elif action == 'shift_left':
-                self.pattern_manager.shift_pattern_left(pattern_idx)
-            elif action == 'shift_right':
-                self.pattern_manager.shift_pattern_right(pattern_idx)
-            elif action == 'reverse':
-                self.pattern_manager.reverse_pattern(pattern_idx)
-            elif action == 'randomize':
-                self.pattern_manager.randomize_pattern(pattern_idx)
-            elif action == 'alter':
-                self.pattern_manager.alter_pattern(pattern_idx)
-            elif action == 'rand_accents':
-                self.pattern_manager.randomize_accents_fills(pattern_idx)
-            elif action == 'ai_randomize_pattern':
+            if action == 'ai_randomize_pattern':
                 self._ai_randomize_pattern(pattern_idx)
-                return
             elif action == 'ai_randomize_channel':
                 self._ai_randomize_channel(pattern_idx, self.selected_channel)
-                return
             elif action == 'export_midi':
                 self._export_pattern_to_midi(pattern_idx)
-                return  # Don't refresh editors or show message
             elif action == 'export_audio':
                 self._export_pattern_to_audio(pattern_idx)
-                return  # Don't refresh editors or show message
-            
-            # Refresh editors
-            self._update_pattern_editors()
         except Exception as e:
             messagebox.showerror("Error", f"Pattern operation failed: {e}")
+    
+    def _act_or_warn(self, verb, message, on_done=None, **args):
+        """Run a core verb; show its error (from poll) in a message box."""
+        def done(event):
+            if event['status'] != 'done':
+                messagebox.showerror("Error", f"{message}: {event.get('error')}")
+            elif on_done is not None:
+                on_done(event.get('result'))
+        self._when_action_done(self.core.act(verb, **args), done)
     
     # ── AI pattern randomization ─────────────────────────────────────
 
@@ -2448,20 +2387,12 @@ class PythonicGUI:
             messagebox.showerror("Export Error", f"Failed to export audio file:\\n{e}")
     
     def _on_chain_previous(self):
-        """Toggle chain from previous pattern to current"""
-        idx = self.pattern_manager.selected_pattern_index
-        if idx > 0:
-            new_state = self.pattern_manager.toggle_chain_from_prev(idx)
-            status = "chained" if new_state else "unchained"
-            self._update_pattern_button_states()
+        """Toggle chain from previous pattern to current (the buttons follow from poll)"""
+        self.core.act('pattern.chain_prev', pattern=self._pattern)
     
     def _on_chain_next(self):
-        """Toggle chain from current pattern to next"""
-        idx = self.pattern_manager.selected_pattern_index
-        if idx < 11:
-            new_state = self.pattern_manager.toggle_chain_to_next(idx)
-            status = "chained" if new_state else "unchained"
-            self._update_pattern_button_states()
+        """Toggle chain from current pattern to next (the buttons follow from poll)"""
+        self.core.act('pattern.chain_next', pattern=self._pattern)
     
     def _on_matrix_toggle(self):
         """Toggle between lane and matrix editor views"""
@@ -2480,75 +2411,74 @@ class PythonicGUI:
             self.matrix_view_active = True
     
     def _on_pattern_copy(self):
-        """Copy current pattern/channel to clipboard"""
-        pattern = self.pattern_manager.get_selected_pattern()
-        channel = pattern.get_channel(self.selected_channel)
-        
-        # Store in clipboard (using root variable)
-        self.root.clipboard_data = {
-            'type': 'pattern_channel',
-            'channel_id': self.selected_channel,
-            'triggers': channel.get_triggers(),
-            'accents': channel.get_accents(),
-            'fills': channel.get_fills(),
-            'probabilities': channel.get_probabilities(),
-        }
-
+        """Copy the selected channel's lane to the core's lane clipboard"""
+        self.core.act('pattern.copy_lane', pattern=self._pattern,
+                      channel=self.selected_channel + 1)
     
     def _on_pattern_paste(self):
-        """Paste pattern/channel from clipboard"""
-        if not hasattr(self.root, 'clipboard_data') or not self.root.clipboard_data:
-            messagebox.showwarning("Paste", "Nothing in clipboard")
-            return
-        
-        pattern = self.pattern_manager.get_selected_pattern()
-        channel = pattern.get_channel(self.selected_channel)
-        data = self.root.clipboard_data
-        
-        if data['type'] == 'pattern_channel':
-            channel.set_triggers(data['triggers'])
-            channel.set_accents(data['accents'])
-            channel.set_fills(data['fills'])
-            if 'probabilities' in data:
-                channel.set_probabilities(data['probabilities'])
-            self._update_pattern_editors()
+        """Paste the lane clipboard into the selected channel"""
+        def pasted(result):
+            if not result['pasted']:
+                messagebox.showwarning("Paste", "Nothing in clipboard")
+        self._act_or_warn('pattern.paste_lane', "Paste failed", pasted, pattern=self._pattern,
+                          channel=self.selected_channel + 1)
     
     def _on_matrix_edit(self, channel_id, step, value):
         """Handle matrix editor edits"""
         self._push_undo_state()
-        pattern = self.pattern_manager.get_selected_pattern()
-        channel = pattern.get_channel(channel_id)
-        channel.set_trigger(step, value)
+        self.core.set(self._step_address(channel_id, step, 'trig'), value)
+    
+    def _lane(self, channel_id, field):
+        name = PatternManager.PATTERN_NAMES[self._pattern]
+        return self.core.get(f'pattern.{name}.ch{channel_id + 1}.{field}')
     
     def _update_matrix_editor(self):
         """Update matrix editor with current pattern data"""
-        pattern = self.pattern_manager.get_selected_pattern()
-        matrix_data = []
-        
-        for ch in range(8):
-            channel = pattern.get_channel(ch)
-            matrix_data.append(channel.get_triggers())
-        
-        self.matrix_editor.set_matrix_data(matrix_data)
+        self.matrix_editor.set_matrix_data([self._lane(ch, 'trig') for ch in range(8)])
     
     def _update_pattern_editors(self):
-
-        """Update all pattern editors from current pattern"""
-        pattern = self.pattern_manager.get_selected_pattern()
-        
-        for ch_id, editor in enumerate(self.pattern_editors):
-            channel = pattern.get_channel(ch_id)
-            triggers = [step.trigger for step in channel.steps]
-            accents = [step.accent for step in channel.steps]
-            fills = [step.fill for step in channel.steps]
-            probabilities = [step.probability for step in channel.steps]
-            substeps = [step.substeps for step in channel.steps]
-            editor.set_pattern_data(triggers, accents, fills, probabilities, substeps)
+        """Show the selected pattern on all lane editors (and the matrix)"""
+        self._pattern = PatternManager.PATTERN_NAMES.index(self.core.get('pattern.selected'))
+        self._dirty_lanes.clear()
+        self._show_lanes(range(8))
+    
+    def _show_lanes(self, channels):
+        """Refresh the lane editors of some channels from the core. An editor
+        being dragged keeps its own state until the drag ends."""
+        length = self.core.get(f'pattern.{PatternManager.PATTERN_NAMES[self._pattern]}.length')
+        for ch_id in channels:
+            editor = self.pattern_editors[ch_id]
+            if editor.dragging:
+                self._dirty_lanes.add(ch_id)
+                continue
+            self._dirty_lanes.discard(ch_id)
+            editor.pattern_length = length
+            editor.set_pattern_data(*(self._lane(ch_id, f)
+                                      for f in ('trig', 'acc', 'fill', 'prob', 'sub')))
+        if self.matrix_view_active and not self.matrix_editor.dragging:
+            self._update_matrix_editor()
+    
+    def _show_pattern_changes(self, addresses):
+        """Pattern addresses reported by poll: refresh the lanes of the shown
+        pattern and the pattern buttons."""
+        prefix = f'pattern.{PatternManager.PATTERN_NAMES[self._pattern]}.'
+        channels = set()
+        for address in addresses:
+            if not address.startswith(prefix):
+                continue
+            rest = address[len(prefix):]
+            if rest == 'length':
+                channels.update(range(8))
+            elif rest.startswith('ch') and rest.count('.') == 1:
+                channels.add(int(rest[2]) - 1)
+        if channels:
+            self._show_lanes(sorted(channels))
+        self._update_pattern_button_states()
     
     def _update_pattern_ui(self):
         """Update all pattern UI elements (buttons and editors) after loading patterns"""
-        self._update_pattern_button_states()
         self._update_pattern_editors()
+        self._update_pattern_button_states()
     
     def _on_key_press(self, event):
         """Handle keyboard input"""
@@ -2712,6 +2642,9 @@ class PythonicGUI:
             if channel is not None and channel - 1 != self.selected_channel:
                 self._show_selected_channel(channel - 1)
             prefix = f'ch{self.selected_channel + 1}.'
+            patterns = [a for a in changes if a.startswith('pattern.')]
+            if patterns:
+                self._show_pattern_changes(patterns)
             for address, value in changes.items():
                 if address.startswith('ch'):
                     head, _, suffix = address.partition('.')
@@ -4470,34 +4403,19 @@ class PythonicGUI:
 
         self._show_midi(state['midi'])
 
-        transport = state['transport']
+        transport = self._transport = state['transport']
         shown = (transport['playing'], transport['selected_pattern'],
-                 transport['queued_pattern'])
+                 transport['queued_pattern'], transport['playing_pattern'])
         if shown != self._last_transport:
             previous, self._last_transport = self._last_transport, shown
             if previous is not None:
                 self._show_transport(transport, previous)
-        if transport['playing']:
-            position = transport['position']
-            
-            # Check if playing pattern changed (due to chaining)
-            current_playing_idx = transport['playing_pattern']
-            if not hasattr(self, '_last_playing_pattern_idx'):
-                self._last_playing_pattern_idx = current_playing_idx
-            
-            if current_playing_idx != self._last_playing_pattern_idx:
-                # Playing pattern changed - update button states and editors
-                self._last_playing_pattern_idx = current_playing_idx
-                
-                # Auto-select the playing pattern so editors follow playback
-                self.pattern_manager.select_pattern(current_playing_idx)
-                self._update_pattern_button_states()
-                self._update_pattern_editors()
-            
-            # Update UI with current position
-            if hasattr(self, 'pattern_editors'):
-                for editor in self.pattern_editors:
-                    editor.set_current_position(position)
+        if self._dirty_lanes:
+            self._show_lanes(sorted(self._dirty_lanes))
+        if transport['playing'] and hasattr(self, 'pattern_editors'):
+            # The selection follows the playing pattern (chains, queue) in the core
+            for editor in self.pattern_editors:
+                editor.set_current_position(transport['position'])
         
         # Update modulation visual indicators on knobs/sliders
         self._update_mod_indicators(state['modulation']['offsets'])
@@ -4506,12 +4424,10 @@ class PythonicGUI:
         self.ui_update_timer = self.root.after(50, self._ui_update_tick)
     
     def _show_transport(self, transport, previous):
-        """The transport or the selected pattern changed outside the GUI's
-        own buttons (MIDI program change, start, stop, continue)."""
+        """The transport, the selected, queued or playing pattern changed
+        (buttons, MIDI, a chain or the queue moving on)."""
         playing = transport['playing']
-        if playing and not previous[0]:
-            self._last_playing_pattern_idx = transport['playing_pattern']
-        if transport['selected_pattern'] != previous[1]:
+        if transport['selected_pattern'] != self._pattern:
             self._update_pattern_editors()
         if not playing and hasattr(self, 'pattern_editors'):
             for editor in self.pattern_editors:
@@ -4540,14 +4456,15 @@ class PythonicGUI:
         self._mod_active_targets = new_active
     
     def _update_pattern_button_states(self):
-        """Update visual states of pattern buttons"""
-        selected_idx = self.pattern_manager.selected_pattern_index
-        playing_idx = self.pattern_manager.playing_pattern_index if self.pattern_manager.is_playing else -1
-        queued_idx = self.pattern_manager.queued_pattern_index if self.pattern_manager.is_playing else None
+        """Update visual states of pattern buttons (transport from the last poll)"""
+        transport = self._transport
+        playing = transport['playing']
+        selected_idx = self._pattern
+        playing_idx = transport['playing_pattern'] if playing else -1
+        queued_idx = transport['queued_pattern'] if playing else None
+        names = PatternManager.PATTERN_NAMES
         
         for i, btn in enumerate(self.pattern_buttons):
-            pattern = self.pattern_manager.get_pattern(i)
-            
             # Determine background color
             if i == playing_idx and self.button_flash_state:
                 # Playing pattern - flash green
@@ -4563,10 +4480,11 @@ class PythonicGUI:
                 bg_color = self.COLORS['bg_light']
             
             # Determine text color
-            if pattern.is_empty():
+            if self.core.get(f'pattern.{names[i]}.empty'):
                 # Empty pattern - gray text
                 fg_color = self.COLORS['text_dim']
-            elif pattern.chained_to_next or pattern.chained_from_prev:
+            elif (self.core.get(f'pattern.{names[i]}.chained')
+                  or (i > 0 and self.core.get(f'pattern.{names[i - 1]}.chained'))):
                 # Chained pattern - blue text
                 fg_color = self.COLORS['highlight']
             else:
@@ -4577,7 +4495,7 @@ class PythonicGUI:
     
     def _toggle_button_flash(self):
         """Toggle flash state and update buttons (one 250 ms chain, started at init)"""
-        if self.pattern_manager.is_playing:
+        if self._transport['playing']:
             self.button_flash_state = not self.button_flash_state
             self._update_pattern_button_states()
         elif self.button_flash_state:
