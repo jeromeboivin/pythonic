@@ -38,8 +38,10 @@ def test_tkinter_gui_builds_ticks_and_closes(prefs):
 
     core.wait(gui._audio_start_action)
     assert core.get('audio.running') is True
-    gui.pattern_manager.start_playback(0)
-    backend.stream.pull()
+    play = core.act('transport.play')
+    while play not in core._results:  # the verb waits for a block start
+        backend.stream.pull()
+    assert core.wait(play)['status'] == 'done'
     gui._ui_update_tick()
     assert gui._poll_version > 0
 

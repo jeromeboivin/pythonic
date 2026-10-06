@@ -170,3 +170,50 @@ def test_chain_buttons_and_chained_colour(app):
     run_verb_from(app, app._on_pattern_select, 1)
     run_verb_from(app, app._on_chain_previous)
     assert app.core.get('pattern.A.chained') is False
+
+
+def test_play_and_stop_buttons_go_through_the_core(app):
+    import numpy as np
+
+    app.core.set('global.tempo', 300)
+    for step in (1, 5, 9, 13):
+        app.core.set(f'pattern.A.ch1.step{step}.trig', True)
+    run_verb_from(app, app._on_pattern_play)
+    assert app.core.poll()['transport']['playing'] is True
+    assert app.play_btn.active and not app.stop_btn.active
+    peak = 0.0
+    positions = set()
+    for _ in range(40):
+        peak = max(peak, float(np.abs(app.backend.stream.pull()).max()))
+        app._ui_update_tick()
+        positions.add(app.pattern_editors[0].current_position)
+    assert peak > 0.01 and len(positions) > 3
+
+    run_verb_from(app, app._on_pattern_stop)
+    assert app.core.poll()['transport']['playing'] is False
+    assert app.stop_btn.active and not app.play_btn.active
+    assert all(editor.current_position == 0 for editor in app.pattern_editors)
+
+
+def test_chain_moves_the_shown_pattern(app):
+    app.core.set('global.tempo', 300)
+    app.core.set('pattern.A.length', 2)
+    app.core.set('pattern.B.ch2.step1.trig', True)
+    run_verb_from(app, app._on_chain_next)
+    run_verb_from(app, app._on_pattern_play)
+    for _ in range(200):
+        tick(app)
+        if app._pattern == 1:
+            break
+    assert app._pattern == 1
+    assert app.pattern_editors[1].triggers[0] is True
+
+
+def test_number_keys_trigger_the_channel_pads(app):
+    import types
+
+    import numpy as np
+
+    app._on_key_press(types.SimpleNamespace(char='3'))
+    peak = max(float(np.abs(app.backend.stream.pull()).max()) for _ in range(4))
+    assert peak > 0.01

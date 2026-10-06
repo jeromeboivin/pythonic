@@ -2002,29 +2002,13 @@ class PythonicGUI:
         self.core.set(f'pattern.{name}.length', new_length)
     
     def _on_pattern_play(self):
-        """Start pattern playback"""
-        selected_idx = self.pattern_manager.selected_pattern_index
-        self.pattern_manager.start_playback(selected_idx)
-        self._last_playing_pattern_idx = selected_idx  # Track for chaining detection
-        self._update_pattern_button_states()
-        # Update circular transport buttons
-        if hasattr(self, 'play_btn') and hasattr(self.play_btn, 'set_active'):
-            self.play_btn.set_active(True)
-            self.stop_btn.set_active(False)
+        """Play the selected pattern from its first step (the play and stop
+        buttons, playhead and pattern buttons follow from poll)"""
+        self.core.act('transport.play')
     
     def _on_pattern_stop(self):
-        """Stop pattern playback and reset to beginning"""
-        self.pattern_manager.stop_playback()
-        self._last_playing_pattern_idx = -1  # Reset tracking
-        self._update_pattern_button_states()
-        # Reset position display to beginning (step 0)
-        if hasattr(self, 'pattern_editors'):
-            for editor in self.pattern_editors:
-                editor.set_current_position(0)
-        # Update circular transport buttons
-        if hasattr(self, 'play_btn') and hasattr(self.play_btn, 'set_active'):
-            self.play_btn.set_active(False)
-            self.stop_btn.set_active(True)
+        """Stop playback; the playhead goes back to step 1 (from poll)"""
+        self.core.act('transport.stop')
     
     def _on_pattern_menu(self, idx=None):
         """Show the pattern menu for pattern idx (default: the shown pattern)"""
@@ -3228,10 +3212,11 @@ class PythonicGUI:
         transport so all previews sound identical to main-window playback.
         """
         # Save and stop transport
-        was_playing = self.pattern_manager.is_playing
-        saved_pattern_idx = self.pattern_manager.playing_pattern_index
+        state = self.core.poll()['transport']
+        was_playing = state['playing']
+        saved_pattern_idx = state['playing_pattern']
         if was_playing:
-            self._on_pattern_stop()
+            self.core.act('transport.stop')
 
         def on_apply(mode='patches'):
             self._push_undo_state()
@@ -3241,12 +3226,10 @@ class PythonicGUI:
             self._update_morph_ui()
 
         def start_transport():
-            selected_idx = self.pattern_manager.selected_pattern_index
-            self.pattern_manager.start_playback(selected_idx)
+            self.core.act('transport.play')
 
         def stop_transport():
-            if self.pattern_manager.is_playing:
-                self.pattern_manager.stop_playback()
+            self.core.act('transport.stop')
 
         dialog = DrumGeneratorDialog(
             parent=self.root,
@@ -3259,12 +3242,9 @@ class PythonicGUI:
         )
         self.root.wait_window(dialog.dialog)
 
-        # Restore transport state
+        # Restore transport state (the buttons follow from poll)
         if was_playing:
-            self.pattern_manager.start_playback(saved_pattern_idx)
-            if hasattr(self, 'play_btn') and hasattr(self.play_btn, 'set_active'):
-                self.play_btn.set_active(True)
-                self.stop_btn.set_active(False)
+            self.core.act('transport.play', pattern=saved_pattern_idx)
 
         self._update_ui_from_channel()
         self._update_pattern_editors()
