@@ -847,6 +847,9 @@ class PatternManager:
                     # Load probabilities if available (default to 100)
                     if 'probabilities' in channel_info:
                         channel.set_probabilities(channel_info['probabilities'])
+                    # Velocities (default 64, also over what was there before)
+                    channel.set_velocities(channel_info.get(
+                        'velocities', [DEFAULT_VELOCITY] * len(channel.steps)))
                     # Load substeps if available (default to empty)
                     if 'substeps' in channel_info:
                         for i, substep_pattern in enumerate(channel_info['substeps']):

@@ -217,3 +217,22 @@ def test_number_keys_trigger_the_channel_pads(app):
     app._on_key_press(types.SimpleNamespace(char='3'))
     peak = max(float(np.abs(app.backend.stream.pull()).max()) for _ in range(4))
     assert peak > 0.01
+
+
+def test_midi_export_writes_a_long_pattern_with_velocities(app, monkeypatch, tmp_path):
+    import mido
+    from tkinter import filedialog
+
+    path = tmp_path / 'b.mid'
+    monkeypatch.setattr(filedialog, 'asksaveasfilename', lambda **kw: str(path))
+    app.core.set('pattern.B.length', 64)
+    app.core.set('pattern.B.ch1.step50.trig', True)
+    app.core.set('pattern.B.ch1.step50.vel', 101)
+    tick(app)
+    app._export_pattern_to_midi(1)
+    now, ons = 0, []
+    for message in mido.MidiFile(str(path)).tracks[0]:
+        now += message.time
+        if message.type == 'note_on':
+            ons.append((now, message.velocity))
+    assert ons == [(49 * 120, 101)]

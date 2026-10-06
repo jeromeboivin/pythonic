@@ -44,6 +44,7 @@ except ImportError:
     print("Warning: mido not available. MIDI export disabled.")
 
 from pythonic.app import AppCore
+from pythonic.app.export import pattern_midi_file
 from pythonic.app.midi import cc_name
 from pythonic.app.sound import cc_parameter_target
 
@@ -2195,67 +2196,8 @@ class PythonicGUI:
             return
         
         try:
-            # Create MIDI file
-            mid = mido.MidiFile()
-            track = mido.MidiTrack()
-            mid.tracks.append(track)
-            
-            # Set tempo based on pattern manager BPM
-            tempo = mido.bpm2tempo(self.pattern_manager.bpm)
-            track.append(mido.MetaMessage('set_tempo', tempo=tempo))
-            
-            # Calculate ticks per step (assume 480 ticks per quarter note)
-            ticks_per_beat = mid.ticks_per_beat
-            ticks_per_step = ticks_per_beat  # Each step is a quarter note
-            
-            # Process each channel
-            for channel_id, channel in enumerate(pattern.channels):
-                # Use different MIDI channels for each drum (or use channel 10 for drums)
-                midi_channel = 9  # Channel 10 (0-indexed = 9) is standard for drums
-                
-                # Standard GM drum note mapping (typical values)
-                drum_notes = [36, 38, 42, 46, 45, 41, 39, 37]  # Kick, Snare, CHH, OHH, TomH, TomL, Clap, Rim
-                note = drum_notes[channel_id] if channel_id < len(drum_notes) else 36
-                
-                # Add note events for each triggered step
-                for step_idx in range(pattern.length):
-                    step = channel.get_step(step_idx)
-                    
-                    if step.trigger:
-                        # Calculate time offset
-                        time_offset = step_idx * ticks_per_step
-                        
-                        # Velocity based on accent
-                        velocity = 127 if step.accent else 64
-                        
-                        # Note on
-                        track.append(mido.Message('note_on', 
-                                                 channel=midi_channel, 
-                                                 note=note, 
-                                                 velocity=velocity, 
-                                                 time=time_offset if step_idx == 0 else 0))
-                        
-                        # Note off after short duration (10 ticks)
-                        track.append(mido.Message('note_off', 
-                                                 channel=midi_channel, 
-                                                 note=note, 
-                                                 velocity=0, 
-                                                 time=10))
-            
-            # Sort track by time
-            track = sorted(track, key=lambda msg: getattr(msg, 'time', 0))
-            
-            # Convert absolute times to delta times
-            cumulative_time = 0
-            for msg in track:
-                if hasattr(msg, 'time'):
-                    abs_time = msg.time
-                    msg.time = abs_time - cumulative_time
-                    cumulative_time = abs_time
-            
-            # Save MIDI file
-            mid.save(filename)
-            
+            pm = self.pattern_manager
+            pattern_midi_file(pattern, pm.bpm, pm.step_rate, pm.swing).save(filename)
         except Exception as e:
             messagebox.showerror("Export Error", f"Failed to export MIDI file:\\n{e}")
     

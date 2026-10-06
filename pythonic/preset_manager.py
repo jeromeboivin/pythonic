@@ -10,6 +10,7 @@ import os
 import numpy as np
 from scipy.io import wavfile
 from typing import Dict, Any, List, Optional
+from .pattern_manager import DEFAULT_VELOCITY, clamp_velocity
 
 
 # ─────────────────────────────────────────────
@@ -627,7 +628,8 @@ class PythonicPresetParser:
                 'accents': [False] * expected_length,
                 'fills': [False] * expected_length,
                 'probabilities': [100] * expected_length,
-                'substeps': [''] * expected_length
+                'substeps': [''] * expected_length,
+                'velocities': [DEFAULT_VELOCITY] * expected_length,
             }
         
         triggers_str = channel_data.get('Triggers', '')
@@ -635,6 +637,7 @@ class PythonicPresetParser:
         fills_str = channel_data.get('Fills', '')
         probs_str = channel_data.get('Probabilities', '')
         substeps_str = channel_data.get('Substeps', '')  # New: parse substeps
+        velocities_str = channel_data.get('Velocities', '')  # Pythonic: per-step velocity
         
         # Convert pattern strings to boolean lists
         # '#' means on, '-' means off
@@ -652,6 +655,14 @@ class PythonicPresetParser:
         else:
             probabilities = [100] * expected_length
         
+        # Parse velocities - comma-separated integers 1-127 like probabilities;
+        # files without them play their unaccented steps at 64 as always
+        try:
+            velocities = [clamp_velocity(v) for v in velocities_str.split(',')] \
+                if velocities_str else []
+        except ValueError:
+            velocities = []
+
         # Parse substeps - format is comma-separated patterns (e.g., "oo-,o-o-,,oo-")
         # Empty means no substeps for that step
         if substeps_str:
@@ -665,13 +676,16 @@ class PythonicPresetParser:
         fills = fills[:expected_length] + [False] * max(0, expected_length - len(fills))
         probabilities = probabilities[:expected_length] + [100] * max(0, expected_length - len(probabilities))
         substeps = substeps[:expected_length] + [''] * max(0, expected_length - len(substeps))
+        velocities = velocities[:expected_length] + \
+            [DEFAULT_VELOCITY] * max(0, expected_length - len(velocities))
         
         return {
             'triggers': triggers,
             'accents': accents,
             'fills': fills,
             'probabilities': probabilities,
-            'substeps': substeps
+            'substeps': substeps,
+            'velocities': velocities,
         }
 
 
