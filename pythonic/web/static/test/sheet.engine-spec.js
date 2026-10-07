@@ -154,3 +154,12 @@ test('clicking the selected channel button hits it (Ctrl: full velocity), anothe
   assert.deepEqual(bridge.calls.filter(([s]) => s === 'set').flatMap(([, c]) => c).map((c) => [c.address, c.value]),
     [['global.channel', 3]]);
 });
+
+test('a channel button flashes when a MIDI note hits its channel', () => {
+  const { bridge, stage } = setup();
+  const midi = (notes) => ({ activity: 1, notes, pickup: {} });
+  bridge.pushFrame({ midi: midi([0, 0, 0, 0, 0, 0, 0, 0]) });
+  bridge.pushFrame({ midi: midi([0, 0, 1, 0, 0, 0, 0, 0]) });
+  assert.ok(stage.querySelector('.strip[data-channel="3"] .chb').classList.contains('hit'));
+  assert.ok(!stage.querySelector('.strip[data-channel="1"] .chb').classList.contains('hit'));
+});

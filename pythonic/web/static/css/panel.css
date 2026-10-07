@@ -129,6 +129,7 @@ px-toggle .cc { right: -4px; top: -12px; }
 .strip .ctrl.user .lbl { text-decoration: underline dotted; cursor: pointer; }
 .strip .chb { width: 64px; font-size: 14px; padding: 7px 0; }
 .strip .chb.mut { color: var(--mute-text); text-shadow: 0 0 6px #ff2a2a; }
+.strip .chb.hit { box-shadow: 0 0 12px var(--cc), inset 0 0 0 2px var(--cc), 0 2px 0 #000; }  /* a MIDI note or a click hit it */
 
 /* Right column */
 px-display {

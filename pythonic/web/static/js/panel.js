@@ -285,6 +285,7 @@ export function mountPanel(stage, { store, client, meta = {} }) {
         // The selected channel again: hit it (tkinter: 64, Ctrl+click 127)
         const velocity = e.ctrlKey || e.metaKey ? 127 : 64;
         client.trigger(n, velocity).catch((err) => console.warn('trigger', err));
+        flash(i);
         display.show(`CH${n}`, `hit ${velocity}`);
         return;
       }
@@ -298,6 +299,20 @@ export function mountPanel(stage, { store, client, meta = {} }) {
       }
     });
   });
+
+  // A channel button flashes when a MIDI note (or a click) hits it, as in tkinter
+  const flashTimers = [];
+  function flash(i) {
+    chButtons[i].classList.add('hit');
+    clearTimeout(flashTimers[i]);
+    flashTimers[i] = setTimeout(() => chButtons[i].classList.remove('hit'), 100);
+  }
+  let lastNotes = null;
+  offs.push(store.watchReadout('midi', (midi) => {
+    const notes = (midi && midi.notes) || [];
+    if (lastNotes) notes.forEach((count, i) => { if (i < 8 && count !== lastNotes[i]) flash(i); });
+    lastNotes = notes;
+  }));
 
   // ------------------------------------------------------------ strip CTRL
   const ctrlList = $('#ctrl-mode');
