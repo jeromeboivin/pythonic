@@ -5,7 +5,6 @@ describe / act / poll / trigger) and runs the audio callback by hand on a fake
 stream, so no audio device is needed.
 """
 
-import copy
 import gc
 import threading
 import time
@@ -21,6 +20,11 @@ from tests.fake_audio import FakeAudioBackend
 # ---------------------------------------------------------------------------
 # fixtures and helpers
 # ---------------------------------------------------------------------------
+
+def edits(poll):
+    """The changes of a poll without the undo journal state."""
+    return {a: v for a, v in poll['changes'].items() if not a.startswith('undo.')}
+
 
 @pytest.fixture
 def backend():
@@ -209,8 +213,8 @@ def test_queued_set_is_applied_by_the_callback_at_block_start(make_core, backend
 
     assert applied == [(7, threading.get_ident())]  # the test thread runs the callback here
     poll = core.poll(since=v0)
-    assert poll['changes'] == {'test.value': 7}
-    assert core.poll(since=poll['version'])['changes'] == {}
+    assert edits(poll) == {'test.value': 7}
+    assert edits(core.poll(since=poll['version'])) == {}
 
 
 def test_trigger_is_placed_at_the_sample_offset_of_its_arrival(make_core, backend):
@@ -456,54 +460,6 @@ def test_unknown_verb_is_reported_as_an_error(make_core):
     core = make_core()
     event = core.wait(core.act('no.such.verb'))
     assert event['status'] == 'error'
-
-
-# ---------------------------------------------------------------------------
-# temporary verb: restore an undo snapshot (until the undo journal lands)
-# ---------------------------------------------------------------------------
-
-def _snapshot(core):
-    return (copy.deepcopy(core.synth.get_preset_data()),
-            copy.deepcopy(core.pattern_manager.to_dict()),
-            copy.deepcopy(core.morph_manager.to_dict()))
-
-
-def test_legacy_restore_snapshot_is_applied_at_block_start(make_core, backend, monkeypatch):
-    core = started(make_core())
-    snap = _snapshot(core)
-    core.synth.channels[0].set_osc_frequency(999.0)
-    core.pattern_manager.patterns[0].get_channel(0).set_trigger(3, True)
-    freezes = []
-    monkeypatch.setattr(gc, 'freeze', lambda: freezes.append(1))
-
-    aid = core.act('legacy.restore_snapshot', snapshot=snap)
-    pump_until(core, backend.stream, lambda: action_events(core.poll(), 'legacy.restore_snapshot'))
-    event = core.wait(aid)
-
-    assert event['status'] == 'done', event
-    assert core.synth.channels[0].oscillator.frequency != 999.0
-    assert not core.pattern_manager.patterns[0].get_channel(0).get_step(3).trigger
-    assert freezes  # bulk swap re-freezes the heap
-
-
-def test_legacy_restore_that_times_out_is_cancelled(make_core, backend):
-    core = started(make_core(stream_timeout=0.2))
-    snap = _snapshot(core)
-    core.synth.channels[0].set_osc_frequency(999.0)
-
-    event = core.wait(core.act('legacy.restore_snapshot', snapshot=snap))  # nobody pulls
-    assert event['status'] == 'error'
-    backend.stream.pull()  # the late block start must not apply it any more
-    assert core.synth.channels[0].oscillator.frequency == 999.0
-
-
-def test_legacy_restore_accepts_old_two_part_snapshots(make_core):
-    core = make_core(audio_backend=None)
-    synth_data, pattern_data, _ = _snapshot(core)
-    core.synth.channels[0].set_osc_frequency(999.0)
-    event = core.wait(core.act('legacy.restore_snapshot', snapshot=(synth_data, pattern_data)))
-    assert event['status'] == 'done', event
-    assert core.synth.channels[0].oscillator.frequency != 999.0
 
 
 # ---------------------------------------------------------------------------

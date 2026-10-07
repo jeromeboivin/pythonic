@@ -61,6 +61,7 @@ from typing import Any, Optional
 from pythonic.pattern_manager import DEFAULT_VELOCITY, MAX_PATTERN_LENGTH, PatternManager
 
 from .registry import Address
+from .undo import pattern_part
 
 PATTERN_NAMES = tuple(PatternManager.PATTERN_NAMES)
 NUM_CHANNELS = 8
@@ -159,7 +160,8 @@ class Patterns:
             reg(Address(f'pattern.{name}.length', get=lambda p=pattern: p().length,
                         set=lambda v, p=pattern: p().set_length(v), kind='int', minimum=1,
                         maximum=MAX_STEPS, default=pm.pattern_length, unit='steps',
-                        related=tuple(lane_addresses(name)) + (f'pattern.{name}.empty',)))
+                        related=tuple(lane_addresses(name)) + (f'pattern.{name}.empty',),
+                        companions=tuple(lane_addresses(name))))  # a shorter one drops steps
             reg(Address(f'pattern.{name}.empty', get=lambda p=pattern: p().is_empty(),
                         kind='bool'))
             last = index == len(PATTERN_NAMES) - 1  # nothing to chain L to
@@ -169,7 +171,7 @@ class Patterns:
                         kind='bool', default=False))
         reg(Address('pattern.selected', get=lambda: PATTERN_NAMES[self.pm.selected_pattern_index],
                     set=lambda v: self.pm.select_pattern(PATTERN_NAMES.index(v)),
-                    kind='enum', default='A', labels=PATTERN_NAMES))
+                    kind='enum', default='A', labels=PATTERN_NAMES, undoable=False))
         registry.add_resolver('pattern.', self._resolve)
 
     def _resolve(self, name):
@@ -190,10 +192,12 @@ class Patterns:
         if s >= MAX_STEPS:
             return None
         related = [lane, empty]
+        companions = ()
         if field.name == 'trig':
-            related += [f'pattern.{letter}.ch{channel}.step{step}.acc',
-                        f'pattern.{letter}.ch{channel}.step{step}.fill',
-                        f'pattern.{letter}.ch{channel}.acc',
+            # Turning the trigger off clears the accent and fill
+            companions = (f'pattern.{letter}.ch{channel}.step{step}.acc',
+                          f'pattern.{letter}.ch{channel}.step{step}.fill')
+            related += [*companions, f'pattern.{letter}.ch{channel}.acc',
                         f'pattern.{letter}.ch{channel}.fill']
         template = field.template()
 
@@ -208,7 +212,8 @@ class Patterns:
 
         return Address(name, get=get, set=set_, kind=field.kind, minimum=field.minimum,
                        maximum=field.maximum, default=field.default, unit=field.unit,
-                       convert=template.convert, related=tuple(related))
+                       convert=template.convert, related=tuple(related),
+                       companions=companions)
 
     def _lane_address(self, name, field, p, c, empty):
         template = field.template()
@@ -229,11 +234,13 @@ class Patterns:
                 _write(step, field, value)
 
         related = [empty]
+        companions = ()
         if field.name == 'trig':
             prefix = name.rsplit('.', 1)[0]
-            related += [f'{prefix}.acc', f'{prefix}.fill']
+            companions = (f'{prefix}.acc', f'{prefix}.fill')
+            related += companions
         return Address(name, get=get, set=set_, kind='list', default=None, convert=convert,
-                       related=tuple(related))
+                       related=tuple(related), companions=companions)
 
     def _set_chained(self, index, chained):
         if chained:
@@ -255,7 +262,8 @@ class Patterns:
             'paste': lambda pm, i: {'pasted': pm.paste_pattern(i)},
             'exchange': lambda pm, i: {'exchanged': pm.exchange_pattern(i)},
         }
-        verbs = {f'pattern.{name}': self._pattern_op(op) for name, op in pm_ops.items()}
+        verbs = {f'pattern.{name}': self._pattern_op(f'pattern.{name}', op)
+                 for name, op in pm_ops.items()}
         verbs.update({
             'pattern.copy': self._verb_copy,
             'pattern.copy_lane': self._verb_copy_lane,
@@ -275,10 +283,11 @@ class Patterns:
     def _index(self, pattern):
         return pattern_index(pattern, self.pm.selected_pattern_index)
 
-    def _pattern_op(self, op):
+    def _pattern_op(self, label, op):
         def verb(pattern=None):
             index = self._index(pattern)
-            result = self._core.at_block_start(lambda: op(self.pm, index))
+            result = self._core.undo.snapshot_op((pattern_part(index),), label,
+                                                 lambda: op(self.pm, index))
             self._note_pattern(index)
             return result
         return verb
@@ -322,7 +331,9 @@ class Patterns:
             lane.set_fills(data['fills'])
             lane.set_probabilities(data['probabilities'])
             return True
-        pasted = self._core.at_block_start(paste)
+        if not self._lane_clipboard:
+            return {'pasted': False}
+        pasted = self._core.undo.snapshot_op((pattern_part(index),), 'pattern.paste_lane', paste)
         if pasted:
             self._note_pattern(index)
         return {'pasted': pasted}
@@ -365,10 +376,23 @@ class Patterns:
         index = pattern_index(pattern, self.pm.selected_pattern_index)
         if not valid(index):
             return {'chained': False}
-        chained = self._core.at_block_start(lambda: toggle(index))
+        def apply():
+            before = self._chains()
+            return before, toggle(index), self._chains()
+        before, chained, after = self._core.at_block_start(apply)
+        self._core.undo.record_changes(self._chain_changes(before, after))
         self._core.note_changes([f'pattern.{PATTERN_NAMES[i]}.chained' for i in (index - 1, index)
                                  if i >= 0])
         return {'chained': bool(chained)}
+
+    def _chains(self):
+        return [bool(p.chained_to_next) for p in self.pm.patterns[:-1]]
+
+    @staticmethod
+    def _chain_changes(before, after):
+        """address -> (old, new) of the chain links that changed."""
+        return {f'pattern.{PATTERN_NAMES[i]}.chained': (old, new)
+                for i, (old, new) in enumerate(zip(before, after)) if old != new}
 
     def _verb_chain_prev(self, pattern=None):
         return self._chain_verb(pattern, self.pm.toggle_chain_from_prev, lambda i: i > 0)
@@ -379,10 +403,13 @@ class Patterns:
 
     def _verb_chain_clear(self):
         def clear():
+            before = self._chains()
             for pattern in self.pm.patterns:
                 pattern.chained_to_next = False
                 pattern.chained_from_prev = False
-        self._core.at_block_start(clear)
+            return before
+        before = self._core.at_block_start(clear)
+        self._core.undo.record_changes(self._chain_changes(before, self._chains()))
         self._core.note_changes([f'pattern.{n}.chained' for n in PATTERN_NAMES])
 
     # ------------------------------------------------------------------ transport

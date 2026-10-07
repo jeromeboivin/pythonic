@@ -8,6 +8,7 @@ selective apply back to the live kit.
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+import contextlib
 import threading
 import numpy as np
 
@@ -44,7 +45,7 @@ class DrumGeneratorDialog:
 
     def __init__(self, parent, synth, pattern_manager, preferences_manager,
                  on_apply_callback=None, start_transport=None,
-                 stop_transport=None):
+                 stop_transport=None, apply_change=None):
         self.parent = parent
         self.synth = synth
         self.pattern_manager = pattern_manager
@@ -52,6 +53,9 @@ class DrumGeneratorDialog:
         self.on_apply_callback = on_apply_callback
         self.start_transport = start_transport
         self.stop_transport = stop_transport
+        # apply_change(label): context manager around an Apply (the app
+        # core's bulk_change: one undo step); previews write directly
+        self.apply_change = apply_change or (lambda label: contextlib.nullcontext())
 
         self.generator = PatchGenerator()
         self.pattern_gen = PatternGenerator()
@@ -857,6 +861,19 @@ class DrumGeneratorDialog:
 
     def _on_apply_selected(self):
         """Apply checked patch slots to the live synth (patterns unchanged)."""
+        with self.apply_change('AI drum patches'):
+            applied = self._apply_checked_slots()
+            if applied and self.on_apply_callback:
+                self.on_apply_callback('patches')
+
+        if applied:
+            names = ", ".join(f"{i+1}" for i in applied)
+            self.model_status_label.config(
+                text=f"Applied to slot{'s' if len(applied) > 1 else ''} {names}",
+                fg=COLORS['led_on'])
+
+    def _apply_checked_slots(self):
+        """Apply the checked patch slots to the live synth; their indexes."""
         applied = []
         for i in range(8):
             st = self.slot_state[i]
@@ -868,15 +885,7 @@ class DrumGeneratorDialog:
                 applied.append(i)
                 self._applied_slots.add(i)
                 self._saved_channel_states[i] = self.synth.channels[i].get_parameters()
-
-        if applied and self.on_apply_callback:
-            self.on_apply_callback('patches')
-
-        if applied:
-            names = ", ".join(f"{i+1}" for i in applied)
-            self.model_status_label.config(
-                text=f"Applied to slot{'s' if len(applied) > 1 else ''} {names}",
-                fg=COLORS['led_on'])
+        return applied
 
     def _on_replace_patterns(self):
         """Apply checked patches + replace all 12 patterns from the cached AI bank."""
@@ -888,26 +897,17 @@ class DrumGeneratorDialog:
                                    parent=self.dialog)
             return
 
-        # Apply patches first
-        applied = []
-        for i in range(8):
-            st = self.slot_state[i]
-            w = self.slot_widgets[i]
-            if w['apply_var'].get() and st['candidates']:
-                patch = st['candidates'][st['selected_idx']]
-                channel_data = convert_drum_patch_data(patch)
-                apply_drum_patch_to_channel(self.synth.channels[i], channel_data)
-                applied.append(i)
-                self._applied_slots.add(i)
-                self._saved_channel_states[i] = self.synth.channels[i].get_parameters()
+        with self.apply_change('AI drum patches and patterns'):
+            # Apply patches first
+            self._apply_checked_slots()
 
-        # Replace all patterns
-        self.pattern_manager.apply_pattern_bank(self._cached_pattern_bank)
-        self._patterns_applied = True
-        self._saved_patterns = None
+            # Replace all patterns
+            self.pattern_manager.apply_pattern_bank(self._cached_pattern_bank)
+            self._patterns_applied = True
+            self._saved_patterns = None
 
-        if self.on_apply_callback:
-            self.on_apply_callback('patches_and_patterns')
+            if self.on_apply_callback:
+                self.on_apply_callback('patches_and_patterns')
 
         self.model_status_label.config(
             text=f"Applied patches + 12 patterns",

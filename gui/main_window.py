@@ -29,6 +29,7 @@ from gui.drum_generator_dialog import DrumGeneratorDialog
 from pythonic.drum_generator import infer_drum_type
 from pythonic.pattern_generator import PatternGenerator
 from pythonic.preset_manager import channel_to_raw_patch
+from pythonic.app.undo import pattern_part
 
 try:
     import sounddevice as sd
@@ -103,12 +104,10 @@ class PythonicGUI:
         self.selected_channel = self.core.get('global.channel') - 1
         self.updating_ui = False  # Prevent feedback loops
         
-        # Undo/redo state management
-        self._undo_stack = []  # List of (synth_data, pattern_data) snapshots
-        self._redo_stack = []
-        self._max_undo = 50  # Maximum undo levels
-        self._undo_pending = False  # Debounce flag for coalescing rapid changes
-        self._restore_pending = False  # A snapshot restore is queued in the core
+        # Undo and redo run in the core's journal; a wheel turn on a knob
+        # is one burst there (one undo step until 400 ms pass)
+        self._wheel = False
+        self._scale_echoes = {}  # tk.Scale -> value shown from poll (see _show_scale)
         
         # Controls offered for MIDI learn: parameter name -> widget. The core
         # maps CCs to their targets (cc_parameter_target(name)).
@@ -125,8 +124,8 @@ class PythonicGUI:
         # Offer the controls for MIDI learn (right-click menu)
         self._register_cc_parameters()
         
-        # Register undo/redo on all knobs and sliders
-        self._register_undo_on_widgets()
+        # Drags on knobs, sliders and the lane editors are one undo step each
+        self._register_gestures()
         
         # Bind keyboard events
         self.root.bind('<Key>', self._on_key_press)
@@ -136,6 +135,7 @@ class PythonicGUI:
         # Update UI with current channel
         self._update_ui_from_channel()
         self._update_morph_ui()
+        self._show_undo_state()
 
         # Start button state updates
         self.root.after(250, self._toggle_button_flash)
@@ -1426,7 +1426,7 @@ class PythonicGUI:
     
     def _on_global_swing_change(self, value):
         """Handle global swing slider change (0-100 %)"""
-        if not self.updating_ui:
+        if not self.updating_ui and not self._scale_echo(self.global_swing_slider, value):
             self.core.set('global.swing', int(float(value)) / 100.0)
     
     def _on_bpm_change(self, event=None):
@@ -1480,7 +1480,7 @@ class PythonicGUI:
         During learn mode the slider stores the position but does not
         affect the synth – the synth stays pinned to the learned endpoint.
         """
-        if self.updating_ui:
+        if self.updating_ui or self._scale_echo(self.morph_slider, value):
             return
         # The knobs follow once poll reports the new position
         self.core.set('morph.position', float(value) / 100.0)
@@ -1562,111 +1562,36 @@ class PythonicGUI:
                 fg=self.COLORS['text_dim'],
                 troughcolor=self.COLORS['bg_medium'])
     
-    def _get_full_state_snapshot(self):
-        """Capture a deep copy of all synth + pattern + morph state for undo/redo"""
-        return self.core.legacy_snapshot()
-
-    def _restore_state_snapshot(self, snapshot, revert=None):
-        """Restore synth + pattern + morph state from a snapshot.
-
-        The core applies the snapshot at the next audio block start; the
-        widgets are refreshed by the UI tick once the core reports it, and
-        revert() puts the undo/redo stacks back if the core reports a failure.
-        (Temporary core verb until the undo journal moves into the core.)
-        """
-        has_morph = len(snapshot) == 3 and bool(snapshot[2])
-        action_id = self.core.act('legacy.restore_snapshot', snapshot=snapshot)
-        self._restore_pending = True
-        self._update_undo_redo_buttons()
-
-        def refresh(event):
-            self._restore_pending = False
-            if event['status'] != 'done':
-                print(f"Undo/redo failed: {event.get('error')}", flush=True)
-                if revert is not None:
-                    revert()
-                self._update_undo_redo_buttons()
-                return
-            if has_morph:
-                # Update morph slider position
-                self.morph_slider.set(int(self.morph_manager.position * 100))
-            self._update_ui_from_channel()
-            self._update_pattern_editors()
-            self._update_matrix_editor()
-            self._update_undo_redo_buttons()
-            self._update_morph_ui()
-
-        self._when_action_done(action_id, refresh)
-
-    def _push_undo_state(self):
-        """Push current state onto the undo stack (call BEFORE making a change)"""
-        snapshot = self._get_full_state_snapshot()
-        self._undo_stack.append(snapshot)
-        if len(self._undo_stack) > self._max_undo:
-            self._undo_stack.pop(0)
-        # Any new action clears the redo stack
-        self._redo_stack.clear()
-        self._update_undo_redo_buttons()
-
-    def _push_undo_state_deferred(self, phase=None):
-        """Push undo state — used as command_end callback on knobs/sliders.
-        Called with 'start' when drag begins and 'end' when drag ends."""
-        if phase == 'start':
-            # Capture state before changes begin
-            self._pre_drag_snapshot = self._get_full_state_snapshot()
-        elif phase == 'end':
-            # Commit the pre-drag snapshot to undo stack
-            if hasattr(self, '_pre_drag_snapshot') and self._pre_drag_snapshot is not None:
-                self._undo_stack.append(self._pre_drag_snapshot)
-                if len(self._undo_stack) > self._max_undo:
-                    self._undo_stack.pop(0)
-                self._redo_stack.clear()
-                self._pre_drag_snapshot = None
-                self._update_undo_redo_buttons()
-
-    def _push_undo_state_now(self):
-        """Actually push the undo state (for discrete actions like pattern edits)"""
-        self._undo_pending = False
-        self._push_undo_state()
-
-    def _update_undo_redo_buttons(self):
-        """Update undo/redo button enabled state"""
+    def _show_undo_state(self, _value=None):
+        """Undo and redo buttons follow the core's journal (from poll)."""
         if hasattr(self, 'undo_btn'):
-            state = 'normal' if self._undo_stack else 'disabled'
-            self.undo_btn.config(state=state)
+            self.undo_btn.config(state='normal' if self.core.get('undo.can_undo') else 'disabled')
         if hasattr(self, 'redo_btn'):
-            state = 'normal' if self._redo_stack else 'disabled'
-            self.redo_btn.config(state=state)
+            self.redo_btn.config(state='normal' if self.core.get('undo.can_redo') else 'disabled')
 
     def _on_undo(self):
-        """Handle undo button click"""
-        if not self._undo_stack or self._restore_pending:
-            return
-        # Save current state to redo stack
-        self._redo_stack.append(self._get_full_state_snapshot())
-        # Pop and restore previous state
-        snapshot = self._undo_stack.pop()
-
-        def revert():
-            if self._redo_stack:
-                self._redo_stack.pop()
-            self._undo_stack.append(snapshot)
-        self._restore_state_snapshot(snapshot, revert)
+        """Undo the last step (the core applies it; the widgets follow poll)"""
+        self._act_or_warn('undo', "Undo failed")
 
     def _on_redo(self):
-        """Handle redo button click"""
-        if not self._redo_stack or self._restore_pending:
-            return
-        # Save current state to undo stack
-        self._undo_stack.append(self._get_full_state_snapshot())
-        # Pop and restore next state
-        snapshot = self._redo_stack.pop()
+        """Redo the last undone step"""
+        self._act_or_warn('redo', "Redo failed")
 
-        def revert():
-            if self._undo_stack:
-                self._undo_stack.pop()
-            self._redo_stack.append(snapshot)
-        self._restore_state_snapshot(snapshot, revert)
+    def _on_control_gesture(self, phase):
+        """command_end of the knobs, sliders and lane editors: a drag is one
+        undo step, a wheel turn one burst."""
+        if phase == 'start':
+            self.core.begin_gesture()
+        elif phase == 'end':
+            self.core.end_gesture()
+        elif phase == 'wheel':
+            self._wheel = True
+        elif phase == 'wheel_end':
+            self._wheel = False
+
+    def _set(self, address, value):
+        """core.set from a control (a wheel turn joins the address's burst)"""
+        self.core.set(address, value, burst=self._wheel)
     
     def _on_preset_prev(self):
         """Navigate to previous preset in the list"""
@@ -1734,30 +1659,31 @@ class PythonicGUI:
         self._preset_clipboard['morph'] = copy.deepcopy(self.morph_manager.to_dict())
     
     def _paste_preset(self):
-        """Paste preset from clipboard"""
+        """Paste preset from clipboard (one undo step)"""
         if hasattr(self, '_preset_clipboard') and self._preset_clipboard:
-            self._push_undo_state()
-            self.preset_manager.import_preset_from_dict(self._preset_clipboard, self.pattern_manager)
-            self.morph_manager.from_dict(copy.deepcopy(self._preset_clipboard['morph']))
-            self.morph_slider.set(int(self.morph_manager.position * 100))
+            with self.core.bulk_change('Paste preset'):
+                self.preset_manager.import_preset_from_dict(self._preset_clipboard,
+                                                            self.pattern_manager)
+                self.morph_manager.from_dict(copy.deepcopy(self._preset_clipboard['morph']))
+                self.core.set('morph.position', self.morph_manager.position)
             self._after_preset_replaced()
     
     def _init_preset(self):
-        """Initialize/reset preset to defaults"""
-        self._push_undo_state()
-        for channel in self.synth.channels:
-            channel.reset_to_defaults()
-        self.pattern_manager.reset_all_patterns()
-        self.morph_manager._init_endpoints()
+        """Initialize/reset preset to defaults (one undo step)"""
+        with self.core.bulk_change('Initialize preset'):
+            for channel in self.synth.channels:
+                channel.reset_to_defaults()
+            self.pattern_manager.reset_all_patterns()
+            self.morph_manager._init_endpoints()
         self._after_preset_replaced()
     
     def _randomize_all(self):
-        """Randomize all drum patches and patterns"""
-        self._push_undo_state()
-        for channel in self.synth.channels:
-            channel.randomize()
-        self.core.act('pattern.randomize', pattern=self._pattern)
-        self.morph_manager._init_endpoints()
+        """Randomize all drum patches and the selected pattern (one undo step)"""
+        with self.core.bulk_change('Randomize all'):
+            for channel in self.synth.channels:
+                channel.randomize()
+            self.core.wait(self.core.act('pattern.randomize', pattern=self._pattern))
+            self.morph_manager._init_endpoints()
         self._after_preset_replaced()
 
     def _after_preset_replaced(self):
@@ -1817,7 +1743,7 @@ class PythonicGUI:
     def _on_master_volume_change(self, value):
         """Handle master volume change"""
         if not self.updating_ui:
-            self.core.set('global.master', value)
+            self._set('global.master', value)
     
     def _on_edit_all_toggle(self, enabled):
         """Edit all: the core applies sound changes to every unmuted channel"""
@@ -1826,13 +1752,13 @@ class PythonicGUI:
     def _set_sound(self, suffix, value):
         """Write a sound parameter of the selected channel through the core
         (with Edit all on, the core also writes the unmuted channels)."""
-        self.core.set(f'ch{self.selected_channel + 1}.{suffix}', value)
+        self._set(f'ch{self.selected_channel + 1}.{suffix}', value)
     
     # Sound parameter handlers: widget units -> engine units
     
     def _on_mix_change(self, value):
         """Handle osc/noise mix change (value comes from tk.Scale as string)"""
-        if not self.updating_ui:
+        if not self.updating_ui and not self._scale_echo(self.mix_slider, value):
             self._set_sound('mix.osc_noise', float(value) / 100.0)
     
     def _on_eq_freq_change(self, value):
@@ -1869,7 +1795,6 @@ class PythonicGUI:
     def _on_delay_time_change(self, index):
         """Tempo-synced delay time (1/4, 1/8, 1/16, 1/8T, 1/4.)"""
         if not self.updating_ui:
-            self._push_undo_state()
             self._set_sound('fx.delay_time', self.delay_time_names[index])
     
     def _on_delay_feedback_change(self, value):
@@ -1883,7 +1808,6 @@ class PythonicGUI:
     def _on_delay_pingpong_toggle(self, enabled):
         """Ping-pong: echoes alternate between left and right"""
         if not self.updating_ui:
-            self._push_undo_state()
             self._set_sound('fx.delay_pingpong', bool(enabled))
     
     def _on_level_change(self, value):
@@ -1896,17 +1820,14 @@ class PythonicGUI:
     
     def _on_choke_toggle(self, enabled):
         if not self.updating_ui:
-            self._push_undo_state()
             self._set_sound('mix.choke', bool(enabled))
     
     def _on_output_change(self, value):
         if not self.updating_ui:
-            self._push_undo_state()
             self._set_sound('mix.output', 'A' if value == 0 else 'B')
     
     def _on_waveform_change(self, value):
         if not self.updating_ui:
-            self._push_undo_state()
             self._set_sound('osc.wave', value)  # selector position = enum position
     
     def _on_pitch_change(self, value):
@@ -1920,7 +1841,6 @@ class PythonicGUI:
     
     def _on_pitch_mod_mode_change(self, value):
         if not self.updating_ui:
-            self._push_undo_state()
             self._set_sound('osc.mod_mode', value)
     
     def _on_pitch_amount_change(self, value):
@@ -1941,7 +1861,6 @@ class PythonicGUI:
     
     def _on_noise_filter_mode_change(self, value):
         if not self.updating_ui:
-            self._push_undo_state()
             self._set_sound('noise.filter', value)
     
     def _on_noise_freq_change(self, value):
@@ -1954,12 +1873,10 @@ class PythonicGUI:
     
     def _on_stereo_toggle(self, enabled):
         if not self.updating_ui:
-            self._push_undo_state()
             self._set_sound('noise.stereo', bool(enabled))
     
     def _on_noise_env_mode_change(self, value):
         if not self.updating_ui:
-            self._push_undo_state()
             self._set_sound('noise.env', value)
     
     def _on_noise_attack_change(self, value):
@@ -1997,7 +1914,6 @@ class PythonicGUI:
     
     def _on_pattern_edit(self, channel_id, step, lane_type, value):
         """Handle pattern editor edits (the core applies them at block start)"""
-        self._push_undo_state()
         self.core.set(self._step_address(channel_id, step, lane_type), value)
     
     def _on_toggle_prob_mode(self):
@@ -2016,11 +1932,12 @@ class PythonicGUI:
     
     def _on_pattern_edit_all(self, step, lane_type, value, muted_channels):
         """Shift+click: the same step on every channel not in muted_channels
-        (the editor passes none, so muted channels are included)"""
-        self._push_undo_state()
+        (the editor passes none, so muted channels are included); one undo step"""
+        self.core.begin_gesture()
         for ch_idx in range(8):
             if ch_idx not in muted_channels:
                 self.core.set(self._step_address(ch_idx, step, lane_type), value)
+        self.core.end_gesture()
     
     def _on_pattern_length_change(self, new_length):
         """Handle pattern length change (the editors follow from poll)"""
@@ -2154,7 +2071,6 @@ class PythonicGUI:
         if gen is None:
             return
         try:
-            self._push_undo_state()
             raw_patches = self._get_raw_patches_from_synth()
             pm = self.pattern_manager
             temp = self.preferences_manager.get(
@@ -2168,7 +2084,8 @@ class PythonicGUI:
                 n=1,
                 temperature=temp,
             )
-            pm.apply_single_pattern(pattern_idx, patterns[0])
+            with self.core.bulk_change('AI pattern', parts=(pattern_part(pattern_idx),)):
+                pm.apply_single_pattern(pattern_idx, patterns[0])
             self._update_pattern_editors()
         except Exception as e:
             messagebox.showerror("Error",
@@ -2180,7 +2097,6 @@ class PythonicGUI:
         if gen is None:
             return
         try:
-            self._push_undo_state()
             raw_patches = self._get_raw_patches_from_synth()
             pm = self.pattern_manager
             temp = self.preferences_manager.get(
@@ -2194,7 +2110,8 @@ class PythonicGUI:
                 n=1,
                 temperature=temp,
             )
-            pm.apply_single_channel(pattern_idx, channel_id, patterns[0])
+            with self.core.bulk_change('AI channel', parts=(pattern_part(pattern_idx),)):
+                pm.apply_single_channel(pattern_idx, channel_id, patterns[0])
             self._update_pattern_editors()
         except Exception as e:
             messagebox.showerror("Error",
@@ -2376,7 +2293,6 @@ class PythonicGUI:
     
     def _on_matrix_edit(self, channel_id, step, value):
         """Handle matrix editor edits"""
-        self._push_undo_state()
         self.core.set(self._step_address(channel_id, step, 'trig'), value)
     
     def _lane(self, channel_id, field):
@@ -2529,16 +2445,17 @@ class PythonicGUI:
         core = self.core
         prefix = f'ch{self.selected_channel + 1}.'
         
-        # Update patch name - use fallback if empty
-        name = core.get(prefix + 'name')
-        self.patch_name_label.config(text=name if name else f"Channel {self.selected_channel + 1}")
-        
-        # Update drum type labels for all 8 channels
-        for i, lbl in enumerate(self.channel_type_labels):
-            lbl.config(text=infer_drum_type(core.get(f'ch{i + 1}.name')))
-        
+        self._show_names()
         for suffix, show in self._sound_widgets.items():
             show(core.get(prefix + suffix))
+
+    def _show_names(self):
+        """The patch name of the selected channel and the 8 drum type labels."""
+        core = self.core
+        name = core.get(f'ch{self.selected_channel + 1}.name')
+        self.patch_name_label.config(text=name if name else f"Channel {self.selected_channel + 1}")
+        for i, lbl in enumerate(self.channel_type_labels):
+            lbl.config(text=infer_drum_type(core.get(f'ch{i + 1}.name')))
     
     def _build_address_widget_tables(self):
         """Address -> function showing its value (engine units) on the widgets.
@@ -2578,7 +2495,7 @@ class PythonicGUI:
         
         self._sound_widgets = {
             # Mixing
-            'mix.osc_noise': lambda v: self.mix_slider.set(v * 100),
+            'mix.osc_noise': lambda v: self._show_scale(self.mix_slider, v * 100),
             'eq.freq': self.eq_freq_knob.set_value,
             'eq.gain': self.eq_gain_knob.set_value,
             'mix.distortion': percent(self.distort_knob),
@@ -2633,16 +2550,32 @@ class PythonicGUI:
             'global.tempo': lambda v: self.bpm_var.set(str(v)),
             'global.step_rate': self._show_step_rate,
             'global.fill_rate': self._show_fill_rate,
-            'global.swing': lambda v: self.global_swing_slider.set(int(round(v * 100))),
+            'global.swing': lambda v: self._show_scale(self.global_swing_slider, v * 100),
             'global.master': self.master_knob.set_value,
             'global.edit_all': self.edit_all_btn.set_value,
             'morph.position': self._show_morph_position,
+            'undo.can_undo': self._show_undo_state,
+            'undo.can_redo': self._show_undo_state,
         }
     
     def _show_morph_position(self, position):
         """A new morph position (from poll): the knobs show the blended sound."""
-        self.morph_slider.set(int(round(position * 100)))
+        self._show_scale(self.morph_slider, position * 100)
         self._update_ui_from_channel()
+
+    def _show_scale(self, scale, value):
+        """Show a value on a tk.Scale. The scale reports any change to its
+        command later (when idle), so the value shown is remembered as an echo
+        for _scale_echo to drop."""
+        value = int(round(value))
+        if scale.get() != value:
+            scale.set(value)
+            if scale.get() == value:  # a disabled scale ignores set
+                self._scale_echoes[scale] = value
+
+    def _scale_echo(self, scale, value):
+        """True when a tk.Scale command only reports a value shown from poll."""
+        return self._scale_echoes.pop(scale, None) == int(round(float(value)))
     
     def _show_changes(self, changes):
         """Refresh the widgets of the addresses the core reports as changed."""
@@ -2655,11 +2588,14 @@ class PythonicGUI:
             patterns = [a for a in changes if a.startswith('pattern.')]
             if patterns:
                 self._show_pattern_changes(patterns)
+            names = False
             for address, value in changes.items():
                 if address.startswith('ch'):
                     head, _, suffix = address.partition('.')
                     if suffix == 'mute':
                         self._show_mute(int(head[2:]) - 1, value)
+                    elif suffix == 'name':
+                        names = True
                     elif address.startswith(prefix):
                         show = self._sound_widgets.get(suffix)
                         if show is not None:
@@ -2668,6 +2604,8 @@ class PythonicGUI:
                     show = self._global_widgets.get(address)
                     if show is not None:
                         show(value)
+            if names:
+                self._show_names()
         finally:
             self.updating_ui = False
     
@@ -2732,7 +2670,8 @@ class PythonicGUI:
         if filename:
             try:
                 # Load the drum patch into the currently selected channel
-                self.preset_manager.load_drum_patch(filename, self.selected_channel)
+                with self.core.bulk_change('Load drum patch', parts=('channels',)):
+                    self.preset_manager.load_drum_patch(filename, self.selected_channel)
                 
                 # Update UI to reflect the new drum parameters
                 self._update_ui_from_channel()
@@ -2798,8 +2737,11 @@ class PythonicGUI:
                 messagebox.showerror("Error", f"Failed to export: {e}")
     
     def _load_preset_file(self, filename, show_message=True):
-        """Load a preset file (internal helper)"""
-        self._push_undo_state()
+        """Load a preset file (internal helper); one undo step"""
+        with self.core.bulk_change('Load preset'):
+            self._read_preset_file(filename, show_message)
+
+    def _read_preset_file(self, filename, show_message):
         try:
             if filename.lower().endswith('.mtpreset'):
                 # Load native Pythonic preset format
@@ -2833,10 +2775,8 @@ class PythonicGUI:
                                 btn.config(bg=self.COLORS['bg_light'])
 
                     # Swing, fill rate and master volume are part of the sound
-                    if 'swing' in preset_data:
+                    if 'swing' in preset_data:  # the slider follows poll
                         self.pattern_manager.set_swing(float(preset_data['swing']))
-                        if hasattr(self, 'global_swing_slider'):
-                            self.global_swing_slider.set(int(round(self.pattern_manager.swing * 100)))
                     if 'fill_rate' in preset_data:
                         rate = float(preset_data['fill_rate'])
                         self.pattern_manager.set_fill_rate(rate)
@@ -2864,9 +2804,9 @@ class PythonicGUI:
                     # Set morph position from mtpreset if available
                     morph_pos = preset_data.get('morph_position')
                     if morph_pos is not None:
-                        self.morph_slider.set(int(float(morph_pos) * 100))
+                        self.core.set('morph.position', float(morph_pos))
                     else:
-                        self.morph_slider.set(50)  # Center morph after loading
+                        self.core.set('morph.position', 0.5)  # Center morph after loading
                     self._update_morph_ui()
                     
                     self._update_ui_from_channel()
@@ -2910,11 +2850,11 @@ class PythonicGUI:
                 # Load morph data if available
                 if 'morph' in data:
                     self.morph_manager.from_dict(data['morph'])
-                    self.morph_slider.set(int(self.morph_manager.position * 100))
+                    self.core.set('morph.position', self.morph_manager.position)
                 else:
                     # No morph data - initialize fresh endpoints
                     self.morph_manager._init_endpoints()
-                    self.morph_slider.set(50)
+                    self.core.set('morph.position', 0.5)
                 self._update_morph_ui()
                 
                 # Load program bank if available
@@ -3092,34 +3032,19 @@ class PythonicGUI:
             self.channel_buttons[channel].set_triggered(True)
             self.root.after(100, lambda: self.channel_buttons[channel].set_triggered(False))
     
-    def _push_cc_burst(self, event):
-        """A MIDI CC burst the core closed (400 ms idle): one undo step, with
-        the snapshot the core took before it."""
-        self._undo_stack.append(event['snapshot'])
-        if len(self._undo_stack) > self._max_undo:
-            self._undo_stack.pop(0)
-        self._redo_stack.clear()
-        self._update_undo_redo_buttons()
-    
-    def _register_undo_on_widgets(self):
-        """Register undo/redo callbacks on all knobs and sliders"""
-        undo_cb = self._push_undo_state_deferred
-        widgets = [
-            self.eq_freq_knob, self.distort_knob, self.eq_gain_knob,
-            self.level_knob, self.pan_knob,
-            self.osc_freq_knob, self.pitch_knob, self.pitch_amount_knob, self.pitch_rate_knob,
-            self.osc_attack_knob, self.osc_decay_knob,
-            self.noise_freq_knob, self.noise_q_knob,
-            self.noise_attack_slider, self.noise_decay_slider,
-            self.osc_vel_slider, self.noise_vel_slider, self.mod_vel_slider,
-            self.vintage_knob,
-            self.reverb_decay_knob, self.reverb_mix_knob, self.reverb_width_knob,
-            self.delay_feedback_knob, self.delay_mix_knob,
-        ]
-        for w in widgets:
-            w.command_end = undo_cb
-        # Initial snapshot so the first undo has a baseline
-        self._push_undo_state()
+    def _register_gestures(self):
+        """Every knob, slider and lane editor brackets a drag as one undo
+        step and marks wheel turns as bursts (_on_control_gesture)."""
+        def walk(widget):
+            yield widget
+            for child in widget.winfo_children():
+                yield from walk(child)
+        for widget in walk(self.root):
+            if isinstance(widget, (RotaryKnob, VerticalSlider, PatternEditor, MatrixEditor)):
+                widget.command_end = self._on_control_gesture
+        for scale in (self.morph_slider, self.mix_slider, self.global_swing_slider):
+            scale.bind('<ButtonPress-1>', lambda e: self.core.begin_gesture(), add='+')
+            scale.bind('<ButtonRelease-1>', lambda e: self.core.end_gesture(), add='+')
 
     def _register_cc_parameters(self):
         """Offer the knobs and sliders for MIDI learn (ranges come from the core's describe)"""
@@ -3208,11 +3133,11 @@ class PythonicGUI:
     def _show_po32_import(self):
         """Open the PO-32 import dialog (with pattern & bank support)."""
         def on_import_complete():
-            """Refresh all UI after import."""
+            """Refresh all UI after import (still inside the import's undo step)."""
             self._update_ui_from_channel()
             self._update_pattern_editors()
-            # Reset morph slider and update learn buttons after import
-            self.morph_slider.set(0)
+            # Morph back to endpoint A (the slider follows poll)
+            self.core.set('morph.position', 0.0)
             self._update_morph_ui()
         
         dialog = PO32ImportDialog(
@@ -3221,6 +3146,7 @@ class PythonicGUI:
             pattern_manager=self.pattern_manager,
             on_import_callback=on_import_complete,
             preferences_manager=self.preferences_manager,
+            apply_change=self.core.bulk_change,
         )
         # Store morph_manager on root so PO32ImportDialog can find it
         self.root.morph_manager = self.morph_manager
@@ -3245,7 +3171,7 @@ class PythonicGUI:
             self.core.act('transport.stop')
 
         def on_apply(mode='patches'):
-            self._push_undo_state()
+            # The dialog applied inside core.bulk_change: one undo step
             self._update_ui_from_channel()
             if mode == 'patches_and_patterns':
                 self._update_pattern_editors()
@@ -3265,6 +3191,7 @@ class PythonicGUI:
             on_apply_callback=on_apply,
             start_transport=start_transport,
             stop_transport=stop_transport,
+            apply_change=self.core.bulk_change,
         )
         self.root.wait_window(dialog.dialog)
 
@@ -4400,9 +4327,6 @@ class PythonicGUI:
             self._show_changes(state['changes'])
         
         for event in state['events']:
-            if event.get('kind') == 'cc_burst':
-                self._push_cc_burst(event)
-                continue
             callback = self._action_callbacks.pop(event.get('id'), None)
             if callback is not None:
                 callback(event)

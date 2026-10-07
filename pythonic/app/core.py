@@ -16,6 +16,11 @@ the audio stream, driven through an address-based interface (ADR 0001).
   the core's MIDI thread (see ``midi.py``).
 - Pattern steps, lanes, pattern ops, selection, the queue and chains
   (``pattern.*``) are in ``patterns.py``.
+- Undo and redo (``undo`` / ``redo`` verbs, ``undo.*`` addresses): every set
+  is journaled (``undo.py``); a front-end brackets a drag with
+  ``begin_gesture()`` / ``end_gesture()``, a wheel or controller passes
+  ``burst=True``, and code not moved into the core yet wraps its direct
+  engine writes in ``with core.bulk_change(label):``.
 
 The core never calls into a UI thread: front-ends poll on their own timer.
 """
@@ -29,7 +34,7 @@ import time
 
 from pythonic.drum_channel import DrumChannel
 from pythonic.morph_manager import MorphManager
-from pythonic.pattern_manager import Pattern, PatternManager
+from pythonic.pattern_manager import PatternManager
 from pythonic.preferences_manager import PreferencesManager
 from pythonic.preset_manager import PresetManager
 from pythonic.sequencer import StepSequencer
@@ -40,6 +45,7 @@ from .midi import MidiInput, import_mido
 from .patterns import Patterns
 from .registry import Address, Registry
 from .sound import SOUND_PARAMS, SOUND_SUFFIXES
+from .undo import PRESET, Undo
 
 _DEFAULT = object()
 _MAX_EVENTS = 256
@@ -112,6 +118,8 @@ class AppCore:
 
         self.registry = Registry()
         self._register_addresses()
+        self.undo = Undo(self, clock)
+        self.undo.register(self.registry)
         self.patterns = Patterns(self)
         self.patterns.register(self.registry)
         self.midi = MidiInput(self, midi_backend, clock, prefs)
@@ -120,8 +128,7 @@ class AppCore:
             'audio.start': self._verb_audio_start,
             'audio.stop': self._verb_audio_stop,
             'audio.apply': self._verb_audio_apply,
-            # Temporary until the undo journal lands (slice 5)
-            'legacy.restore_snapshot': self._verb_restore_snapshot,
+            **self.undo.verbs(),
             **self.patterns.verbs(),
             **self.midi.verbs(),
         }
@@ -157,7 +164,7 @@ class AppCore:
     def get(self, address):
         return self.registry[address].get()
 
-    def set(self, address, value, *, edit_all=None):
+    def set(self, address, value, *, edit_all=None, burst=False, record=True):
         """Queue a change; the audio thread applies it at the next block start.
 
         The value is clamped to the address range (ValueError if it is not a
@@ -166,21 +173,35 @@ class AppCore:
         to the same parameter of every unmuted channel, in the same block.
         Callers restoring state pass ``edit_all=False``.
         The addresses an address names as ``related`` are reported with it.
+
+        The change is one undo step (with what Edit all changed), or part of
+        the open gesture; with ``burst=True`` (a wheel, a MIDI controller) the
+        changes of this address are one step until 400 ms pass without one.
+        ``record=False`` keeps it out of the journal (MIDI clock, pitch bend).
         """
         entry = self.registry[address]
         if entry.readonly:
             raise ValueError(f'address is read-only: {address}')
         value = entry.coerce(value)
+        journal = record and entry.undoable and self.undo.journal.recording
+        if journal:
+            # Old values, read before the change is queued (it may apply at once)
+            companions = [(name, self._latest(name)) for name in entry.companions]
+            olds = {address: self._latest(address)}
         if not entry.queued:
             entry.set(value)
             self._note_change(address, entry.get())
             self.note_changes(entry.related)
+            if journal:
+                self.undo.record_set(address, (address,), olds, value, companions, 0, burst)
             return
         others = self._edit_all_others(address, edit_all)
         if not others:
             seq = self.audio.submit_call(entry.set, value)
             names = (address,)
         else:
+            if journal:
+                olds.update((name, self._latest(name)) for _index, name in others)
             # Which channels are unmuted is read at block start, after any
             # mute queued before this change
             names = [address]
@@ -198,6 +219,24 @@ class AppCore:
             seq = self.audio.submit_call(apply_all, value)
         with self._cond:
             self._pending.append((seq, names, value, entry.related))
+        if journal:
+            self.undo.record_set(address, names, olds, value, companions, seq, burst)
+
+    def begin_gesture(self):
+        """Start a gesture (a drag, a paint stroke): the sets until
+        end_gesture() are one undo step. A new gesture ends an open one."""
+        self.undo.journal.begin_gesture()
+
+    def end_gesture(self):
+        self.undo.journal.end_gesture()
+
+    def bulk_change(self, label, parts=PRESET):
+        """Context manager for code that writes the engine directly (dialogs
+        and loaders not moved into the core yet): everything changed inside is
+        one undo step, and poll reports every value it may have changed.
+        ``parts`` limits the snapshot ('channels', 'globals', 'programs',
+        'morph', 'patterns'; default the whole preset)."""
+        return self.undo.bulk_change(label, parts)
 
     def _edit_all_others(self, address, edit_all):
         """(channel index, address) of the same sound parameter on the other
@@ -227,8 +266,11 @@ class AppCore:
     def _latest(self, address):
         """The newest value of an address: a queued set the audio thread has
         not applied yet, else the current value."""
+        drained = self.audio.drained_seq
         with self._cond:
-            for _seq, names, value, _related in reversed(self._pending):
+            for seq, names, value, _related in reversed(self._pending):
+                if seq <= drained:
+                    continue  # applied: the current value is newer (an undo, a verb)
                 if address in names:
                     return value
         return self.get(address)
@@ -244,7 +286,7 @@ class AppCore:
         ``midi`` holds the MIDI activity and per-channel note counters and the
         pickup state of each CC-driven control (controller position, linked).
         """
-        self.midi.close_idle_bursts(self._clock())
+        self.undo.journal.close_idle()
         self._collect_audio_reports()
         with self._cond:
             self._promote_applied()
@@ -295,14 +337,6 @@ class AppCore:
             self.act('midi.open', device=prefs.get('midi_input_device'), fallback=True)
         return action_id
 
-    def legacy_snapshot(self):
-        """Temporary until the undo journal (slice 5): a deep copy of the synth
-        preset data, the patterns and the morph, the form legacy.restore_snapshot
-        takes."""
-        return (copy.deepcopy(self.synth.get_preset_data()),
-                copy.deepcopy(self.pattern_manager.to_dict()),
-                copy.deepcopy(self.morph_manager.to_dict()))
-
     def close(self):
         """Stop the action thread and the stream, release the synth."""
         if self._closed:
@@ -319,6 +353,13 @@ class AppCore:
         with self._cond:
             self._version += 1
             self._changes[address] = (self._version, value)
+
+    def note_values(self, values):
+        """Report addresses with the given values as one change."""
+        with self._cond:
+            self._version += 1
+            for name, value in values.items():
+                self._changes[name] = (self._version, value)
 
     def note_changes(self, addresses):
         """Report the current values of several addresses as one change."""
@@ -431,7 +472,7 @@ class AppCore:
 
     def _monitor(self):
         """Periodic work on the action thread: reports, perf print, stall check."""
-        self.midi.close_idle_bursts(self._clock())
+        self.undo.journal.close_idle()
         self._collect_audio_reports()
         audio = self.audio
         now = time.monotonic()
@@ -536,7 +577,7 @@ class AppCore:
                             curve=param.curve, labels=param.labels))
             reg(Address(f'{prefix}.mute', get=lambda c=channel: bool(c().muted),
                         set=lambda v, i=index: self.synth.mute_channel(i, v),
-                        kind='bool', default=False))
+                        kind='bool', default=False, undoable=False))
             reg(Address(f'{prefix}.name', get=lambda c=channel: c().name, kind='str'))
 
     def _register_global_addresses(self):
@@ -568,10 +609,11 @@ class AppCore:
                     minimum=-60.0, maximum=10.0, default=0.0, unit='dB'))
         reg(Address('global.channel', get=lambda: self.synth.selected_channel + 1,
                     set=lambda v: self.synth.select_channel(v - 1), kind='int',
-                    minimum=1, maximum=PythonicSynthesizer.NUM_CHANNELS, default=1))
+                    minimum=1, maximum=PythonicSynthesizer.NUM_CHANNELS, default=1,
+                    undoable=False))
         reg(Address('global.edit_all', get=lambda: self._edit_all,
                     set=lambda v: setattr(self, '_edit_all', v), kind='bool',
-                    default=False, queued=False))
+                    default=False, queued=False, undoable=False))
         reg(Address('morph.position', get=lambda: float(self.morph_manager.position),
                     set=set_morph_position, minimum=0.0, maximum=1.0, default=0.0,
                     unit='ratio'))
@@ -645,35 +687,3 @@ class AppCore:
         self.audio.install(synth, sequencer)
         self.preset_manager.synth = synth
         self.morph_manager.synth = synth
-
-    def _verb_restore_snapshot(self, snapshot):
-        """Temporary: restore an undo snapshot of the tkinter GUI (synth preset
-        data, pattern dict, morph dict; old snapshots have no morph part)."""
-        if len(snapshot) == 3:
-            synth_data, pattern_data, morph_data = snapshot
-        else:
-            synth_data, pattern_data = snapshot
-            morph_data = None
-        synth_data = copy.deepcopy(synth_data)
-        patterns = [Pattern.from_dict(p) for p in pattern_data['patterns']]
-        morph_data = copy.deepcopy(morph_data)
-
-        def apply():
-            self.synth.load_preset_data(synth_data)
-            pm = self.pattern_manager
-            pm.patterns = patterns
-            pm.selected_pattern_index = pattern_data.get('selected_pattern_index', 0)
-            pm.playing_pattern_index = pattern_data.get('playing_pattern_index', 0)
-            pm.bpm = pattern_data.get('bpm', 120)
-            pm.fill_rate = pattern_data.get('fill_rate', 4)
-            pm.step_rate = pattern_data.get('step_rate', '1/16')
-            pm._update_step_duration()
-            if morph_data:
-                self.morph_manager.from_dict(morph_data)
-
-        try:
-            self.at_block_start(apply)
-        except TimeoutError:
-            raise TimeoutError('the audio stream did not apply the snapshot in time') from None
-        gc.freeze()
-        return {'morph_position': self.morph_manager.position}

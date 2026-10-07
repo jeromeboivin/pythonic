@@ -27,9 +27,8 @@ the value (a knob, a preset, the morph) unlinks it until the next crossing.
 ghost marker.
 
 **CC bursts**: the CC changes of one control are one undo step, closed after
-400 ms without a change on that control. Until the undo journal lands, each
-burst carries a snapshot of the state before it (``AppCore.legacy_snapshot``)
-for the front-end's snapshot undo, reported as a ``cc_burst`` poll event.
+400 ms without a change on that control (``set(..., burst=True)``, see
+``undo.py``). The MIDI clock tempo and pitch bend are not journaled.
 """
 
 import queue
@@ -45,7 +44,6 @@ from .registry import Address
 NUM_CHANNELS = 8
 NUM_PATTERNS = 12
 MAX_BASE_NOTE = 127 - (NUM_CHANNELS - 1)
-BURST_IDLE_S = 0.4
 PITCHBEND_DEAD_ZONE = 0.02
 # A controller within half a CC step of the value is on it
 LINK_TOLERANCE = 0.5 / 127 + 1e-9
@@ -149,19 +147,8 @@ class _Pickup:
         self.count = 0        # CC messages received (a front-end blinks on change)
 
 
-class _Burst:
-    __slots__ = ('address', 'old', 'new', 'last', 'snapshot')
-
-    def __init__(self, address, old, new, last, snapshot):
-        self.address = address
-        self.old = old
-        self.new = new
-        self.last = last
-        self.snapshot = snapshot
-
-
 class MidiInput:
-    """The core's MIDI input: device, routing, CC map, learn, pickup, bursts."""
+    """The core's MIDI input: device, routing, CC map, learn, pickup."""
 
     def __init__(self, core, backend, clock, preferences):
         self._core = core
@@ -180,7 +167,6 @@ class MidiInput:
         self._pitchbend_target = self._read_pitchbend_target()
         self._learn = None   # (action id, target)
         self._pickup = {}    # address -> _Pickup
-        self._bursts = {}    # address -> _Burst
         self._bend = None    # (address, value at bend start)
         self.activity = 0
         self.notes = [0] * NUM_CHANNELS
@@ -195,15 +181,17 @@ class MidiInput:
         self._device_entry = reg(Address('midi.device', get=lambda: self._port_name, kind='str'))
         reg(Address('midi.connected', get=lambda: self._port is not None, kind='bool'))
         reg(Address('midi.base_note', get=lambda: self.base_note, set=self._set_base_note,
-                    kind='int', minimum=0, maximum=MAX_BASE_NOTE, default=36, queued=False))
+                    kind='int', minimum=0, maximum=MAX_BASE_NOTE, default=36, queued=False,
+                    undoable=False))
         reg(Address('midi.clock_sync', get=lambda: self.clock_sync, set=self._set_clock_sync,
-                    kind='bool', default=True, queued=False))
+                    kind='bool', default=True, queued=False, undoable=False))
         reg(Address('midi.synced_tempo', get=lambda: self._tempo.reported, kind='int',
                     unit='BPM'))
         reg(Address('midi.cc_map', get=self.cc_map, set=self._set_cc_map, kind='map',
-                    queued=False))
+                    queued=False, undoable=False))
         reg(Address('midi.pitchbend_target', get=lambda: self._pitchbend_target,
-                    set=self._set_pitchbend_target, kind='str', queued=False))
+                    set=self._set_pitchbend_target, kind='str', queued=False,
+                    undoable=False))
         reg(Address('midi.learning', get=lambda: self._learn[1] if self._learn else None,
                     kind='str'))
 
@@ -440,7 +428,7 @@ class MidiInput:
                     self._core.trigger(channel, msg.velocity, at)
                     self.notes[channel] += 1
         elif kind == 'control_change':
-            self._on_cc(msg.control, msg.value, at)
+            self._on_cc(msg.control, msg.value)
         elif kind == 'pitchwheel':
             self._on_pitchbend(msg.pitch / 8192.0)
         elif kind == 'program_change':
@@ -450,7 +438,7 @@ class MidiInput:
             if self.clock_sync:
                 bpm = self._tempo.tick(at)
                 if bpm is not None:
-                    self._core.set('global.tempo', bpm)
+                    self._core.set('global.tempo', bpm, record=False)
                     self._core._note_change('midi.synced_tempo', bpm)
         elif kind == 'start':
             self._tempo.reset(full=True)
@@ -462,7 +450,7 @@ class MidiInput:
             self._core.patterns.resume()
 
     # ------------------------------------------------------------------ CC
-    def _on_cc(self, control, value, at):
+    def _on_cc(self, control, value):
         core = self._core
         with self._lock:
             learn = self._learn
@@ -509,45 +497,7 @@ class MidiInput:
                 return
             new = entry.denormalize(position)
             state.expected = new
-        self._touch_burst(address, current, new, at)
-        core.set(address, new)
-
-    # ------------------------------------------------------------------ bursts
-    def _touch_burst(self, address, old, new, at):
-        with self._lock:
-            burst = self._bursts.get(address)
-            closed = None
-            if burst is not None and at - burst.last > BURST_IDLE_S:
-                closed = self._bursts.pop(address)
-                burst = None
-            if burst is not None:
-                burst.new = new
-                burst.last = at
-        if closed is not None:
-            self._post_burst(closed)
-        if burst is None:
-            snapshot = self._core.legacy_snapshot()  # the state before the burst
-            with self._lock:
-                self._bursts[address] = _Burst(address, old, new, at, snapshot)
-
-    def close_idle_bursts(self, now):
-        """Report the bursts idle for more than 400 ms as undo steps."""
-        with self._lock:
-            if not self._bursts:
-                return
-            closed = [b for b in self._bursts.values() if now - b.last > BURST_IDLE_S]
-            for burst in closed:
-                del self._bursts[burst.address]
-        for burst in closed:
-            self._post_burst(burst)
-
-    def _post_burst(self, burst):
-        entry = self._core.registry[burst.address]
-        if abs(entry.normalize(burst.old) - entry.normalize(burst.new)) < 1e-9:
-            return  # back where it started: nothing to undo
-        self._core._post({'id': None, 'verb': None, 'status': 'done', 'source': 'midi',
-                          'kind': 'cc_burst', 'address': burst.address, 'old': burst.old,
-                          'new': burst.new, 'snapshot': burst.snapshot})
+        core.set(address, new, burst=True)
 
     # ------------------------------------------------------------------ pitch bend
     def _on_pitchbend(self, bend):
@@ -557,7 +507,7 @@ class MidiInput:
             if self._bend is not None:
                 address, original = self._bend
                 self._bend = None
-                core.set(address, original)
+                core.set(address, original, record=False)
             return
         if target is None:
             return
@@ -566,7 +516,7 @@ class MidiInput:
             self._bend = (address, core._latest(address))
         address, original = self._bend
         entry = core.registry[address]
-        core.set(address, entry.denormalize(entry.normalize(original) + bend * 0.5))
+        core.set(address, entry.denormalize(entry.normalize(original) + bend * 0.5), record=False)
 
     # ================================================================== poll
     def readout(self):

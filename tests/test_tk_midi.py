@@ -106,20 +106,22 @@ def test_cc_moves_the_knob_through_poll_after_pickup(app):
 
 def test_a_cc_burst_is_one_undo_step(app):
     app.core.set('midi.cc_map', {20: 'selected.mix.level'})
-    steps = len(app._undo_stack)
     send(app, cc(20, 0), cc(20, 127), cc(20, 100))
     app.clock.t += 0.5
     app._ui_update_tick()
-    assert len(app._undo_stack) == steps + 1
+    assert app.undo_btn.cget('state') == 'normal'
 
     app._on_undo()
     end = time.monotonic() + 5.0
-    while app._restore_pending and time.monotonic() < end:
-        app.backend.stream.pull()  # the restore waits for block start
-        app._ui_update_tick()
+    while app.core.get('ch1.mix.level') != 0.0 and time.monotonic() < end:
+        app.backend.stream.pull()  # the undo waits for block start
         time.sleep(0.002)
+    app.backend.stream.pull()
+    app._ui_update_tick()
     assert app.core.get('ch1.mix.level') == 0.0
     assert app.level_knob.get_value() == 0.0
+    assert app.undo_btn.cget('state') == 'disabled'
+    assert app.redo_btn.cget('state') == 'normal'
 
 
 def test_notes_flash_the_channel_and_program_change_selects_the_pattern(app):

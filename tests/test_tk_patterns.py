@@ -96,7 +96,8 @@ def test_lane_edits_go_through_the_core(app):
     assert app.core.get('pattern.A.ch1.step5.acc') is True
     assert app.core.get('pattern.A.ch1.step5.prob') == 30
     assert app.core.get('pattern.A.ch1.step5.sub') == 'oo'
-    assert app._undo_stack  # each edit is an undo step
+    assert app.core.get('undo.can_undo') is True  # each edit is an undo step
+    assert app.undo_btn.cget('state') == 'normal'
 
     app._on_pattern_edit_all(0, 'trig', True, set())
     tick(app)

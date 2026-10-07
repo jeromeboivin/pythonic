@@ -8,6 +8,7 @@ PO-32→PO-32 transfers (16 drums, 16 patterns).
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+import contextlib
 import threading
 import numpy as np
 import time
@@ -55,7 +56,8 @@ class PO32ImportDialog:
         'trigger_off': '#333344',
     }
     
-    def __init__(self, parent, synth, pattern_manager, on_import_callback=None, preferences_manager=None):
+    def __init__(self, parent, synth, pattern_manager, on_import_callback=None, preferences_manager=None,
+                 apply_change=None):
         """
         Args:
             parent: Parent tk window
@@ -63,11 +65,14 @@ class PO32ImportDialog:
             pattern_manager: PatternManager instance (for import target)
             on_import_callback: Called after successful import to refresh UI
             preferences_manager: PreferencesManager instance (for input device preference)
+            apply_change: apply_change(label) is a context manager around the
+                import (the app core's bulk_change: one undo step)
         """
         self.parent = parent
         self.synth = synth
         self.pattern_manager = pattern_manager
         self.on_import_callback = on_import_callback
+        self.apply_change = apply_change or (lambda label: contextlib.nullcontext())
         self.preferences_manager = preferences_manager
         
         # State
@@ -1266,99 +1271,101 @@ class PO32ImportDialog:
         bank = self.bank_var.get()
         bank_offset = bank * 8
         
-        # Import drum patches (8 drums from selected bank)
-        imported_drums = 0
-        for d in range(8):
-            drum_idx = d + bank_offset
-            if drum_idx in self.decoded_preset.left_patches:
-                patch = self.decoded_preset.left_patches[drum_idx]
-                if patch.synth_params:
-                    self.synth.channels[d].set_parameters(patch.synth_params)
-                    imported_drums += 1
+        # One change for the app core (one undo step)
+        with self.apply_change('PO-32 import'):
+            # Import drum patches (8 drums from selected bank)
+            imported_drums = 0
+            for d in range(8):
+                drum_idx = d + bank_offset
+                if drum_idx in self.decoded_preset.left_patches:
+                    patch = self.decoded_preset.left_patches[drum_idx]
+                    if patch.synth_params:
+                        self.synth.channels[d].set_parameters(patch.synth_params)
+                        imported_drums += 1
         
-        # Import morph endpoints if right patches (morph B) are available
-        # Access morph_manager from the main window if available
-        main_window = getattr(self.parent, 'master', None) or self.parent
-        morph_manager = None
-        # Walk up the widget tree to find the PythonicGUI instance
-        if hasattr(main_window, 'morph_manager'):
-            morph_manager = main_window.morph_manager
-        else:
-            # Try to find it via parent's attributes
-            for attr_name in dir(self.parent):
-                obj = getattr(self.parent, attr_name, None)
-                if hasattr(obj, 'morph_manager'):
-                    morph_manager = obj.morph_manager
-                    break
+            # Import morph endpoints if right patches (morph B) are available
+            # Access morph_manager from the main window if available
+            main_window = getattr(self.parent, 'master', None) or self.parent
+            morph_manager = None
+            # Walk up the widget tree to find the PythonicGUI instance
+            if hasattr(main_window, 'morph_manager'):
+                morph_manager = main_window.morph_manager
+            else:
+                # Try to find it via parent's attributes
+                for attr_name in dir(self.parent):
+                    obj = getattr(self.parent, attr_name, None)
+                    if hasattr(obj, 'morph_manager'):
+                        morph_manager = obj.morph_manager
+                        break
         
-        if morph_manager is not None:
-            # Set endpoint A from left patches (current state)
-            morph_manager.capture_endpoint_a()
+            if morph_manager is not None:
+                # Set endpoint A from left patches (current state)
+                morph_manager.capture_endpoint_a()
             
-            # If right patches exist, set them as endpoint B
-            has_right = any(
-                (d + bank_offset) in self.decoded_preset.right_patches 
-                for d in range(8)
-            )
-            if has_right:
-                # Temporarily apply right patches, capture as B, then restore A
-                right_params_applied = False
-                for d in range(8):
-                    drum_idx = d + bank_offset
-                    if drum_idx in self.decoded_preset.right_patches:
-                        patch = self.decoded_preset.right_patches[drum_idx]
-                        if patch.synth_params:
-                            self.synth.channels[d].set_parameters(patch.synth_params)
-                            right_params_applied = True
-                
-                if right_params_applied:
-                    morph_manager.capture_endpoint_b()
-                    # Restore left patches (endpoint A)
+                # If right patches exist, set them as endpoint B
+                has_right = any(
+                    (d + bank_offset) in self.decoded_preset.right_patches 
+                    for d in range(8)
+                )
+                if has_right:
+                    # Temporarily apply right patches, capture as B, then restore A
+                    right_params_applied = False
                     for d in range(8):
                         drum_idx = d + bank_offset
-                        if drum_idx in self.decoded_preset.left_patches:
-                            patch = self.decoded_preset.left_patches[drum_idx]
+                        if drum_idx in self.decoded_preset.right_patches:
+                            patch = self.decoded_preset.right_patches[drum_idx]
                             if patch.synth_params:
                                 self.synth.channels[d].set_parameters(patch.synth_params)
-            else:
-                # No right patches - both endpoints are the same
-                morph_manager.capture_endpoint_b()
+                                right_params_applied = True
+                
+                    if right_params_applied:
+                        morph_manager.capture_endpoint_b()
+                        # Restore left patches (endpoint A)
+                        for d in range(8):
+                            drum_idx = d + bank_offset
+                            if drum_idx in self.decoded_preset.left_patches:
+                                patch = self.decoded_preset.left_patches[drum_idx]
+                                if patch.synth_params:
+                                    self.synth.channels[d].set_parameters(patch.synth_params)
+                else:
+                    # No right patches - both endpoints are the same
+                    morph_manager.capture_endpoint_b()
         
-        # Import all selected patterns to their assigned destinations
-        # First, clear ALL 12 Pythonic patterns so non-imported ones are empty
-        letters = self.pattern_manager.PATTERN_NAMES
-        for i in range(len(letters)):
-            pat = self.pattern_manager.get_pattern(i)
-            pat.clear()
+            # Import all selected patterns to their assigned destinations
+            # First, clear ALL 12 Pythonic patterns so non-imported ones are empty
+            letters = self.pattern_manager.PATTERN_NAMES
+            for i in range(len(letters)):
+                pat = self.pattern_manager.get_pattern(i)
+                pat.clear()
         
-        imported_patterns = []
-        for pat_idx in sorted(self.selected_patterns):
-            if pat_idx >= len(self.decoded_preset.decoded_patterns):
-                continue
-            dest_letter = self.pattern_destinations.get(pat_idx)
-            if not dest_letter or dest_letter not in letters:
-                continue
+            imported_patterns = []
+            for pat_idx in sorted(self.selected_patterns):
+                if pat_idx >= len(self.decoded_preset.decoded_patterns):
+                    continue
+                dest_letter = self.pattern_destinations.get(pat_idx)
+                if not dest_letter or dest_letter not in letters:
+                    continue
             
-            dest_index = letters.index(dest_letter)
-            dp = self.decoded_preset.decoded_patterns[pat_idx]
-            triggers = get_pattern_triggers_for_bank(dp, bank)
+                dest_index = letters.index(dest_letter)
+                dp = self.decoded_preset.decoded_patterns[pat_idx]
+                triggers = get_pattern_triggers_for_bank(dp, bank)
             
-            target_pattern = self.pattern_manager.get_pattern(dest_index)
-            for d in range(8):
-                channel = target_pattern.get_channel(d)
-                step_triggers = triggers.get(d, [False] * 16)
-                for s in range(16):
-                    channel.steps[s].trigger = step_triggers[s]
-                    channel.steps[s].accent = False
-                    channel.steps[s].fill = False
-                    channel.steps[s].probability = 100
-                    channel.steps[s].substeps = ""
+                target_pattern = self.pattern_manager.get_pattern(dest_index)
+                for d in range(8):
+                    channel = target_pattern.get_channel(d)
+                    step_triggers = triggers.get(d, [False] * 16)
+                    for s in range(16):
+                        channel.steps[s].trigger = step_triggers[s]
+                        channel.steps[s].accent = False
+                        channel.steps[s].fill = False
+                        channel.steps[s].probability = 100
+                        channel.steps[s].substeps = ""
             
-            imported_patterns.append(f"#{pat_idx+1}\u2192{dest_letter}")
+                imported_patterns.append(f"#{pat_idx+1}\u2192{dest_letter}")
         
-        # Callback to refresh UI
-        if self.on_import_callback:
-            self.on_import_callback()
+            # Callback to refresh UI
+            if self.on_import_callback:
+                self.on_import_callback()
         
         pattern_desc = ', '.join(imported_patterns) if imported_patterns else 'none'
         messagebox.showinfo(

@@ -23,6 +23,11 @@ from tests.fake_audio import FakeAudioBackend
 # fixtures and helpers
 # ---------------------------------------------------------------------------
 
+def edits(poll):
+    """The changes of a poll without the undo journal state."""
+    return {a: v for a, v in poll['changes'].items() if not a.startswith('undo.')}
+
+
 @pytest.fixture
 def backend():
     return FakeAudioBackend()
@@ -245,14 +250,14 @@ def test_set_is_applied_at_block_start_and_reported_once_applied(make_core, back
     v0 = core.poll()['version']
     core.set('ch2.osc.freq', 1234)
     assert core.synth.channels[1].oscillator.frequency != 1234.0
-    assert core.poll(since=v0)['changes'] == {}  # not applied yet
+    assert edits(core.poll(since=v0)) == {}  # not applied yet
 
     backend.stream.pull()
     assert core.synth.channels[1].oscillator.frequency == 1234.0
     poll = core.poll(since=v0)
-    assert poll['changes'] == {'ch2.osc.freq': 1234.0}
+    assert edits(poll) == {'ch2.osc.freq': 1234.0}
     assert poll['version'] > v0
-    assert core.poll(since=poll['version'])['changes'] == {}
+    assert edits(core.poll(since=poll['version'])) == {}
 
 
 def test_poll_reports_the_clamped_value_with_increasing_versions(make_core):
@@ -260,11 +265,11 @@ def test_poll_reports_the_clamped_value_with_increasing_versions(make_core):
     v0 = core.poll()['version']
     core.set('global.tempo', 500)
     v1 = core.poll(since=v0)
-    assert v1['changes'] == {'global.tempo': 300}
+    assert edits(v1) == {'global.tempo': 300}
     core.set('global.tempo', 90)
     core.set('global.swing', 0.25)
     v2 = core.poll(since=v1['version'])
-    assert v2['changes'] == {'global.tempo': 90, 'global.swing': 0.25}
+    assert edits(v2) == {'global.tempo': 90, 'global.swing': 0.25}
     assert v2['version'] > v1['version']
 
 
@@ -273,7 +278,7 @@ def test_selection_and_mutes_are_reported_by_poll(make_core):
     v0 = core.poll()['version']
     core.set('global.channel', 3)
     core.set('ch3.mute', True)
-    assert core.poll(since=v0)['changes'] == {'global.channel': 3, 'ch3.mute': True}
+    assert edits(core.poll(since=v0)) == {'global.channel': 3, 'ch3.mute': True}
 
 
 # ---------------------------------------------------------------------------
@@ -293,7 +298,7 @@ def test_edit_all_applies_a_sound_change_to_every_unmuted_channel(make_core, bac
 
     mixes = [ch.reverb_mix for ch in core.synth.channels]
     assert mixes == [0.7, 0.7, 0.0, 0.7, 0.7, 0.7, 0.7, 0.7]
-    changes = core.poll(since=v0)['changes']
+    changes = edits(core.poll(since=v0))
     assert changes == {f'ch{n}.fx.reverb_mix': 0.7 for n in (1, 2, 4, 5, 6, 7, 8)}
 
 
@@ -305,7 +310,7 @@ def test_edit_all_honours_a_mute_queued_in_the_same_block(make_core, backend):
     core.set('ch1.fx.delay_mix', 0.4)
     backend.stream.pull()
     assert [ch.delay_mix for ch in core.synth.channels] == [0.4] * 5 + [0.0] + [0.4] * 2
-    changes = core.poll(since=v0)['changes']
+    changes = edits(core.poll(since=v0))
     assert 'ch6.fx.delay_mix' not in changes and changes['ch6.mute'] is True
     assert len(changes) == 8
 

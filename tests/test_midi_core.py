@@ -91,8 +91,12 @@ def link(core, midi, control):
     send(core, midi, cc(control, 0), cc(control, 127))
 
 
-def bursts(poll):
-    return [e for e in poll['events'] if e.get('kind') == 'cc_burst']
+def undo_steps(core):
+    """Undo every journaled step; returns how many there were."""
+    steps = 0
+    while done(core, core.act('undo'))['done']:
+        steps += 1
+    return steps
 
 
 # ---------------------------------------------------------------------------
@@ -354,27 +358,26 @@ def test_a_cc_burst_is_one_undo_step_closed_after_400_ms_idle(make_core, midi):
     clock = FakeClock(10.0)
     core = opened(make_core(clock=clock))
     core.set('midi.cc_map', {20: 'selected.mix.level', 21: 'selected.mix.pan'})
-    link(core, midi, 20)
+    link(core, midi, 20)  # 0 -> 10 dB: the first burst
     clock.t = 10.5
-    first = bursts(core.poll())
-    assert [(b['address'], b['old'], b['new']) for b in first] == [('ch1.mix.level', 0.0, 10.0)]
     version = core.poll()['version']
+    assert core.get('undo.can_undo') is True
 
     for t, value in ((11.0, 100), (11.3, 90), (11.6, 80)):
         clock.t = t
         send(core, midi, cc(20, value))
     clock.t = 11.95
-    assert bursts(core.poll(version)) == []      # 350 ms idle: still open
+    core.poll()  # 350 ms idle: still open
     clock.t = 12.05
-    steps = bursts(core.poll(version))
+    core.poll()
+    assert core.get('ch1.mix.level') == pytest.approx(-60.0 + 70.0 * 80 / 127)
 
-    assert len(steps) == 1
-    step = steps[0]
-    assert step['address'] == 'ch1.mix.level' and step['old'] == 10.0
-    assert step['new'] == pytest.approx(-60.0 + 70.0 * 80 / 127)
-    # The snapshot holds the state before the burst, for the undo bridge
-    done(core, core.act('legacy.restore_snapshot', snapshot=step['snapshot']))
+    done(core, core.act('undo'))
     assert core.get('ch1.mix.level') == 10.0
+    assert 'ch1.mix.level' in core.poll(version)['changes']
+    done(core, core.act('undo'))
+    assert core.get('ch1.mix.level') == 0.0
+    assert core.get('undo.can_undo') is False
 
 
 def test_bursts_are_per_control(make_core, midi):
@@ -385,18 +388,33 @@ def test_bursts_are_per_control(make_core, midi):
     clock.t = 10.2
     send(core, midi, cc(20, 127), cc(21, 64))
     clock.t = 10.7
-    steps = bursts(core.poll())
-    assert sorted(b['address'] for b in steps) == ['ch1.mix.level', 'ch1.mix.pan']
+    core.poll()
+    assert undo_steps(core) == 2
 
 
 def test_a_burst_that_returns_to_its_start_is_no_step(make_core, midi):
     clock = FakeClock(10.0)
     core = opened(make_core(clock=clock))
     core.set('midi.cc_map', {21: 'selected.mix.pan'})
-    core.set('ch1.mix.pan', -100.0 + 200.0 * 64 / 127)  # on the CC 64 step
+    core.set('ch1.mix.pan', -100.0 + 200.0 * 64 / 127, record=False)  # on the CC 64 step
     send(core, midi, cc(21, 64), cc(21, 100), cc(21, 64))
     clock.t = 11.0
-    assert bursts(core.poll()) == []
+    core.poll()
+    assert core.get('undo.can_undo') is False
+
+
+def test_clock_tempo_and_pitch_bend_are_not_undo_steps(make_core, midi):
+    clock = FakeClock(10.0)
+    core = opened(make_core(clock=clock))
+    core.set('midi.pitchbend_target', 'global.master')
+    send(core, midi, pitchwheel(4000))
+    assert core.get('global.master') != 0.0
+    send(core, midi, pitchwheel(0))
+    for _ in range(96):
+        clock.t += 60.0 / (93 * 24)
+        send(core, midi, message('clock'))
+    assert core.get('global.tempo') == 93
+    assert core.get('undo.can_undo') is False
 
 
 # ---------------------------------------------------------------------------

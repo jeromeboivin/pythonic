@@ -93,7 +93,9 @@ class RotaryKnob(tk.Canvas):
         self.unit = unit  # Unit string for display (Hz, dB, %, etc.)
         self.logarithmic = logarithmic  # Can be True, False, or a LOG_* type string
         self.command = command
-        self.command_end = command_end  # Called on mouse release after drag
+        # command_end(phase): 'start' / 'end' around a drag, 'wheel' /
+        # 'wheel_end' around a wheel notch (undo gestures and bursts)
+        self.command_end = command_end
         
         # Initialize value (convert default if logarithmic)
         self.value = default
@@ -364,7 +366,7 @@ class RotaryKnob(tk.Canvas):
         current_normalized = self._value_to_normalized(self.value)
         new_normalized = current_normalized + delta / 100.0
         new_normalized = max(0.0, min(1.0, new_normalized))
-        self.set_value(self._normalized_to_value(new_normalized))
+        self._wheel_to(new_normalized)
     
     def _on_scroll_linux(self, event):
         """Handle mouse wheel on Linux"""
@@ -373,8 +375,19 @@ class RotaryKnob(tk.Canvas):
         current_normalized = self._value_to_normalized(self.value)
         new_normalized = current_normalized + delta / 100.0
         new_normalized = max(0.0, min(1.0, new_normalized))
-        self.set_value(self._normalized_to_value(new_normalized))
+        self._wheel_to(new_normalized)
     
+    def _wheel_to(self, normalized):
+        """A wheel notch: command_end('wheel') / ('wheel_end') bracket the
+        change, so the app makes the turn one undo burst."""
+        if self.command_end:
+            self.command_end('wheel')
+        try:
+            self.set_value(self._normalized_to_value(normalized))
+        finally:
+            if self.command_end:
+                self.command_end('wheel_end')
+
     def set_mod_offset(self, offset):
         """Set modulation offset for visual feedback. Redraws only if changed."""
         if abs(offset - self._mod_offset) > 0.001:
@@ -420,7 +433,9 @@ class VerticalSlider(tk.Canvas):
         self.unit = unit
         self.logarithmic = logarithmic  # Support logarithmic scaling
         self.command = command
-        self.command_end = command_end  # Called on mouse release after drag
+        # command_end(phase): 'start' / 'end' around a drag, 'wheel' /
+        # 'wheel_end' around a wheel notch (undo gestures and bursts)
+        self.command_end = command_end
         
         # Track dimensions
         self.track_x = width // 2
@@ -622,7 +637,7 @@ class VerticalSlider(tk.Canvas):
         current_normalized = self._value_to_normalized(self.value)
         new_normalized = current_normalized + delta / 50.0
         new_normalized = max(0.0, min(1.0, new_normalized))
-        self.set_value(self._normalized_to_value(new_normalized))
+        self._wheel_to(new_normalized)
     
     def _on_scroll_linux(self, event):
         """Handle scroll on Linux"""
@@ -631,7 +646,7 @@ class VerticalSlider(tk.Canvas):
         current_normalized = self._value_to_normalized(self.value)
         new_normalized = current_normalized + delta / 50.0
         new_normalized = max(0.0, min(1.0, new_normalized))
-        self.set_value(self._normalized_to_value(new_normalized))
+        self._wheel_to(new_normalized)
     
     def _update_from_mouse(self, y):
         """Update value from mouse position"""
@@ -646,6 +661,17 @@ class VerticalSlider(tk.Canvas):
         
         self.set_value(value)
     
+    def _wheel_to(self, normalized):
+        """A wheel notch: command_end('wheel') / ('wheel_end') bracket the
+        change, so the app makes the turn one undo burst."""
+        if self.command_end:
+            self.command_end('wheel')
+        try:
+            self.set_value(self._normalized_to_value(normalized))
+        finally:
+            if self.command_end:
+                self.command_end('wheel_end')
+
     def set_mod_offset(self, offset):
         """Set modulation offset for visual feedback. Redraws only if changed."""
         if abs(offset - self._mod_offset) > 0.001:
@@ -1069,6 +1095,9 @@ class PatternEditor(tk.Canvas):
         self._drag_start_step = None
         self._drag_start_y = 0
         self._drag_value_lane = None  # 'prob' or 'vel' while a vertical drag edits a value
+        # command_end(phase): 'start' / 'end' around a drag (an undo gesture)
+        self.command_end = None
+        self._in_gesture = False
 
         # Draw initial
         self._draw()
@@ -1183,9 +1212,22 @@ class PatternEditor(tk.Canvas):
             self.dragging = True
             self.drag_lane = lane
             self.drag_start_x = event.x
+            self._begin_gesture()
             self._toggle_step(lane, step)
 
+    def _begin_gesture(self):
+        if self.command_end and not self._in_gesture:
+            self._in_gesture = True
+            self.command_end('start')
+
+    def _end_gesture(self):
+        if self._in_gesture:
+            self._in_gesture = False
+            if self.command_end:
+                self.command_end('end')
+
     def _start_value_drag(self, lane, step, y):
+        self._begin_gesture()
         self._drag_value_lane = lane
         self._drag_start_step = step
         self._drag_start_y = y
@@ -1349,6 +1391,7 @@ class PatternEditor(tk.Canvas):
         if self._drag_value_lane is not None:
             self._drag_value_lane = None
             self._draw()
+        self._end_gesture()
 
     def _toggle_step(self, lane, step):
         """Toggle a step in a lane"""
@@ -1728,6 +1771,9 @@ class MatrixEditor(tk.Canvas):
         # Interaction state
         self.dragging = False
         self.drag_channel = None
+        # command_end(phase): 'start' / 'end' around a drag (an undo gesture)
+        self.command_end = None
+        self._in_gesture = False
 
         # Draw initial
         self._draw()
@@ -1787,6 +1833,9 @@ class MatrixEditor(tk.Canvas):
         if channel is not None and step is not None:
             self.dragging = True
             self.drag_channel = channel
+            if self.command_end and not self._in_gesture:
+                self._in_gesture = True
+                self.command_end('start')
             self._toggle_cell(channel, step)
 
     def _on_drag(self, event):
@@ -1800,6 +1849,10 @@ class MatrixEditor(tk.Canvas):
         """Handle drag end"""
         self.dragging = False
         self.drag_channel = None
+        if self._in_gesture:
+            self._in_gesture = False
+            if self.command_end:
+                self.command_end('end')
 
     def _toggle_cell(self, channel, step):
         """Toggle a cell in the matrix"""

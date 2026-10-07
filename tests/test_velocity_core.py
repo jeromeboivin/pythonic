@@ -237,13 +237,13 @@ def test_lane_clipboard_carries_velocities(make_core):
     assert len(lane(core, 'F', 1, 'vel')) == 16 and core.get('pattern.F.ch1.step1.vel') == 11
 
 
-def test_undo_snapshots_keep_velocity_and_length(make_core):
+def test_undo_keeps_velocity_and_length(make_core):
     core = make_core()
     long_pattern(core)
-    snapshot = core.legacy_snapshot()
     run(core, 'pattern.clear', pattern='A')
     core.set('pattern.A.length', 16)
-    run(core, 'legacy.restore_snapshot', snapshot=snapshot)
+    run(core, 'undo')
+    run(core, 'undo')
     assert core.get('pattern.A.length') == 64
     assert core.get('pattern.A.ch1.step40.vel') == 99
 

@@ -26,6 +26,12 @@ class Address:
     ``convert`` checks and normalises a ``str`` or ``list`` value (raising
     ValueError). ``related`` names other addresses a set of this one changes as
     well; ``poll`` reports them with their values once the set is applied.
+
+    ``undoable=False`` keeps the sets of an address out of the undo journal
+    (transport, selection, mutes, modes, settings). ``companions`` names
+    addresses whose values a set may lose (the accent and fill a trigger-off
+    clears, the steps a shorter pattern drops): the journal keeps their old
+    values with the set, so undo brings them back.
     """
 
     name: str
@@ -41,6 +47,8 @@ class Address:
     queued: bool = True
     convert: Optional[Callable[[Any], Any]] = None
     related: Sequence[str] = field(default_factory=tuple)
+    undoable: bool = True
+    companions: Sequence[str] = field(default_factory=tuple)
 
     @property
     def readonly(self) -> bool:
