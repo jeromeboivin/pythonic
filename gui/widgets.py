@@ -991,21 +991,34 @@ class ToggleButton(tk.Canvas):
         """Get enabled state"""
         return self.enabled
 
+STEPS_PER_PAGE = 16
+MAX_PAGES = 4
+
+
 class PatternEditor(tk.Canvas):
     """
-    Pattern editor widget showing triggers, accents, fills, substeps, and length for a pattern channel
-    Supports probability mode where clicking adjusts step probability instead of triggers
+    Pattern editor widget for one channel's lane: triggers, accents,
+    velocities, fills, substeps and the pattern length, one page of 16 steps
+    at a time (patterns run up to 64 steps, 4 pages).
+
+    The editor holds the whole lane (one entry per step of the pattern);
+    step indexes in callbacks are absolute (0-63). Supports probability mode
+    where dragging a step adjusts its probability instead of toggling it.
     """
 
-    def __init__(self, parent, channel_id=0, pattern_length=16, num_steps=16,
+    LANES = ('trig', 'acc', 'vel', 'fill', 'sub')
+    LENGTH_LANE = len(LANES)       # the "len" lane below the data lanes
+    NUMBERS_LANE = len(LANES) + 1  # step numbers
+
+    def __init__(self, parent, channel_id=0, pattern_length=16, num_steps=STEPS_PER_PAGE,
                  command=None, all_channels_command=None, length_change_callback=None, **kwargs):
         """
         Initialize pattern editor
-        
+
         Args:
             channel_id: Which drum channel this editor represents
-            pattern_length: Total steps in pattern (all channels)
-            num_steps: Number of steps to display
+            pattern_length: Total steps in pattern (all channels, 1-64)
+            num_steps: Number of steps shown at once (one page)
             command: Callback when pattern changes (channel_id, step_index, lane_type, value)
             all_channels_command: Callback for multi-channel operations (step_index, lane_type, value, muted_channels)
             length_change_callback: Callback when pattern length is changed (new_length)
@@ -1013,15 +1026,15 @@ class PatternEditor(tk.Canvas):
         # Calculate dimensions - compact steps for better fit
         step_width = 32  # Compact steps
         lane_height = 14  # Compact lanes
-        num_lanes = 6  # triggers, accents, fills, substeps, length display, step numbers
-        
+        num_lanes = len(self.LANES) + 2  # data lanes, length display, step numbers
+
         width = num_steps * step_width + 40  # 40px for lane labels
         height = num_lanes * lane_height + 10
-        
+
         super().__init__(parent, width=width, height=height,
                         bg='#2a2a3a', highlightthickness=1,
                         highlightbackground='#4a4a5a', **kwargs)
-        
+
         self.channel_id = channel_id
         self.pattern_length = pattern_length
         self.num_steps = num_steps
@@ -1030,33 +1043,36 @@ class PatternEditor(tk.Canvas):
         self.command = command
         self.all_channels_command = all_channels_command
         self.length_change_callback = length_change_callback
-        
-        # Pattern state
-        self.triggers = [False] * num_steps
-        self.accents = [False] * num_steps
-        self.fills = [False] * num_steps
-        self.probabilities = [100] * num_steps  # Per-step probability (0-100)
-        self.substeps = [''] * num_steps  # Per-step substep pattern ('o' = play, '-' = don't play)
-        
+
+        # Pattern state (the whole lane)
+        self.triggers = [False] * pattern_length
+        self.accents = [False] * pattern_length
+        self.fills = [False] * pattern_length
+        self.probabilities = [100] * pattern_length  # Per-step probability (0-100)
+        self.substeps = [''] * pattern_length  # Per-step substep pattern ('o' = play, '-' = don't play)
+        self.velocities = [64] * pattern_length  # Per-step velocity of the unaccented hit (1-127)
+
         # Display state
-        self.current_position = 0  # Current playback position (green highlight)
-        
+        self.current_position = 0  # Current playback position (green highlight), absolute
+        self.page = 0  # Page shown: steps page*16+1 .. page*16+16
+
         # Probability mode (when enabled, clicking adjusts probability)
         self.probability_mode = False
-        
+
         # Lane names
-        self.lanes = ['trig', 'acc', 'fill', 'sub']
-        
+        self.lanes = list(self.LANES)
+
         # Mouse state
         self.dragging = False
         self.drag_lane = None
         self.drag_start_x = 0
         self._drag_start_step = None
         self._drag_start_y = 0
-        
+        self._drag_value_lane = None  # 'prob' or 'vel' while a vertical drag edits a value
+
         # Draw initial
         self._draw()
-        
+
         # Bind events
         self.bind('<Button-1>', self._on_click)
         self.bind('<Control-Button-1>', self._on_ctrl_click)
@@ -1064,9 +1080,10 @@ class PatternEditor(tk.Canvas):
         self.bind('<Button-3>', self._on_right_click)  # Right-click for substeps menu
         self.bind('<B1-Motion>', self._on_drag)
         self.bind('<ButtonRelease-1>', self._on_release)
-    
-    def set_pattern_data(self, triggers, accents, fills, probabilities=None, substeps=None):
-        """Update pattern data from pattern manager"""
+
+    def set_pattern_data(self, triggers, accents, fills, probabilities=None, substeps=None,
+                         velocities=None):
+        """Update pattern data from pattern manager (whole lanes)"""
         self.triggers = list(triggers)
         self.accents = list(accents)
         self.fills = list(fills)
@@ -1078,71 +1095,108 @@ class PatternEditor(tk.Canvas):
             self.substeps = list(substeps)
         else:
             self.substeps = [''] * len(triggers)
+        if velocities is not None:
+            self.velocities = list(velocities)
+        else:
+            self.velocities = [64] * len(triggers)
         self._draw()
-    
+
     def set_probability_mode(self, enabled: bool):
         """Enable/disable probability editing mode"""
         self.probability_mode = enabled
         self._draw()
-    
+
     def set_current_position(self, position):
-        """Update current playback position"""
-        self.current_position = position
-        self._draw()
-    
+        """Update current playback position (absolute step)"""
+        if position != self.current_position:
+            self.current_position = position
+            self._draw()
+
+    def set_page(self, page):
+        """Show page `page` (0-3): steps page*16+1 .. page*16+16"""
+        page = max(0, min(MAX_PAGES - 1, int(page)))
+        if page != self.page:
+            self.page = page
+            self._draw()
+
+    @property
+    def first_step(self):
+        """Absolute index of the first step shown"""
+        return self.page * self.num_steps
+
     def _get_lane_at_y(self, y):
-        """Determine which lane was clicked (trig, acc, fill, sub, or length)"""
+        """Determine which lane was clicked (trig, acc, vel, fill, sub, or length)"""
         relative_y = y - 5
-        lane = int(relative_y / self.lane_height)
-        if lane >= 0 and lane < 4:
+        lane = int(relative_y // self.lane_height)
+        if 0 <= lane < len(self.lanes):
             return self.lanes[lane]
-        elif lane == 4:
+        elif lane == self.LENGTH_LANE:
             return 'length'
         return None
-    
-    def _get_step_at_x(self, x):
-        """Determine which step was clicked"""
+
+    def _get_column_at_x(self, x):
+        """Column (0-15) of the page under x, or None"""
         relative_x = x - 40
         if relative_x < 0:
             return None
-        step = int(relative_x / self.step_width)
-        if 0 <= step < self.num_steps:
-            return step
+        column = int(relative_x / self.step_width)
+        if 0 <= column < self.num_steps:
+            return column
         return None
-    
+
+    def _get_step_at_x(self, x):
+        """Absolute step under x when it is inside the pattern, else None"""
+        column = self._get_column_at_x(x)
+        if column is None:
+            return None
+        step = self.first_step + column
+        return step if step < len(self.triggers) else None
+
     def _on_click(self, event):
         """Handle click start"""
+        lane = self._get_lane_at_y(event.y)
+        if lane == 'length':
+            column = self._get_column_at_x(event.x)
+            if column is not None and self.length_change_callback:
+                # Click on length lane makes the clicked step the last one (1-64)
+                new_length = self.first_step + column + 1
+                self.pattern_length = new_length
+                self.length_change_callback(new_length)
+                self._draw()
+            return
+
         step = self._get_step_at_x(event.x)
-        
+
         # In probability mode, clicking on any step adjusts probability
         if self.probability_mode and step is not None:
-            self._drag_start_step = step
-            self._drag_start_y = event.y
-            self.dragging = True
+            self._start_value_drag('prob', step, event.y)
             return
-        
-        lane = self._get_lane_at_y(event.y)
-        
+
         if lane == 'sub' and step is not None:
             # Click on substeps lane - show substeps editor popup
             self._show_substeps_menu(event.x_root, event.y_root, step)
-        elif lane == 'length' and step is not None and self.length_change_callback:
-            # Click on length lane sets the pattern length to clicked step + 1
-            new_length = step + 1
-            self.pattern_length = new_length
-            self.length_change_callback(new_length)
-            self._draw()
+        elif lane == 'vel' and step is not None:
+            # Velocity: drag a triggered step up or down
+            if self.triggers[step]:
+                self._start_value_drag('vel', step, event.y)
         elif lane and step is not None:
             self.dragging = True
             self.drag_lane = lane
             self.drag_start_x = event.x
             self._toggle_step(lane, step)
-    
+
+    def _start_value_drag(self, lane, step, y):
+        self._drag_value_lane = lane
+        self._drag_start_step = step
+        self._drag_start_y = y
+        self.dragging = True
+        self._draw()
+
     def _on_ctrl_click(self, event):
         """Handle Ctrl+Click: toggle both trigger and accent for a step"""
         lane = self._get_lane_at_y(event.y)
         step = self._get_step_at_x(event.x)
-        
+
         if lane and step is not None and lane == 'trig':
             # Toggle trigger
             self.triggers[step] = not self.triggers[step]
@@ -1153,19 +1207,19 @@ class PatternEditor(tk.Canvas):
                 # Clear accent and fill if trigger is turned off
                 self.accents[step] = False
                 self.fills[step] = False
-            
+
             self._draw()
-            
+
             # Call command callbacks
             if self.command:
                 self.command(self.channel_id, step, 'trig', self.triggers[step])
                 self.command(self.channel_id, step, 'acc', self.accents[step])
-    
+
     def _on_shift_click(self, event):
         """Handle Shift+Click: apply to all unmuted channels (requires all_channels_command)"""
         lane = self._get_lane_at_y(event.y)
         step = self._get_step_at_x(event.x)
-        
+
         if lane and step is not None and self.all_channels_command:
             # Determine new value based on current state
             if lane == 'trig':
@@ -1179,30 +1233,30 @@ class PatternEditor(tk.Canvas):
                 self.fills[step] = new_value
             else:
                 return
-            
+
             self._draw()
-            
+
             # Call the all-channels callback with empty muted_channels set (all channels active)
             self.all_channels_command(step, lane, new_value, set())
-    
+
     def _on_right_click(self, event):
         """Handle right-click: show substeps menu for any step"""
         step = self._get_step_at_x(event.x)
         if step is not None:
             self._show_substeps_menu(event.x_root, event.y_root, step)
-    
+
     def _show_substeps_menu(self, x, y, step):
         """Show context menu for editing substeps at the given step"""
         import tkinter as tk
         menu = tk.Menu(self, tearoff=0)
-        
+
         current_substeps = self.substeps[step] if step < len(self.substeps) else ''
-        
+
         # Clear substeps option
         menu.add_command(label="No substeps" + (" ✓" if current_substeps == '' else ""),
                         command=lambda: self._set_substeps(step, ''))
         menu.add_separator()
-        
+
         # Common substep patterns
         patterns = [
             ('oo', '2 subs: ○○ (both play)'),
@@ -1220,17 +1274,17 @@ class PatternEditor(tk.Canvas):
             ('ooo-', '4 subs: ○○○- (first 3)'),
             ('o---', '4 subs: ○--- (1st only)'),
         ]
-        
+
         for pattern, label in patterns:
             check = " ✓" if current_substeps == pattern else ""
             menu.add_command(label=label + check,
                            command=lambda p=pattern: self._set_substeps(step, p))
-        
+
         menu.add_separator()
         menu.add_command(label="Custom...", command=lambda: self._show_custom_substeps_dialog(step))
-        
+
         menu.tk_popup(x, y)
-    
+
     def _set_substeps(self, step, pattern):
         """Set substeps pattern for a step"""
         if step < len(self.substeps):
@@ -1238,12 +1292,12 @@ class PatternEditor(tk.Canvas):
             self._draw()
             if self.command:
                 self.command(self.channel_id, step, 'sub', pattern)
-    
+
     def _show_custom_substeps_dialog(self, step):
         """Show dialog for entering custom substeps pattern"""
         import tkinter as tk
         from tkinter import simpledialog
-        
+
         current = self.substeps[step] if step < len(self.substeps) else ''
         result = simpledialog.askstring(
             "Custom Substeps",
@@ -1259,37 +1313,43 @@ class PatternEditor(tk.Canvas):
             clean = ''.join(c if c in 'oO-' else '' for c in result).lower()
             self._set_substeps(step, clean)
 
-    
+
     def _on_drag(self, event):
-        """Handle drag to select multiple steps or adjust probability"""
+        """Handle drag to select multiple steps or adjust probability / velocity"""
         if self.dragging:
-            # In probability mode, vertical drag adjusts probability
-            if self.probability_mode and self._drag_start_step is not None:
-                step = self._drag_start_step
-                # Calculate probability based on vertical position
-                # Drag up = higher probability, drag down = lower
-                delta_y = self._drag_start_y - event.y
-                # 100 pixels of drag = 100% change
-                new_prob = self.probabilities[step] + int(delta_y)
-                new_prob = max(0, min(100, new_prob))
-                if new_prob != self.probabilities[step]:
-                    self.probabilities[step] = new_prob
-                    self._drag_start_y = event.y
-                    self._draw()
-                    if self.command:
-                        self.command(self.channel_id, step, 'prob', new_prob)
+            if self._drag_value_lane is not None and self._drag_start_step is not None:
+                # Vertical drag: up = higher, down = lower, 1 per pixel
+                self._drag_value(self._drag_value_lane, self._drag_start_step,
+                                 self._drag_start_y - event.y)
+                self._drag_start_y = event.y
             elif self.drag_lane:
                 # Normal mode: allow continuous clicking across multiple steps
                 step = self._get_step_at_x(event.x)
                 if step is not None:
                     self._toggle_step(self.drag_lane, step)
-    
+
+    def _drag_value(self, lane, step, delta):
+        """Move the probability (0-100) or velocity (1-127) of a step by delta"""
+        if lane == 'prob':
+            values, low, high = self.probabilities, 0, 100
+        else:
+            values, low, high = self.velocities, 1, 127
+        new_value = max(low, min(high, values[step] + int(delta)))
+        if new_value != values[step]:
+            values[step] = new_value
+            self._draw()
+            if self.command:
+                self.command(self.channel_id, step, lane, new_value)
+
     def _on_release(self, event):
         """Handle drag end"""
         self.dragging = False
         self.drag_lane = None
         self._drag_start_step = None
-    
+        if self._drag_value_lane is not None:
+            self._drag_value_lane = None
+            self._draw()
+
     def _toggle_step(self, lane, step):
         """Toggle a step in a lane"""
         if lane == 'trig':
@@ -1304,25 +1364,39 @@ class PatternEditor(tk.Canvas):
         elif lane == 'fill':
             if self.triggers[step]:  # Only allow fill if trigger is on
                 self.fills[step] = not self.fills[step]
-        
+        else:
+            return
+
         self._draw()
-        
+
         # Call command callback
         if self.command:
-            self.command(self.channel_id, step, lane, 
+            self.command(self.channel_id, step, lane,
                         self.triggers[step] if lane == 'trig' else
                         self.accents[step] if lane == 'acc' else
                         self.fills[step])
-    
+
+    def _cell(self, lane_index, column):
+        """Inner rectangle (x, y, w, h) of a cell"""
+        x = 40 + column * self.step_width + 2
+        y = 5 + lane_index * self.lane_height + 2
+        return x, y, self.step_width - 4, self.lane_height - 4
+
+    def _page_steps(self):
+        """(column, absolute step) of the page; steps past the pattern are None"""
+        first = self.first_step
+        return [(c, first + c if first + c < len(self.triggers) else None)
+                for c in range(self.num_steps)]
+
     def _draw(self):
         """Draw the pattern editor"""
         self.delete('all')
-        
+
         # Draw background - highlight in probability mode
         bg_color = '#2a3a3a' if self.probability_mode else '#2a2a3a'
         self.create_rectangle(0, 0, self.winfo_width(), self.winfo_height(),
                              fill=bg_color, outline='#4a4a5a')
-        
+
         # Draw lane labels on left
         for i, lane_name in enumerate(self.lanes):
             y = 5 + i * self.lane_height + self.lane_height // 2
@@ -1330,65 +1404,74 @@ class PatternEditor(tk.Canvas):
             label_color = '#66ddaa' if (self.probability_mode and i == 0) else '#8888aa'
             self.create_text(20, y, text=lane_name, fill=label_color,
                            font=('Segoe UI', 6), anchor='center')
-        
+
         # Draw length indicator lane label
-        y = 5 + 4 * self.lane_height + self.lane_height // 2
+        y = 5 + self.LENGTH_LANE * self.lane_height + self.lane_height // 2
         self.create_text(20, y, text='len', fill='#8888aa',
                        font=('Segoe UI', 6), anchor='center')
-        
+
         # Draw steps for each lane
         x_start = 40
-        
+
         # Draw trigger lane (with probability visualization)
         self._draw_trigger_lane_with_prob()
-        
+
         # Draw accent lane
-        self._draw_lane(1, self.accents, '#ffaa44', '#ff8822')
-        
+        self._draw_lane(self.lanes.index('acc'), self.accents, '#ffaa44', '#ff8822')
+
+        # Draw velocity lane
+        self._draw_velocity_lane()
+
         # Draw fill lane
-        self._draw_lane(2, self.fills, '#4488ff', '#2266aa')
-        
+        self._draw_lane(self.lanes.index('fill'), self.fills, '#4488ff', '#2266aa')
+
         # Draw substeps lane
         self._draw_substeps_lane()
-        
+
         # Draw length indicator lane
         self._draw_length_lane()
-        
+
         # Draw step numbers row
         self._draw_step_numbers()
-        
+
         # Draw vertical grid lines
         for step in range(self.num_steps + 1):
             x = x_start + step * self.step_width
             self.create_line(x, 0, x, self.winfo_height() - self.lane_height,
                            fill='#3a3a4a', dash=(2,))
-        
+
         # Draw horizontal grid lines
-        for lane in range(5):  # 5 grid lines for 5 data lanes
+        for lane in range(self.LENGTH_LANE + 1):
             y = 5 + (lane + 1) * self.lane_height
             self.create_line(x_start, y, x_start + self.num_steps * self.step_width, y,
                            fill='#3a3a4a')
-        
-        # Draw current position indicator
-        current_x = x_start + self.current_position * self.step_width + self.step_width // 2
-        self.create_line(current_x, 0, current_x, self.winfo_height(),
-                       fill='#44ff88', width=2)
-    
+
+        # Draw current position indicator (when it is on this page)
+        column = self.current_position - self.first_step
+        if 0 <= column < self.num_steps:
+            current_x = x_start + column * self.step_width + self.step_width // 2
+            self.create_line(current_x, 0, current_x, self.winfo_height(),
+                           fill='#44ff88', width=2)
+
+    def _draw_outside(self, lane_index, column):
+        """A cell past the pattern length"""
+        x, y, w, h = self._cell(lane_index, column)
+        self._draw_rounded_rect(x, y, x + w, y + h, min(w, h) // 2, fill='#262633',
+                                outline='#333344')
+
     def _draw_trigger_lane_with_prob(self):
         """Draw trigger lane with probability visualization"""
         lane_index = 0
-        x_start = 40
-        y_base = 5 + lane_index * self.lane_height
-        
-        for step in range(len(self.triggers)):
+
+        for column, step in self._page_steps():
+            if step is None:
+                self._draw_outside(lane_index, column)
+                continue
             is_on = self.triggers[step]
             prob = self.probabilities[step] if step < len(self.probabilities) else 100
-            
-            x = x_start + step * self.step_width + 2
-            y = y_base + 2
-            w = self.step_width - 4
-            h = self.lane_height - 4
-            
+
+            x, y, w, h = self._cell(lane_index, column)
+
             # Base color depends on trigger state
             if is_on:
                 # Interpolate color based on probability
@@ -1408,46 +1491,66 @@ class PatternEditor(tk.Canvas):
                     color = f'#{r:02x}{g:02x}{b:02x}'
             else:
                 color = '#3366cc'
-            
+
             # Draw pill-shaped step button
             radius = min(w, h) // 2
             outline = '#66ddaa' if self.probability_mode else '#555566'
             self._draw_rounded_rect(x, y, x + w, y + h, radius, fill=color, outline=outline)
-            
+
             # In probability mode, show percentage text on triggered steps
             if self.probability_mode and is_on and prob < 100:
                 text_x = x + w // 2
                 text_y = y + h // 2
-                self.create_text(text_x, text_y, text=f'{prob}', 
+                self.create_text(text_x, text_y, text=f'{prob}',
                                fill='#ffffff', font=('Segoe UI', 6, 'bold'))
-    
+
     def _draw_lane(self, lane_index, data, color_on, color_off):
         """Draw a single lane of steps"""
-        x_start = 40
-        y_base = 5 + lane_index * self.lane_height
-        
-        for step, is_on in enumerate(data):
-            x = x_start + step * self.step_width + 2
-            y = y_base + 2
-            w = self.step_width - 4
-            h = self.lane_height - 4
-            
+        for column, step in self._page_steps():
+            if step is None:
+                self._draw_outside(lane_index, column)
+                continue
+            x, y, w, h = self._cell(lane_index, column)
+
             # Color based on state
-            color = color_on if is_on else color_off
-            
+            color = color_on if data[step] else color_off
+
             # Highlight if trigger is off (accent/fill only meaningful with trigger)
             if lane_index > 0 and not self.triggers[step]:
                 color = '#444455'
-            
+
             # Draw pill-shaped (rounded) step button
             radius = min(w, h) // 2
             self._draw_rounded_rect(x, y, x + w, y + h, radius, fill=color, outline='#555566')
-    
+
+    def _draw_velocity_lane(self):
+        """Velocity lane: a bar as long as the velocity of each triggered step
+        (an accented step plays at 127 whatever its velocity)."""
+        lane_index = self.lanes.index('vel')
+        dragged = self._drag_start_step if self._drag_value_lane == 'vel' else None
+        for column, step in self._page_steps():
+            if step is None:
+                self._draw_outside(lane_index, column)
+                continue
+            x, y, w, h = self._cell(lane_index, column)
+            triggered = self.triggers[step]
+            self.create_rectangle(x, y, x + w, y + h, fill='#333344', outline='#555566')
+            velocity = self.velocities[step] if step < len(self.velocities) else 64
+            bar = max(1, int(round((w - 2) * velocity / 127.0)))
+            if triggered:
+                color = '#aa8844' if self.accents[step] else '#ddbb55'
+            else:
+                color = '#444455'
+            self.create_rectangle(x + 1, y + 1, x + 1 + bar, y + h - 1, fill=color, outline='')
+            if step == dragged:
+                self.create_text(x + w // 2, y + h // 2, text=str(velocity),
+                                 fill='#ffffff', font=('Segoe UI', 6, 'bold'))
+
     def _draw_rounded_rect(self, x1, y1, x2, y2, radius, **kwargs):
         """Draw a rounded rectangle (pill shape)"""
         # Clamp radius to half the smaller dimension
         radius = min(radius, (x2 - x1) // 2, (y2 - y1) // 2)
-        
+
         # Create points for a rounded rectangle using polygon
         points = [
             x1 + radius, y1,
@@ -1463,23 +1566,18 @@ class PatternEditor(tk.Canvas):
             x1, y1 + radius,
             x1, y1,
         ]
-        
+
         # Use smooth polygon for rounded corners
         self.create_polygon(points, smooth=True, **kwargs)
-    
+
     def _draw_length_lane(self):
-        """Draw the pattern length indicator"""
-        lane_index = 4
-        x_start = 40
-        y_base = 5 + lane_index * self.lane_height
-        
-        # Show steps 0 to pattern_length
-        for step in range(self.num_steps):
-            x = x_start + step * self.step_width + 2
-            y = y_base + 2
-            w = self.step_width - 4
-            h = self.lane_height - 4
-            
+        """Draw the pattern length indicator (the last step is marked)"""
+        lane_index = self.LENGTH_LANE
+
+        for column in range(self.num_steps):
+            step = self.first_step + column
+            x, y, w, h = self._cell(lane_index, column)
+
             # Check if this step is within pattern length
             if step < self.pattern_length:
                 # Fill color for active pattern length
@@ -1487,59 +1585,62 @@ class PatternEditor(tk.Canvas):
             else:
                 # Dimmed for outside pattern length
                 color = '#222233'
-            
+
             # Draw pill-shaped step like other lanes
             radius = min(w, h) // 2
-            self._draw_rounded_rect(x, y, x + w, y + h, radius, fill=color, outline='#555566')
-    
+            outline = '#88aaff' if step == self.pattern_length - 1 else '#555566'
+            self._draw_rounded_rect(x, y, x + w, y + h, radius, fill=color, outline=outline)
+
     def _draw_step_numbers(self):
-        """Draw the step numbers row (1-16)"""
-        lane_index = 5
-        x_start = 40
+        """Draw the step numbers row (1-16, 17-32, ... for the page shown)"""
+        lane_index = self.NUMBERS_LANE
         y_base = 5 + lane_index * self.lane_height
-        
-        for step in range(self.num_steps):
-            x = x_start + step * self.step_width + self.step_width // 2
+
+        for column in range(self.num_steps):
+            step = self.first_step + column
+            x = 40 + column * self.step_width + self.step_width // 2
             y = y_base + self.lane_height // 2
-            step_num = step + 1
-            self.create_text(x, y, text=str(step_num),
-                           fill='#8888aa', font=('Segoe UI', 6))
-    
+            color = '#8888aa' if step < self.pattern_length else '#55556a'
+            self.create_text(x, y, text=str(step + 1),
+                           fill=color, font=('Segoe UI', 6))
+
     def get_triggers(self):
         """Get current triggers"""
         return list(self.triggers)
-    
+
     def get_accents(self):
         """Get current accents"""
         return list(self.accents)
-    
+
     def get_fills(self):
         """Get current fills"""
         return list(self.fills)
-    
+
     def get_probabilities(self):
         """Get current probabilities"""
         return list(self.probabilities)
-    
+
     def get_substeps(self):
         """Get current substeps patterns"""
         return list(self.substeps)
-    
+
+    def get_velocities(self):
+        """Get current velocities"""
+        return list(self.velocities)
+
     def _draw_substeps_lane(self):
         """Draw the substeps lane showing substep patterns"""
-        lane_index = 3
-        x_start = 40
-        y_base = 5 + lane_index * self.lane_height
-        
-        for step in range(self.num_steps):
+        lane_index = self.lanes.index('sub')
+
+        for column, step in self._page_steps():
+            if step is None:
+                self._draw_outside(lane_index, column)
+                continue
             substep_pattern = self.substeps[step] if step < len(self.substeps) else ''
-            has_trigger = self.triggers[step] if step < len(self.triggers) else False
-            
-            x = x_start + step * self.step_width + 2
-            y = y_base + 2
-            w = self.step_width - 4
-            h = self.lane_height - 4
-            
+            has_trigger = self.triggers[step]
+
+            x, y, w, h = self._cell(lane_index, column)
+
             # Background color based on whether substeps are set
             if substep_pattern and has_trigger:
                 # Has substeps and trigger - show active
@@ -1550,28 +1651,28 @@ class PatternEditor(tk.Canvas):
             else:
                 # No substeps - default
                 color = '#3a3a4a'
-            
+
             # Draw pill-shaped step button
             radius = min(w, h) // 2
             self._draw_rounded_rect(x, y, x + w, y + h, radius, fill=color, outline='#555566')
-            
+
             # Draw substep pattern visualization inside the cell
             if substep_pattern:
                 self._draw_substep_dots(x, y, w, h, substep_pattern)
-    
+
     def _draw_substep_dots(self, x, y, w, h, pattern):
         """Draw small dots representing substep pattern inside a cell"""
         if not pattern:
             return
-        
+
         num_subs = len(pattern)
         dot_spacing = w / (num_subs + 1)
         dot_radius = min(3, (h - 4) // 2)
-        
+
         for i, char in enumerate(pattern):
             dot_x = x + dot_spacing * (i + 1)
             dot_y = y + h // 2
-            
+
             if char == 'o' or char == 'O':
                 # Filled dot for 'play'
                 self.create_oval(dot_x - dot_radius, dot_y - dot_radius,
@@ -1587,63 +1688,76 @@ class PatternEditor(tk.Canvas):
 class MatrixEditor(tk.Canvas):
     """
     Matrix Editor widget for editing all channels simultaneously
-    Shows a grid of channels (rows) vs steps (columns)
+    Shows a grid of channels (rows) vs the steps of one page (columns)
     """
 
-    def __init__(self, parent, num_channels=8, num_steps=16, 
+    def __init__(self, parent, num_channels=8, num_steps=STEPS_PER_PAGE,
                  command=None, **kwargs):
         """
         Initialize matrix editor
-        
+
         Args:
             num_channels: Number of drum channels
-            num_steps: Number of pattern steps
-            command: Callback when pattern changes (channel_id, step_index, value)
+            num_steps: Number of steps shown at once (one page)
+            command: Callback when pattern changes (channel_id, step_index, value),
+                     step_index absolute (0-63)
         """
         step_width = 20
         channel_height = 16
-        
+
         width = num_steps * step_width + 35
         height = num_channels * channel_height + 8
-        
+
         super().__init__(parent, width=width, height=height,
                         bg='#2a2a3a', highlightthickness=1,
                         highlightbackground='#4a4a5a', **kwargs)
-        
+
         self.num_channels = num_channels
         self.num_steps = num_steps
         self.step_width = step_width
         self.channel_height = channel_height
         self.command = command
-        
-        # Pattern state (triggers only in matrix view)
+
+        # Pattern state (triggers only in matrix view, whole lanes)
         self.matrix = [[False] * num_steps for _ in range(num_channels)]
-        
+
         # Display state
         self.current_position = 0
-        
+        self.page = 0
+
+        # Interaction state
+        self.dragging = False
+        self.drag_channel = None
+
         # Draw initial
         self._draw()
-        
+
         # Bind events
         self.bind('<Button-1>', self._on_click)
         self.bind('<B1-Motion>', self._on_drag)
         self.bind('<ButtonRelease-1>', self._on_release)
-        
-        # Interaction state
-        self.dragging = False
-        self.drag_channel = None
-    
+
     def set_matrix_data(self, matrix):
         """Update matrix data from pattern manager"""
         self.matrix = [list(row) for row in matrix]
         self._draw()
-    
+
     def set_current_position(self, position):
-        """Update current playback position"""
-        self.current_position = position
-        self._draw()
-    
+        """Update current playback position (absolute step)"""
+        if position != self.current_position:
+            self.current_position = position
+            self._draw()
+
+    def set_page(self, page):
+        """Show page `page` (0-3)"""
+        page = max(0, min(MAX_PAGES - 1, int(page)))
+        if page != self.page:
+            self.page = page
+            self._draw()
+
+    def _length(self):
+        return len(self.matrix[0]) if self.matrix else 0
+
     def _get_channel_at_y(self, y):
         """Determine which channel was clicked"""
         relative_y = y - 5
@@ -1653,79 +1767,87 @@ class MatrixEditor(tk.Canvas):
         if 0 <= channel < self.num_channels:
             return channel
         return None
-    
+
     def _get_step_at_x(self, x):
-        """Determine which step was clicked"""
+        """Absolute step clicked, when it is inside the pattern"""
         relative_x = x - 35
         if relative_x < 0:
             return None
-        step = int(relative_x / self.step_width)
-        if 0 <= step < self.num_steps:
+        column = int(relative_x / self.step_width)
+        step = self.page * self.num_steps + column
+        if 0 <= column < self.num_steps and step < self._length():
             return step
         return None
-    
+
     def _on_click(self, event):
         """Handle click start"""
         channel = self._get_channel_at_y(event.y)
         step = self._get_step_at_x(event.x)
-        
+
         if channel is not None and step is not None:
             self.dragging = True
             self.drag_channel = channel
             self._toggle_cell(channel, step)
-    
+
     def _on_drag(self, event):
         """Handle drag to select multiple cells"""
         if self.dragging and self.drag_channel is not None:
             step = self._get_step_at_x(event.x)
             if step is not None:
                 self._toggle_cell(self.drag_channel, step)
-    
+
     def _on_release(self, event):
         """Handle drag end"""
         self.dragging = False
         self.drag_channel = None
-    
+
     def _toggle_cell(self, channel, step):
         """Toggle a cell in the matrix"""
         self.matrix[channel][step] = not self.matrix[channel][step]
         self._draw()
-        
+
         if self.command:
             self.command(channel, step, self.matrix[channel][step])
-    
+
     def _draw(self):
         """Draw the matrix editor"""
         self.delete('all')
-        
+
         # Draw background
         self.create_rectangle(0, 0, self.winfo_width(), self.winfo_height(),
                              fill='#2a2a3a', outline='#4a4a5a')
-        
+
         # Draw channel labels on left
         for ch in range(self.num_channels):
             y = 5 + ch * self.channel_height + self.channel_height // 2
             self.create_text(14, y, text=f"ch{ch+1}", fill='#8888aa',
                            font=('Segoe UI', 6), anchor='center')
-        
+
+        first = self.page * self.num_steps
+        length = self._length()
+
         # Draw step numbers on top
         x_start = 35
-        for step in range(self.num_steps):
-            if (step + 1) % 4 == 1:  # Every 4 steps
-                x = x_start + step * self.step_width + self.step_width // 2
-                self.create_text(x, -5, text=str(step + 1), fill='#6688ff',
+        for column in range(self.num_steps):
+            if (column + 1) % 4 == 1:  # Every 4 steps
+                x = x_start + column * self.step_width + self.step_width // 2
+                self.create_text(x, -5, text=str(first + column + 1), fill='#6688ff',
                                font=('Segoe UI', 6), anchor='center')
-        
+
         # Draw matrix cells
         for ch in range(self.num_channels):
-            for step in range(self.num_steps):
-                x = x_start + step * self.step_width + 2
+            for column in range(self.num_steps):
+                step = first + column
+                x = x_start + column * self.step_width + 2
                 y = 5 + ch * self.channel_height + 2
                 w = self.step_width - 4
                 h = self.channel_height - 4
-                
-                # Color based on trigger state
-                if self.matrix[ch][step]:
+
+                if step >= length:
+                    # Past the pattern length
+                    self.create_rectangle(x, y, x + w, y + h,
+                                        fill='#262633', outline='#333344', width=1)
+                elif self.matrix[ch][step]:
                     color = '#4488ff'
                     self.create_rectangle(x, y, x + w, y + h,
                                         fill=color, outline='#555566', width=1)
@@ -1736,24 +1858,26 @@ class MatrixEditor(tk.Canvas):
                     color = '#333344'
                     self.create_rectangle(x, y, x + w, y + h,
                                         fill=color, outline='#555566', width=1)
-        
+
         # Draw vertical grid lines
         for step in range(self.num_steps + 1):
             x = x_start + step * self.step_width
             self.create_line(x, 0, x, self.winfo_height(),
                            fill='#3a3a4a', dash=(2,))
-        
+
         # Draw horizontal grid lines
         for ch in range(self.num_channels + 1):
             y = 5 + ch * self.channel_height
             self.create_line(x_start, y, x_start + self.num_steps * self.step_width, y,
                            fill='#3a3a4a')
-        
-        # Draw current position indicator
-        current_x = x_start + self.current_position * self.step_width + self.step_width // 2
-        self.create_line(current_x, 0, current_x, self.winfo_height(),
-                       fill='#44ff88', width=2)
-    
+
+        # Draw current position indicator (when it is on this page)
+        column = self.current_position - first
+        if 0 <= column < self.num_steps:
+            current_x = x_start + column * self.step_width + self.step_width // 2
+            self.create_line(current_x, 0, current_x, self.winfo_height(),
+                           fill='#44ff88', width=2)
+
     def get_matrix(self):
         """Get current matrix state"""
         return [list(row) for row in self.matrix]

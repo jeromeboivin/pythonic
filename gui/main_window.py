@@ -20,7 +20,8 @@ from pythonic.pattern_manager import PatternManager
 from pythonic.lfo import ModTarget, MOD_TARGET_GROUPS, MOD_TARGET_LABELS
 from gui.widgets import (
     RotaryKnob, VerticalSlider, ChannelButton,
-    WaveformSelector, ModeSelector, ToggleButton, PatternEditor, MatrixEditor
+    WaveformSelector, ModeSelector, ToggleButton, PatternEditor, MatrixEditor,
+    STEPS_PER_PAGE, MAX_PAGES
 )
 from gui.po32_transfer import PO32TransferDialog
 from gui.po32_import_dialog import PO32ImportDialog
@@ -547,6 +548,30 @@ class PythonicGUI:
         top_controls = tk.Frame(right_panel, bg=self.COLORS['bg_medium'])
         top_controls.pack(fill='x', pady=(0, 5))
         
+        # Page selector (left side): the editors show 16 steps of a pattern
+        # of up to 64; follow makes them track the playhead
+        page_frame = tk.Frame(top_controls, bg=self.COLORS['bg_medium'])
+        page_frame.pack(side='left', padx=2)
+        tk.Label(page_frame, text="page", font=('Segoe UI', 6),
+                 fg=self.COLORS['text_dim'], bg=self.COLORS['bg_medium']).pack(side='left', padx=(0, 2))
+        self._page = 0
+        self._page_follow = True
+        self._playing_page = None
+        self.page_buttons = []
+        for page in range(MAX_PAGES):
+            first = page * STEPS_PER_PAGE
+            btn = tk.Button(page_frame, text=f"{first + 1}-{first + STEPS_PER_PAGE}", width=5,
+                            font=('Segoe UI', 7),
+                            bg=self.COLORS['bg_light'], fg=self.COLORS['text'],
+                            command=lambda p=page: self._on_page_select(p))
+            btn.pack(side='left', padx=1)
+            self.page_buttons.append(btn)
+        self.page_follow_btn = tk.Button(page_frame, text="follow", width=5,
+                                         font=('Segoe UI', 7),
+                                         bg=self.COLORS['bg_light'], fg=self.COLORS['text_dim'],
+                                         command=self._on_page_follow_toggle)
+        self.page_follow_btn.pack(side='left', padx=(4, 1))
+
         # Menu/Copy/Paste (right side)
         clipboard_frame = tk.Frame(top_controls, bg=self.COLORS['bg_medium'])
         clipboard_frame.pack(side='right', padx=2)
@@ -2380,9 +2405,68 @@ class PythonicGUI:
             self._dirty_lanes.discard(ch_id)
             editor.pattern_length = length
             editor.set_pattern_data(*(self._lane(ch_id, f)
-                                      for f in ('trig', 'acc', 'fill', 'prob', 'sub')))
+                                      for f in ('trig', 'acc', 'fill', 'prob', 'sub', 'vel')))
         if self.matrix_view_active and not self.matrix_editor.dragging:
             self._update_matrix_editor()
+        self._show_pages(length)
+    
+    # ── pages ────────────────────────────────────────────────────────
+    
+    def _on_page_select(self, page):
+        """A page button: show that page; picking a page by hand turns follow off"""
+        self._page_follow = False
+        self._set_page(page)
+    
+    def _on_page_follow_toggle(self):
+        """Follow: the editors track the playhead's page while playing"""
+        self._page_follow = not self._page_follow
+        transport = getattr(self, '_transport', None)
+        if self._page_follow and transport and transport['playing']:
+            self._set_page(transport['position'] // STEPS_PER_PAGE)
+        else:
+            self._show_pages()
+    
+    def _set_page(self, page):
+        """Show page `page` (0-3) on the lane editors and the matrix"""
+        self._page = max(0, min(MAX_PAGES - 1, page))
+        for editor in self.pattern_editors:
+            editor.set_page(self._page)
+        self.matrix_editor.set_page(self._page)
+        self._show_pages()
+    
+    def _show_pages(self, length=None):
+        """Page buttons: the shown page highlighted, pages past the length
+        dimmed, the playing page lit; the follow button"""
+        if not hasattr(self, 'page_buttons'):
+            return
+        if length is None:
+            length = self.pattern_editors[0].pattern_length
+        for page, btn in enumerate(self.page_buttons):
+            inside = page * STEPS_PER_PAGE < length
+            bg = self.COLORS['highlight'] if page == self._page else (
+                self.COLORS['bg_light'] if inside else self.COLORS['bg_dark'])
+            fg = self.COLORS['led_on'] if page == self._playing_page else (
+                self.COLORS['text'] if inside else self.COLORS['text_dim'])
+            btn.config(bg=bg, fg=fg)
+        if self._page_follow:
+            self.page_follow_btn.config(bg='#44aa66', fg='#ffffff')
+        else:
+            self.page_follow_btn.config(bg=self.COLORS['bg_light'], fg=self.COLORS['text_dim'])
+    
+    def _show_playhead(self, transport):
+        """The playhead on the editors (from poll); follow turns the page"""
+        playing = transport['playing'] and transport['playing_pattern'] == self._pattern
+        position = transport['position'] if transport['playing'] else 0
+        page = position // STEPS_PER_PAGE if playing else None
+        if playing and self._page_follow and page != self._page:
+            self._set_page(page)
+        if page != self._playing_page:
+            self._playing_page = page
+            self._show_pages()
+        for editor in self.pattern_editors:
+            editor.set_current_position(position)
+        if self.matrix_view_active:
+            self.matrix_editor.set_current_position(position)
     
     def _show_pattern_changes(self, addresses):
         """Pattern addresses reported by poll: refresh the lanes of the shown
@@ -4336,8 +4420,7 @@ class PythonicGUI:
             self._show_lanes(sorted(self._dirty_lanes))
         if transport['playing'] and hasattr(self, 'pattern_editors'):
             # The selection follows the playing pattern (chains, queue) in the core
-            for editor in self.pattern_editors:
-                editor.set_current_position(transport['position'])
+            self._show_playhead(transport)
         
         # Update modulation visual indicators on knobs/sliders
         self._update_mod_indicators(state['modulation']['offsets'])
@@ -4352,8 +4435,7 @@ class PythonicGUI:
         if transport['selected_pattern'] != self._pattern:
             self._update_pattern_editors()
         if not playing and hasattr(self, 'pattern_editors'):
-            for editor in self.pattern_editors:
-                editor.set_current_position(0)
+            self._show_playhead(transport)
         self._update_pattern_button_states()
         if hasattr(self, 'play_btn') and hasattr(self.play_btn, 'set_active'):
             self.play_btn.set_active(playing)

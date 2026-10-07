@@ -236,3 +236,82 @@ def test_midi_export_writes_a_long_pattern_with_velocities(app, monkeypatch, tmp
         if message.type == 'note_on':
             ons.append((now, message.velocity))
     assert ons == [(49 * 120, 101)]
+
+
+def _event(editor, column, lane, dy=0):
+    """A mouse event on a cell of a lane editor (column 0-15 of the page shown)."""
+    import types
+    lane_index = list(editor.LANES).index(lane) if lane in editor.LANES else editor.LENGTH_LANE
+    x = 40 + column * editor.step_width + editor.step_width // 2
+    y = 5 + lane_index * editor.lane_height + editor.lane_height // 2 + dy
+    return types.SimpleNamespace(x=x, y=y, x_root=x, y_root=y)
+
+
+def test_velocity_lane_drags_a_triggered_step_through_the_core(app):
+    editor = app.pattern_editors[0]
+    app.core.set('pattern.A.ch1.step3.trig', True)
+    tick(app)
+    assert editor.velocities == [64] * 16
+    editor._on_click(_event(editor, 2, 'vel'))
+    editor._on_drag(_event(editor, 2, 'vel', dy=-20))  # 20 px up
+    editor._on_release(_event(editor, 2, 'vel', dy=-20))
+    tick(app)
+    assert app.core.get('pattern.A.ch1.step3.vel') == 84
+    # An untriggered step does not take a velocity drag
+    editor._on_click(_event(editor, 3, 'vel'))
+    editor._on_drag(_event(editor, 3, 'vel', dy=-20))
+    editor._on_release(_event(editor, 3, 'vel'))
+    tick(app)
+    assert app.core.get('pattern.A.ch1.step4.vel') == 64
+    # Set elsewhere: the editor shows it
+    app.core.set('pattern.A.ch1.step3.vel', 5)
+    tick(app)
+    assert editor.velocities[2] == 5
+
+
+def test_pages_length_up_to_64_and_edits_on_later_pages(app):
+    editor = app.pattern_editors[0]
+    app._on_page_select(3)
+    assert app._page == 3 and app._page_follow is False
+    assert all(e.page == 3 for e in app.pattern_editors) and app.matrix_editor.page == 3
+    assert app.page_buttons[3].cget('bg') == app.COLORS['highlight']
+    assert app.page_buttons[1].cget('fg') == app.COLORS['text_dim']  # past the length
+    editor._on_click(_event(editor, 15, 'length'))  # step 64 becomes the last step
+    tick(app)
+    assert app.core.get('pattern.A.length') == 64
+    assert len(editor.triggers) == 64
+    assert app.page_buttons[1].cget('fg') == app.COLORS['text']
+    editor._on_click(_event(editor, 1, 'trig'))  # step 50
+    editor._on_release(_event(editor, 1, 'trig'))
+    tick(app)
+    assert app.core.get('pattern.A.ch1.step50.trig') is True
+    app._on_page_select(2)
+    editor._on_click(_event(editor, 4, 'length'))  # step 37 is the last
+    tick(app)
+    assert app.core.get('pattern.A.length') == 37
+    app._on_matrix_toggle()
+    app._on_matrix_edit(2, 35, True)
+    tick(app)
+    assert app.core.get('pattern.A.ch3.step36.trig') is True
+    app._on_matrix_toggle()
+
+
+def test_follow_turns_the_page_with_the_playhead(app):
+    app.core.set('global.tempo', 300)
+    app.core.set('pattern.A.length', 64)
+    tick(app)
+    assert app._page_follow is True
+    run_verb_from(app, app._on_pattern_play)
+    pages = set()
+    for _ in range(600):
+        tick(app)
+        pages.add(app._page)
+        assert app._playing_page == app._transport['position'] // 16
+        if len(pages) == 4:
+            break
+    assert pages == {0, 1, 2, 3}
+    app._on_page_select(0)  # by hand: follow off, the page stays
+    for _ in range(100):
+        tick(app)
+    assert app._page == 0 and app._page_follow is False
+    run_verb_from(app, app._on_pattern_stop)
