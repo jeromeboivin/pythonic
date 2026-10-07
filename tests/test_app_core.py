@@ -217,6 +217,19 @@ def test_queued_set_is_applied_by_the_callback_at_block_start(make_core, backend
     assert edits(core.poll(since=poll['version'])) == {}
 
 
+def test_a_change_noted_after_an_applied_set_wins_without_a_poll_between(make_core, backend):
+    # A set applied by the audio thread, then a verb rewrites the value (a
+    # preset load) before any poll: poll reports the verb's newer value
+    core = started(make_core())
+    core.set('global.tempo', 99)
+    backend.stream.pull()
+    assert core.get('global.tempo') == 99
+    core.registry['global.tempo'].set(130)  # as a bulk change does on the audio thread
+    core.note_changes(['global.tempo'])
+
+    assert core.poll()['changes']['global.tempo'] == 130
+
+
 def test_trigger_is_placed_at_the_sample_offset_of_its_arrival(make_core, backend):
     clock = FakeClock(100.0)
     core = started(make_core(clock=clock))

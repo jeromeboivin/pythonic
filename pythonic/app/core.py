@@ -399,12 +399,14 @@ class AppCore:
     # ================================================================== poll bookkeeping
     def _note_change(self, address, value):
         with self._cond:
+            self._promote_applied()  # sets the audio thread applied before are older
             self._version += 1
             self._changes[address] = (self._version, value)
 
     def note_values(self, values):
         """Report addresses with the given values as one change."""
         with self._cond:
+            self._promote_applied()
             self._version += 1
             for name, value in values.items():
                 self._changes[name] = (self._version, value)
@@ -415,6 +417,7 @@ class AppCore:
             return
         values = {name: self.registry[name].get() for name in addresses}
         with self._cond:
+            self._promote_applied()
             self._version += 1
             for name, value in values.items():
                 self._changes[name] = (self._version, value)
