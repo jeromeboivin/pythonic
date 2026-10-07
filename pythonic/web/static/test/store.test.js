@@ -54,3 +54,50 @@ test('events reach listeners and assume() echoes locally', () => {
   store.assume('global.tempo', 99);
   assert.equal(store.value('global.tempo'), 99);
 });
+
+/** A store on a hand-driven clock: tick(ms) runs the timers that are due. */
+function clocked() {
+  let t = 0;
+  let timers = [];
+  const store = createStore({
+    now: () => t,
+    later: (fn, ms) => { timers.push({ at: t + ms, fn }); },
+  });
+  const tick = (ms) => {
+    t += ms;
+    const due = timers.filter((x) => x.at <= t);
+    timers = timers.filter((x) => x.at > t);
+    due.forEach((x) => x.fn());
+  };
+  return { store, tick };
+}
+
+test('a frame with an older value does not pull back a local echo', () => {
+  const { store, tick } = clocked();
+  store.seed({ 'ch1.osc.decay': 100 });
+  const seen = [];
+  store.watch('ch1.osc.decay', (v) => seen.push(v), { now: false });
+  store.assume('ch1.osc.decay', 110);
+  store.assume('ch1.osc.decay', 120);
+  tick(20);
+  store.apply({ changes: { 'ch1.osc.decay': 110 } }); // the core caught up with the first set
+  assert.equal(store.value('ch1.osc.decay'), 120);
+  store.apply({ changes: { 'ch1.osc.decay': 120 } });
+  assert.deepEqual(seen, [110, 120]);
+  store.apply({ changes: { 'ch1.osc.decay': 90 } }); // the echo is matched: the core rules again
+  assert.equal(store.value('ch1.osc.decay'), 90);
+});
+
+test('a held value from the core shows once the echo is old', () => {
+  const { store, tick } = clocked();
+  store.seed({ 'global.tempo': 120 });
+  store.assume('global.tempo', 300);
+  store.apply({ changes: { 'global.tempo': 250 } }); // the core clamped it
+  assert.equal(store.value('global.tempo'), 300);
+  tick(500);
+  assert.equal(store.value('global.tempo'), 250);
+  store.assume('global.tempo', 140);
+  tick(500);
+  store.apply({ changes: { 'global.tempo': 141 } }); // long after the echo: shown at once
+  assert.equal(store.value('global.tempo'), 141);
+});

@@ -1,13 +1,25 @@
 // The page's copy of core state, rebuilt from get() and the poll frames.
 // Pure module (no DOM, no bridge): values by address, the readouts of the
 // latest frame (transport, modulation, audio, midi, po32) and the action events.
+//
+// Local echo: a control shows its new value at once (assume) and the frames
+// report the core's values a frame or two later. While a drag runs, a frame
+// still carries an earlier set of the drag; for ECHO_HOLD_MS after an echo a
+// different value from the core is held back (the knob would step back),
+// until the core reports the echoed value or the hold ends, when the latest
+// held value shows (a value the core changed on its side, or clamped).
 
+export const ECHO_HOLD_MS = 250;
 export const READOUTS = ['transport', 'modulation', 'audio', 'midi', 'po32'];
 
 const same = (a, b) => a === b || JSON.stringify(a) === JSON.stringify(b);
 
-export function createStore() {
+const defaultNow = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+const defaultLater = (fn, ms) => setTimeout(fn, ms);
+
+export function createStore({ now = defaultNow, later = defaultLater } = {}) {
   const values = new Map();
+  const echoes = new Map(); // address -> {value, at, held?, timer}
   const watchers = new Map(); // address -> Set(fn)
   const readouts = {};
   const readoutWatchers = new Map(); // name -> Set(fn)
@@ -25,6 +37,35 @@ export function createStore() {
     notify(address, value);
   }
 
+  /** The hold of an echo ended: show what the core said meanwhile. */
+  function release(address, echo) {
+    echo.timer = false;
+    if (echoes.get(address) !== echo) return;
+    const left = ECHO_HOLD_MS - (now() - echo.at);
+    if (left > 0) { echo.timer = true; later(() => release(address, echo), left); return; }
+    echoes.delete(address);
+    if ('held' in echo) put(address, echo.held);
+  }
+
+  /** A value the core reported: shown, or held while a newer echo stands. */
+  function report(address, value) {
+    const echo = echoes.get(address);
+    if (echo) {
+      if (same(value, echo.value)) {
+        echoes.delete(address);
+      } else {
+        const age = now() - echo.at;
+        if (age < ECHO_HOLD_MS) {
+          echo.held = value;
+          if (!echo.timer) { echo.timer = true; later(() => release(address, echo), ECHO_HOLD_MS - age); }
+          return;
+        }
+        echoes.delete(address);
+      }
+    }
+    put(address, value);
+  }
+
   return {
     get version() { return version; },
     has: (address) => values.has(address),
@@ -32,11 +73,18 @@ export function createStore() {
     /** Values read with get(): {address: value}. */
     seed(entries) { for (const [a, v] of Object.entries(entries)) put(a, v); },
     /** Local echo of a set the core has not reported yet. */
-    assume(address, value) { put(address, value); },
+    assume(address, value) {
+      put(address, value);
+      const echo = echoes.get(address) || { timer: false };
+      echo.value = value;
+      echo.at = now();
+      delete echo.held;
+      echoes.set(address, echo);
+    },
     /** Apply one frame (a poll result): changes by address, readouts, events. */
     apply(frame) {
       if (frame.version !== undefined) version = frame.version;
-      for (const [a, v] of Object.entries(frame.changes || {})) put(a, v);
+      for (const [a, v] of Object.entries(frame.changes || {})) report(a, v);
       for (const name of READOUTS) {
         if (!(name in frame) || same(readouts[name], frame[name])) continue;
         readouts[name] = frame[name];

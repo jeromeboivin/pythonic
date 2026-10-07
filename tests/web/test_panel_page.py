@@ -101,9 +101,23 @@ def test_fonts_css_leaves_out_the_fonts_that_are_not_there(tmp_path):
     assert 'Gone' not in out
 
 
-def test_the_page_asks_for_no_file_that_is_not_there(panel):
+def test_the_page_asks_for_no_file_that_is_not_there(open_panel, fake_core):
     # The bundled fonts are optional (tools/fetch_fonts.py): a missing one is
     # not asked for (DevTools would list each failed load as a console error)
     from pythonic.web.scheme import install_handler
-    handler = install_handler(panel.page.profile())
+    handler = install_handler()
+    handler.missing.clear()  # the handler serves the whole session
+    page = open_panel(fake_core)
+    assert install_handler(page.page.profile()) is handler
     assert handler.missing == []
+
+
+def test_a_display_line_too_long_to_fit_scrolls_and_stays_longer(panel, qtbot):
+    panel.run("pythonic.panel.display.show('AUDIO ERROR', "
+              "'Audio stream stalled: no callback for 2 s; the stream was stopped')")
+    line = "document.querySelectorAll('#display .line')[{}]"
+    assert panel.js(line.format(1) + ".classList.contains('scroll')")
+    assert not panel.js(line.format(0) + ".classList.contains('scroll')")
+    assert panel.js("pythonic.panel.display.text()[1]").startswith('Audio stream stalled')
+    qtbot.wait(1700)  # past a short message's 1.5 s: the line is still being read
+    assert panel.js("pythonic.panel.display.text()[0]") == 'AUDIO ERROR'
