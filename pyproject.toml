@@ -27,7 +27,7 @@ dependencies = [
 # The AI drum generators. CPU-only PyTorch by default; for GPU support install
 # the CUDA or ROCm build from https://pytorch.org/get-started/locally/ first.
 ml = ["torch>=2.0.0"]
-dev = ["pytest>=7.0.0", "pytest-qt>=4.4"]
+dev = ["pytest>=7.0.0", "pytest-qt>=4.4", "soundfile>=0.12"]
 
 [project.scripts]
 pythonic = "pythonic.launch:main"
