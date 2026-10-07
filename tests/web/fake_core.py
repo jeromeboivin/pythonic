@@ -149,6 +149,7 @@ class FakeCore:
                       'latency_ms': 23.8, 'mono': False, 'callbacks': 0, 'underruns': 0,
                       'dropped': 0},
             'midi': {'activity': 0, 'notes': [0] * 8, 'pickup': {}},
+            'po32': {'level': 0.0, 'recorded_seconds': 0.0, 'progress': 0.0, 'preview_step': -1},
         }
         self.patterns = FakePatterns(self)
         self.verbs = {

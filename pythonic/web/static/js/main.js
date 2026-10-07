@@ -7,6 +7,7 @@ import { connectBridge, createFakeBridge } from './bridge.js';
 import { createCoreClient } from './core-client.js';
 import { mountPanel } from './panel.js';
 import { mountSetup } from './setup.js';
+import { mountPo32Page } from './po32.js';
 import { mountStage } from './stage.js';
 import { createStore } from './store.js';
 
@@ -40,6 +41,7 @@ export async function boot({ bridge = null, stage = document.getElementById('sta
   const panel = mountPanel(stage, { store, client, meta });
   const setup = mountSetup({ panel, store, client, meta });
   panel.ai = mountAiPage({ panel, store, client, stage }); // the AI drum generator page
+  mountPo32Page(panel, { store, client }); // the 'po32' page
   store.seed(await client.get(store.watched()));
   return { bridge, client, store, meta, panel, setup };
 }

@@ -1,8 +1,8 @@
 // The page's copy of core state, rebuilt from get() and the poll frames.
 // Pure module (no DOM, no bridge): values by address, the readouts of the
-// latest frame (transport, modulation, audio, midi) and the action events.
+// latest frame (transport, modulation, audio, midi, po32) and the action events.
 
-export const READOUTS = ['transport', 'modulation', 'audio', 'midi'];
+export const READOUTS = ['transport', 'modulation', 'audio', 'midi', 'po32'];
 
 const same = (a, b) => a === b || JSON.stringify(a) === JSON.stringify(b);
 

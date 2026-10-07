@@ -316,9 +316,9 @@ def test_a_failed_export_says_why_on_a_red_alert(panel, tmp_path):
 # ---------------------------------------------------------------- pages and errors
 
 def test_po32_setup_the_midi_led_and_cc_mappings_open_their_pages(panel):
-    panel.click('#po32-button')
+    panel.run("pythonic.panel.openPage('nothing-yet')")  # an unregistered page
     title, text = alert_up(panel, 'ok')
-    assert title == 'PO-32 transfer and import' and 'coming soon' in text.lower()
+    assert title == 'nothing-yet' and 'coming soon' in text.lower()
     answer_alert(panel)
     panel.run("window.__opened = []; for (const n of ['po32', 'setup', 'ai'])"
               " pythonic.panel.registerPage(n, (o) => window.__opened.push([n, o]))")

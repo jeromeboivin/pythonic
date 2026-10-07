@@ -1,0 +1,101 @@
+/* The PO-32 page (js/po32.js): an edit rack drawer page (1568x294) with a
+   transfer and an import tab, each a numbered left-to-right stage flow. The
+   current stage is lit, later ones dimmed (still usable), done ones ticked.
+   Colours come from tokens.css. */
+.po32 { position: absolute; inset: 0; padding: 4px 10px 8px; display: flex; flex-direction: column; gap: 6px; }
+.po-head { display: flex; align-items: center; gap: 12px; height: 30px; flex: none; }
+.po-head .btn.sq { padding: 5px 10px; }
+.po-head .po-name { font-size: 15px; letter-spacing: .08em; }
+.po-head .po-tabs { display: flex; gap: 3px; }
+.po-head .po-tabs .btn { padding: 5px 16px; }
+.po-head .sp { flex: 1; }
+.po-flow { flex: 1; min-height: 0; display: none; gap: 6px; }
+.po32[data-tab="transfer"] .po-flow[data-flow="transfer"], .po32[data-tab="import"] .po-flow[data-flow="import"] { display: flex; }
+.po-arrow { align-self: center; color: #555; font-size: 22px; font-weight: 700; flex: none; }
+
+.po-stage {
+  min-width: 0; border: 1px solid var(--box); border-radius: 8px; padding: 6px 9px 7px;
+  display: flex; flex-direction: column; gap: 6px; transition: opacity .15s;
+}
+.po-stage h4 { margin: 0; display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 700;
+  letter-spacing: .1em; text-transform: uppercase; color: var(--label); }
+.po-num { width: 18px; height: 18px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
+  background: #333; color: #000; font-size: 11px; letter-spacing: 0; flex: none; }
+.po-stage[data-state="now"] { border-color: var(--accent); box-shadow: 0 0 12px rgba(34, 227, 132, .2); }
+.po-stage[data-state="now"] .po-num { background: var(--label); }
+.po-stage[data-state="done"] .po-num { background: var(--accent); }
+.po-stage[data-state="later"] { opacity: .45; }
+.po-body { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
+
+.po-row { display: flex; align-items: center; gap: 5px; }
+.po-row .sp { flex: 1; }
+.po-field { display: flex; align-items: center; gap: 8px; }
+.po-lbl { min-width: 84px; font-size: 11px; font-weight: 700; color: var(--dim); text-transform: uppercase; letter-spacing: .05em; }
+.po-seg, .po-seg-in { display: flex; gap: 3px; }
+.po32 .btn.sq { padding: 5px 9px; font-size: 12px; }
+.po32 .lbox { font-size: 12px; padding: 4px 20px 4px 7px; text-transform: none; }
+.po-chain { min-width: 110px; }
+.po-device { flex: 1; min-width: 0; max-width: 300px; overflow: hidden; text-overflow: ellipsis; }
+.po-note { font-size: 12px; color: #8a8a8d; line-height: 1.3; }
+.po-error { font-size: 12px; color: var(--error); line-height: 1.3; min-height: 0; }
+.po-howto { font-size: 16px; color: var(--label); line-height: 1.55; }
+.po-howto b { color: var(--accent); }
+
+/* transfer: the channels sent */
+.po-channels { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; }
+.po-check { display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; white-space: nowrap; min-width: 0; }
+.po-check i { width: 13px; height: 13px; border: 1px solid #555; border-radius: 2px; flex: none; }
+.po-check.on i { background: var(--accent); border-color: var(--accent); }
+.po-check b { color: var(--cc); min-width: 10px; }
+.po-check .nm { overflow: hidden; text-overflow: ellipsis; text-transform: uppercase; font-weight: 700; color: var(--label); }
+.po-check:not(.on) .nm { color: #55575b; }
+
+/* transfer: progress */
+.po-bar { height: 10px; background: #050505; border-radius: 5px; box-shadow: 0 0 0 1px #2c2d30; overflow: hidden; }
+.po-bar i { display: block; height: 100%; width: 0; background: var(--accent); border-radius: 5px; }
+.po-status { font-size: 13px; color: var(--dim); }
+.po-status[data-state="sending"], .po-status[data-state="sent"] { color: var(--button-lit-text); }
+.po-status[data-state="error"] { color: var(--error); }
+.po-status[data-state="stopped"] { color: var(--midi); }
+.btn.po-send.stop { color: #ff7070; }
+
+/* import: level meter */
+.po-meter { position: relative; flex: 1; max-width: 180px; height: 10px; border-radius: 2px; box-shadow: 0 0 0 1px #2c2d30;
+  background: linear-gradient(90deg, #0a2a0a 60%, #2a2a0a 60% 85%, #2a0a0a 85%); overflow: hidden; }
+.po-meter .lvl { position: absolute; left: 0; top: 1px; bottom: 1px; width: 0;
+  background: linear-gradient(90deg, #44ff88 0 120px, #ffcc44 120px 153px, #ff4444 153px); background-size: 180px 100%; }
+.po-meter .pk { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--label); }
+.po-db { font-size: 12px; font-weight: 700; color: var(--dim); min-width: 56px; text-align: right; font-variant-numeric: tabular-nums; }
+.po-db[data-tone="good"] { color: #44ff88; }
+.po-db[data-tone="hot"] { color: #ffaa44; }
+.po-db[data-tone="clip"] { color: var(--error); }
+.po-source { min-height: 30px; }
+.po-source[data-state="error"] { color: var(--error); }
+.po-keep { margin-top: auto; }
+.po-keep px-toggle .btn { padding: 4px 8px; font-size: 11px; }
+.po-folder { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+
+/* import: bank */
+.po-sounds { margin: 0; padding: 0 0 0 20px; font-size: 12px; color: var(--label); columns: 2; column-gap: 16px; }
+.po-sounds li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.45; }
+.po-sounds li.none { color: #55575b; }
+
+/* import: pick patterns */
+.po-pats { display: grid; grid-template-columns: repeat(8, 1fr); gap: 3px; }
+.po32 .btn.po-pat { padding: 4px 0; font-size: 12px; }
+.btn.po-pat.empty:not(:disabled) { color: #3d7a58; }
+.btn.po-pat.focus { outline: 1px solid var(--label); outline-offset: 1px; }
+.po-count { min-width: 84px; }
+.po-focus { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.po-gridwrap { flex: 1; min-height: 0; }
+.po-grid { display: grid; grid-template-columns: 96px repeat(16, 1fr); grid-auto-rows: 11px; gap: 2px 3px; align-items: center; }
+.po-grid .po-glbl { font-size: 10px; line-height: 11px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.po-grid i { height: 11px; border-radius: 1px; background: #1d1d20; }
+.po-grid i.g1, .po-grid i.g3 { background: #222226; }
+.po-grid i.on { background: var(--cc); box-shadow: 0 0 4px var(--cc); }
+.po-grid i.ph { outline: 1px solid var(--playhead); }
+.px-menu.po-letters .it { padding: 2px 12px; font-size: 13px; }
+
+/* import: import */
+.po-summary { color: var(--dim); }
+.po32 .btn#po32-import { align-self: flex-start; padding: 8px 12px; }
