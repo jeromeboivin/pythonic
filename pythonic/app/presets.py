@@ -139,13 +139,13 @@ class Presets:
             return []
         return sorted(n for n in names if n.lower().endswith(PRESET_SUFFIXES))
 
-    def _resolve(self, path):
+    def resolve(self, path):
         if not path:
             raise ValueError('no file given')
         path = os.path.expanduser(str(path))
         return os.path.abspath(os.path.join(self.folder(), path))
 
-    def _channel_index(self, channel):
+    def channel_index(self, channel):
         if channel is None:
             return self._core.synth.selected_channel
         if (isinstance(channel, int) and not isinstance(channel, bool)
@@ -161,7 +161,7 @@ class Presets:
 
     # ================================================================== preset load
     def _verb_load(self, path):
-        path = self._resolve(path)
+        path = self.resolve(path)
         state, mutes, name, fmt = self.read_preset(path)
         self._install(state, mutes, 'load preset')
         prefs = self._core.preferences
@@ -335,7 +335,7 @@ class Presets:
         }
 
     def _verb_save(self, path, overwrite=False):
-        path = _with_suffix(self._resolve(path), '.json')
+        path = _with_suffix(self.resolve(path), '.json')
         exists = os.path.exists(path)
         if exists and not overwrite:
             return {'saved': False, 'exists': True, 'path': path}
@@ -395,8 +395,8 @@ class Presets:
 
     # ================================================================== drum patches
     def _verb_load_patch(self, path, channel=None):
-        index = self._channel_index(channel)
-        path = self._resolve(path)
+        index = self.channel_index(channel)
+        path = self.resolve(path)
         patch = DrumPatchParser().parse_file(path)
         # Patches without a Name line are named after the file
         patch.setdefault('Name', os.path.splitext(os.path.basename(path))[0])
@@ -409,8 +409,8 @@ class Presets:
         return {'channel': index + 1, 'name': data['name'], 'path': path}
 
     def _verb_save_patch(self, path, channel=None, overwrite=False):
-        index = self._channel_index(channel)
-        path = _with_suffix(self._resolve(path), DRUM_PATCH_SUFFIX)
+        index = self.channel_index(channel)
+        path = _with_suffix(self.resolve(path), DRUM_PATCH_SUFFIX)
         exists = os.path.exists(path)
         if exists and not overwrite:
             return {'saved': False, 'exists': True, 'path': path}

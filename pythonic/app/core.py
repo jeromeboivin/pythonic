@@ -20,6 +20,8 @@ the audio stream, driven through an address-based interface (ADR 0001).
   (``morph.*``) in ``morph.py``.
 - Preset and drum-patch files (``preset.*``, ``drum_patch.*``) are in
   ``presets.py``, the preferences (``pref.*``) in ``prefs.py``.
+- MIDI and WAV export (``export.*``) is in ``export.py``; WAV renders run on
+  the export thread with an offline synth and report progress through poll.
 - Undo and redo (``undo`` / ``redo`` verbs, ``undo.*`` addresses): every set
   is journaled (``undo.py``); a front-end brackets a drag with
   ``begin_gesture()`` / ``end_gesture()``, a wheel or controller passes
@@ -45,6 +47,7 @@ from pythonic.sequencer import StepSequencer
 from pythonic.synthesizer import PythonicSynthesizer
 
 from .audio import AudioEngine
+from .export import Export
 from .midi import MidiInput, import_mido
 from .morph import Morph
 from .patterns import Patterns
@@ -140,6 +143,7 @@ class AppCore:
         self.presets.register(self.registry)
         self.prefs = Prefs(self)
         self.prefs.register(self.registry)
+        self.export = Export(self)
         self._verbs = {
             'audio.start': self._verb_audio_start,
             'audio.stop': self._verb_audio_stop,
@@ -151,6 +155,7 @@ class AppCore:
             **self.midi.verbs(),
             **self.presets.verbs(),
             **self.prefs.verbs(),
+            **self.export.verbs(),
         }
         self._running_action = None  # id of the verb running on the action thread
 
@@ -365,6 +370,7 @@ class AppCore:
         self.midi.close()
         self._jobs.put(None)
         self._worker.join(timeout=self.audio.stream_timeout + 5.0)
+        self.export.close()
         self.audio.stop()
         self.synth.cleanup()
 
@@ -461,7 +467,7 @@ class AppCore:
             self._events.append(event)
             if len(self._events) > _MAX_EVENTS:
                 del self._events[:len(self._events) - _MAX_EVENTS]
-            if event.get('id') is not None:
+            if event.get('id') is not None and event['status'] != 'progress':
                 self._results[event['id']] = event
                 while len(self._results) > _MAX_EVENTS:
                     del self._results[next(iter(self._results))]

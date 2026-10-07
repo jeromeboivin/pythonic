@@ -5,7 +5,6 @@ Visual interface of the drum synthesizer
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-import numpy as np
 import os
 import random
 
@@ -13,7 +12,6 @@ import random
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pythonic.sequencer import StepSequencer, STEP_TICKS
 from pythonic.pattern_manager import PatternManager
 from pythonic.lfo import ModTarget, MOD_TARGET_GROUPS, MOD_TARGET_LABELS
 from gui.widgets import (
@@ -29,22 +27,7 @@ from pythonic.pattern_generator import PatternGenerator
 from pythonic.preset_manager import channel_to_raw_patch
 from pythonic.app.undo import pattern_part
 
-try:
-    import sounddevice as sd
-    AUDIO_AVAILABLE = True
-except ImportError:
-    AUDIO_AVAILABLE = False
-    print("Warning: sounddevice not available. Audio playback disabled.")
-
-try:
-    import mido
-    MIDI_AVAILABLE = True
-except ImportError:
-    MIDI_AVAILABLE = False
-    print("Warning: mido not available. MIDI export disabled.")
-
 from pythonic.app import AppCore
-from pythonic.app.export import pattern_midi_file
 from pythonic.app.midi import cc_name
 from pythonic.app.sound import cc_parameter_target
 
@@ -2042,39 +2025,23 @@ class PythonicGUI:
                                  f"AI channel generation failed: {e}")
 
     def _export_pattern_to_midi(self, pattern_idx):
-        """Export pattern to MIDI file"""
-        if not MIDI_AVAILABLE:
-            messagebox.showerror("Error", "MIDI export requires the 'mido' library. Install it with: pip install mido")
-            return
-        
-        pattern = self.pattern_manager.get_pattern(pattern_idx)
-        pattern_name = self.pattern_manager.PATTERN_NAMES[pattern_idx]
-        
-        # Ask for filename
+        """Export a pattern to a MIDI file through the core"""
+        pattern_name = PatternManager.PATTERN_NAMES[pattern_idx]
         filename = filedialog.asksaveasfilename(
             title=f"Export Pattern {pattern_name} to MIDI",
             defaultextension=".mid",
             filetypes=[("MIDI files", "*.mid"), ("All files", "*.*")],
             initialfile=f"pythonic_pattern_{pattern_name}.mid"
         )
-        
-        if not filename:
-            return
-        
-        try:
-            pm = self.pattern_manager
-            pattern_midi_file(pattern, pm.bpm, pm.step_rate, pm.swing).save(filename)
-        except Exception as e:
-            messagebox.showerror("Export Error", f"Failed to export MIDI file:\\n{e}")
+        if filename:
+            # Tk's save dialog has asked before replacing a file
+            self._act_or_warn('export.midi', "Failed to export MIDI file", path=filename,
+                              pattern=pattern_idx, overwrite=True)
     
     def _export_pattern_to_audio(self, pattern_idx):
-        """Export pattern to WAV file"""
-        if not AUDIO_AVAILABLE:
-            messagebox.showerror("Error", "Audio export requires the 'sounddevice' library.")
-            return
-        
-        pattern = self.pattern_manager.get_pattern(pattern_idx)
-        pattern_name = self.pattern_manager.PATTERN_NAMES[pattern_idx]
+        """Export a pattern to a WAV file: the tail choice and the file dialog
+        stay here, the core renders off the audio thread"""
+        pattern_name = PatternManager.PATTERN_NAMES[pattern_idx]
         
         # Ask for tail handling option
         tail_dialog = tk.Toplevel(self.root)
@@ -2083,10 +2050,10 @@ class PythonicGUI:
         tail_dialog.transient(self.root)
         tail_dialog.grab_set()
         
-        tail_option = tk.StringVar(value="none")
+        tail_option = tk.StringVar(value="cut")
         
         tk.Label(tail_dialog, text="Tail Handling:", font=('Segoe UI', 10)).pack(pady=10)
-        tk.Radiobutton(tail_dialog, text="None (truncate)", variable=tail_option, value="none").pack(anchor='w', padx=20)
+        tk.Radiobutton(tail_dialog, text="None (truncate)", variable=tail_option, value="cut").pack(anchor='w', padx=20)
         tk.Radiobutton(tail_dialog, text="Append (add silence)", variable=tail_option, value="append").pack(anchor='w', padx=20)
         tk.Radiobutton(tail_dialog, text="Loop (repeat pattern)", variable=tail_option, value="loop").pack(anchor='w', padx=20)
         
@@ -2097,86 +2064,15 @@ class PythonicGUI:
         
         self.root.wait_window(tail_dialog)
         
-        # Ask for filename
         filename = filedialog.asksaveasfilename(
             title=f"Export Pattern {pattern_name} to Audio",
             defaultextension=".wav",
             filetypes=[("WAV files", "*.wav"), ("All files", "*.*")],
             initialfile=f"pythonic_pattern_{pattern_name}.wav"
         )
-        
-        if not filename:
-            return
-        
-        try:
-            # Import wave for WAV file writing
-            import wave
-            
-            # Calculate total samples needed
-            # Use synth sample rate for offline rendering
-            render_sr = self.synth_sample_rate
-            pm = self.pattern_manager
-            ticks = pattern.length * STEP_TICKS.get(pm.step_rate, 480)
-            pattern_duration_samples = int(np.ceil(ticks / (pm.bpm * 32.0 / render_sr)))
-            
-            # Add tail handling
-            if tail_option.get() == "append":
-                # Add 2 seconds of tail for reverb/decay
-                tail_samples = render_sr * 2
-            elif tail_option.get() == "loop":
-                # Add one more loop iteration
-                tail_samples = pattern_duration_samples
-            else:
-                tail_samples = 0
-            
-            total_samples = pattern_duration_samples + tail_samples
-            
-            # Temporarily enable playback and render
-            old_playing_state = pm.is_playing
-            old_playing_idx = pm.playing_pattern_index
-            
-            pm.playing_pattern_index = pattern_idx
-            pm.is_playing = True
-            pm.play_position = 0
-            
-            seq = StepSequencer(pm, render_sr)
-            seq.start(None, synth_clock=self.synth.sample_clock)
-            # Sequence one pass (two with "loop"), then let the tail ring out
-            seq_limit = pattern_duration_samples * (2 if tail_option.get() == "loop" else 1)
-            chunks = []
-            pos = 0
-            while pos < total_samples:
-                n = min(1024, total_samples - pos)
-                if pos < seq_limit:
-                    n = min(n, seq_limit - pos)
-                    events = seq.advance(n)
-                else:
-                    events = []
-                chunks.append(self.synth.process_audio_events(n, events))
-                pos += n
-            audio_buffer = np.concatenate(chunks, axis=0)
-            
-            # Restore playback state
-            self.pattern_manager.is_playing = old_playing_state
-            self.pattern_manager.playing_pattern_index = old_playing_idx
-            
-            # Convert to int16 for WAV file
-            is_mono = self.synth.mono
-            if is_mono:
-                audio_out = audio_buffer[:, 0]  # L=R in mono, take one channel
-                audio_int16 = (audio_out * 32767).astype(np.int16)
-            else:
-                audio_int16 = (audio_buffer * 32767).astype(np.int16)
-            
-            # Write WAV file
-            with wave.open(filename, 'wb') as wav_file:
-                wav_file.setnchannels(1 if is_mono else 2)
-                wav_file.setsampwidth(2)
-                wav_file.setframerate(render_sr)
-                wav_file.writeframes(audio_int16.tobytes())
-            
-        except Exception as e:
-            messagebox.showerror("Export Error", f"Failed to export audio file:\\n{e}")
+        if filename:
+            self._act_or_warn('export.wav', "Failed to export audio file", path=filename,
+                              pattern=pattern_idx, tail=tail_option.get(), overwrite=True)
     
     def _on_chain_previous(self):
         """Toggle chain from previous pattern to current (the buttons follow from poll)"""
@@ -2602,36 +2498,36 @@ class PythonicGUI:
             self._act_or_warn('drum_patch.save', "Failed to save drum patch", path=filename,
                               channel=channel, overwrite=True)
     
-    def _export_all_wavs(self):
-        """Export all drums to WAV files"""
-        folder = filedialog.askdirectory(title='Select folder for WAV export')
-        if folder:
-            try:
-                exported = self.preset_manager.export_all_drums_to_wav(
-                    self.synth, folder,
-                    sample_rate=self.synth_sample_rate,
-                    mono=self.synth.mono
-                )
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to export: {e}")
+    def _export_all_wavs(self, folder=None, overwrite=False):
+        """Export every drum to a WAV file in a folder (the core asks before
+        replacing files)"""
+        folder = folder or filedialog.askdirectory(title='Select folder for WAV export')
+        if not folder:
+            return
+        
+        def done(result):
+            if result['saved']:
+                return
+            count = len(result['paths'])
+            if messagebox.askyesno("Replace Files",
+                                   f"{count} drum WAV file{'s' if count > 1 else ''} already "
+                                   f"exist{'' if count > 1 else 's'} in this folder. Replace?"):
+                self._export_all_wavs(folder, overwrite=True)
+        self._act_or_warn('export.drum_wavs', "Failed to export", on_done=done,
+                          folder=folder, overwrite=overwrite)
     
     def _export_current_drum(self):
         """Export the currently selected drum to WAV"""
+        channel = self.selected_channel + 1
         filename = filedialog.asksaveasfilename(
             defaultextension=".wav",
             filetypes=[('WAV files', '*.wav')],
-            title=f'Export Drum {self.selected_channel + 1}'
+            title=f'Export Drum {channel}'
         )
         if filename:
-            try:
-                self.preset_manager.export_drum_to_wav(
-                    self.synth.channels[self.selected_channel],
-                    filename,
-                    sample_rate=self.synth_sample_rate,
-                    mono=self.synth.mono
-                )
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to export: {e}")
+            # Tk's save dialog has asked before replacing a file
+            self._act_or_warn('export.drum_wav', "Failed to export", path=filename,
+                              channel=channel, overwrite=True)
     
     def _load_preset_file(self, filename, show_message=True):
         """Load a preset file through the core (one undo step; every view
@@ -4046,6 +3942,8 @@ class PythonicGUI:
             self._show_changes(state['changes'])
         
         for event in state['events']:
+            if event['status'] == 'progress':
+                continue  # an export still rendering
             callback = self._action_callbacks.pop(event.get('id'), None)
             if callback is not None:
                 callback(event)

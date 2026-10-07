@@ -230,7 +230,7 @@ def test_midi_export_writes_a_long_pattern_with_velocities(app, monkeypatch, tmp
     app.core.set('pattern.B.ch1.step50.trig', True)
     app.core.set('pattern.B.ch1.step50.vel', 101)
     tick(app)
-    app._export_pattern_to_midi(1)
+    run_verb_from(app, app._export_pattern_to_midi, 1)  # export.midi in the core
     now, ons = 0, []
     for message in mido.MidiFile(str(path)).tracks[0]:
         now += message.time

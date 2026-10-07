@@ -137,6 +137,10 @@ pattern), `channel` 1..8.
 | `preset.save` | path, overwrite=False | `{'saved', 'exists', 'path'}` |
 | `drum_patch.load` | path, channel (default selected) | `{'channel', 'name', 'path'}` |
 | `drum_patch.save` | path, channel, overwrite=False | `{'saved', 'exists', 'path', 'channel'}` |
+| `export.midi` | path, pattern, overwrite=False | `{'saved', 'exists', 'path', 'pattern'}`: the pattern's MIDI file |
+| `export.wav` | path, pattern, tail=`'cut'` (`'cut'`, `'append'` +2 s, `'loop'` +1 pass), overwrite=False | `{'saved', 'exists', 'path', 'pattern', 'tail', 'frames', 'sample_rate', 'channels'}`; progress events while it renders |
+| `export.drum_wav` | path, channel (default selected), overwrite=False | `{'saved', 'exists', 'path', 'channel', 'frames', 'sample_rate', 'channels'}`: 2 s of one hit at 127; progress events |
+| `export.drum_wavs` | folder, overwrite=False | `{'saved', 'exists', 'folder', 'paths'}`: `01_<name>.wav` .. `08_<name>.wav`; refused with `paths` = the files that exist; progress events |
 | `preset.copy`, `preset.cut`, `preset.paste`, `preset.initialize`, `preset.randomize_all` | | preset clipboard, init, randomize (one undo step each) |
 | `preset.refresh` | | `{'files'}`; rescans the preset folder |
 | `audio.start`, `audio.stop` | | stream status |
@@ -154,9 +158,20 @@ patterns; mutes when the file has them) and makes it the last preset and the
 first recent file. Saving refuses to replace an existing file unless
 `overwrite=True`: the result is `{'saved': False, 'exists': True, 'path'}`, and
 the front-end asks, then sends the verb again with `overwrite=True`. The core
-adds `.json` / `.mtdrum` to a path without an extension before that check
-(native dialogs add the default suffix after their own check). File dialogs
-live in the front-ends and hand the chosen path to these verbs.
+adds `.json` / `.mtdrum` / `.mid` / `.wav` to a path without an extension
+before that check (native dialogs add the default suffix after their own
+check). File dialogs live in the front-ends and hand the chosen path to these
+verbs.
+
+**Export.** The MIDI file has one note per triggered step on channel 10
+(GM drum notes 36, 38, 42, 46, 45, 41, 39, 37 for channels 1..8) at the step's
+velocity (127 when accented), swung like the sequencer, ending where the
+pattern loops. WAV files are 16-bit at the synth rate, mono when the output
+is mono; a pattern plays alone (no chain), once plus its tail. The state is
+taken when the verb starts; renders then run one at a time on the core's
+export thread with an offline synth of their own, so the live stream and the
+action thread carry on, and poll reports `progress` events until the done or
+error event.
 
 ## Poll
 
@@ -169,7 +184,7 @@ version = state['version']
 |---|---|
 | `version` | the newest version; pass it back next frame |
 | `changes` | `{address: value}` changed since `since` (a queued set appears once the audio thread has applied it; a bulk change reports every value it may have changed) |
-| `events` | action events newer than `since`: `{'id', 'verb', 'status': 'done', 'result', 'version'}` or `{'id', 'verb', 'status': 'error', 'error': message, 'version'}`; `midi.learn` may end `cancelled`. Errors not tied to an action (audio callback, stalled stream) have `id` None and a `source` |
+| `events` | action events newer than `since`: `{'id', 'verb', 'status': 'done', 'result', 'version'}` or `{'id', 'verb', 'status': 'error', 'error': message, 'version'}`; `midi.learn` may end `cancelled`; WAV exports first post `{'id', 'verb', 'status': 'progress', 'progress': 0..1, 'version'}` events (not an end: `wait` skips them). Errors not tied to an action (audio callback, stalled stream) have `id` None and a `source` |
 | `transport` | `playing`, `position` (0-based step of the playing pattern), `playing_pattern`, `selected_pattern`, `queued_pattern` (0..11 or None), `chain` (indexes of the chain being played) |
 | `modulation` | `channel` (0-based selected channel), `offsets` (`{mod target: offset}`) for the knobs' modulation arcs |
 | `audio` | `running`, `device`, `default_device`, `sample_rate`, `synth_rate`, `block_size`, `latency_ms`, `mono`, `callbacks`, `underruns`, `dropped` |

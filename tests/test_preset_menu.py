@@ -1,16 +1,13 @@
 """
-Tests for the engine parts of the preset menu actions: initialize,
-randomize and drum WAV export (the clipboard is the core's, see
-test_preset_io_core.py).
+Tests for the engine parts of the preset menu actions: initialize and
+randomize (the clipboard is the core's, see test_preset_io_core.py; drum WAV
+export is the core's, see test_export_core.py).
 """
 
 import numpy as np
-from scipy.io import wavfile
 
 from pythonic.drum_channel import DrumChannel
 from pythonic.lfo import ModTarget
-from pythonic.preset_manager import PresetManager
-from pythonic.synthesizer import PythonicSynthesizer
 
 SAMPLE_RATE = 44100
 
@@ -58,30 +55,3 @@ def test_randomize_is_reproducible_with_a_seeded_rng():
     a.randomize(np.random.default_rng(7))
     b.randomize(np.random.default_rng(7))
     assert a.get_parameters() == b.get_parameters()
-
-
-# ---------------------------------------------------------------------------
-# WAV export
-# ---------------------------------------------------------------------------
-
-def test_export_drum_to_wav_leaves_the_live_channel_alone(tmp_path):
-    synth = PythonicSynthesizer(SAMPLE_RATE)
-    presets = PresetManager(synth)
-    channel = synth.channels[0]
-
-    path = presets.export_drum_to_wav(channel, str(tmp_path / "kick.wav"),
-                                      duration_ms=200.0, sample_rate=SAMPLE_RATE)
-
-    rate, audio = wavfile.read(path)
-    assert rate == SAMPLE_RATE
-    assert audio.shape == (int(0.2 * SAMPLE_RATE), 2)
-    assert np.max(np.abs(audio)) > 1000
-    assert not channel.is_active
-
-
-def test_export_all_drums_writes_one_file_per_channel(tmp_path):
-    synth = PythonicSynthesizer(SAMPLE_RATE)
-    files = PresetManager(synth).export_all_drums_to_wav(
-        synth, str(tmp_path), duration_ms=50.0, sample_rate=SAMPLE_RATE)
-    assert len(files) == 8
-    assert all((tmp_path / f).exists() for f in files)
