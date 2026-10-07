@@ -34,7 +34,7 @@ Status: **done** (in the web panel), **W6 / W7 / W8** (planned there),
 | tkinter | Web | Status |
 |---|---|---|
 | `PYTHONIC` label | wordmark, left column | done W2 |
-| `PO-32` button | right column po-32 → `panel.openPage('po32')` | done W5; the page W7 |
+| `PO-32` button | right column po-32 → `panel.openPage('po32')`: the PO-32 page on its last tab (again: closes it) | done W5 / W7 |
 | Preset ◀ / ▶ | right column ◀ ▶: previous / next file of `preset.files`, no wrap (`preset.load`) | done W5 |
 | Preset combobox (folder list, current preset) | PRESET menu: the folder's presets as an in-panel list (current lit), a click loads; the display's second line shows `preset.name` | done W5 |
 | Preset ▼ | PRESET button: the preset menu (1.6.1) | done W5 |
@@ -96,7 +96,7 @@ Status: **done** (in the web panel), **W6 / W7 / W8** (planned there),
 | Initialize Preset, Randomize All | initialize preset, randomize all | done W5 |
 | Select Preset Folder... | preset folder… (folder dialog, `pref.preset_folder`) | done W5 |
 | Refresh Preset List | refresh list, and ↻ beside the folder list (`preset.refresh`) | done W5 |
-| Transfer to PO-32... / Import from PO-32... | transfer to PO-32… / import from PO-32… → `openPage('po32', {tab})` | done W5; the page W7 |
+| Transfer to PO-32... / Import from PO-32... | transfer to PO-32… / import from PO-32… → `openPage('po32', {tab})` | done W5 / W7 |
 | AI Drum Generator... | AI drum generator… → `openPage('ai')` | done W5; the page done W8 |
 | Audio / MIDI / Synthesis / AI Settings... | setup… → `openPage('setup')` (one sheet with tabs, #22) | done W5 / W6 |
 | (recent files, never shown in tkinter) | recent files in the preset menu (`pref.recent_files`) | done W5 (new) |
@@ -140,13 +140,13 @@ Status: **done** (in the web panel), **W6 / W7 / W8** (planned there),
 | 1.7.4 AI Settings | setup sheet, ai tab: pattern and drum patch models (browse… native dialog, clear) and temperatures, the same `pref.ai.*` as the AI page; a note when the ML extras are missing | done W6 |
 | 1.7.5 MIDI Settings | setup sheet, midi tab: device (off / auto-detect / ports) + rescan, connection LED, base note with its 8 notes, follow MIDI clock with the synced tempo, the help line | done W6 |
 | 1.7.6 MIDI CC Mappings | setup sheet, midi tab, beside the input: unlimited rows (scroll after 10), any CC 0-127, + add, ✕, clear all (asks), live activity, pitch bend target; learning stays on the panel (#22) | done W6 |
-| 1.7.7 PO-32 transfer | PO-32 rack page, transfer tab (#20) | W7 |
-| 1.7.8 PO-32 import | PO-32 rack page, import tab (#20) | W7 |
+| 1.7.7 PO-32 transfer | PO-32 rack page, transfer tab (#20): choose (sounds to 1–8 / 9–16, chain with its empty PO-32 slots, channels from the face mutes) › prepare › send (progress, stop, save WAV) | done W7 |
+| 1.7.8 PO-32 import | PO-32 rack page, import tab (#20): listen (input, rescan, monitor and meter, record / stop, import WAV, keep recordings) › bank › pick patterns (12, letters, swap by the right-click letter menu, first 12, clear, preview, grid) › import (one undo step, the page stays open); tkinter's "open folder" of the recordings is the folder shown beside keep recordings | done W7 |
 | 1.7.9 AI Drum Generator | AI rack page (#21): models with load…, patch temperature, candidates, seed with reseed, generate all 8 (left); one lane per strip with type (18), gen, ‹ i/n ›, name, try (tried sounds play on the face, the strip tab in italics); keep current / generate new patterns, pattern temperature, bank, ▶ loop, ▶ bank A→L, keep tried (= apply selected; one undo step), replace patterns, revert all (right); the install command with copy and install now | done W8 |
 | 1.7.9 per-slot Preview (one-shot at 127), Apply checkboxes, Close (clear) | trying a candidate plays it on the face (and hits it while stopped); try / trying ✓ per lane replaces the Apply checkboxes; leaving asks keep or revert instead of dropping the candidates | done W8 (changed by #21) |
 | Custom substeps prompt | the sub menu's custom… field | done W3 |
 | 1.7.10 File dialogs: open / save preset, drum patch, preset folder, MIDI / WAV export | native `QFileDialog` from the bridge `fileDialog` slot, opened with `open()` (#14); the core checks overwrites and the page asks | done W4 / W5 |
-| 1.7.10 File dialogs: AI checkpoint, PO-32 WAV open / save | the same native dialogs (AI checkpoints in the setup sheet: done W6; on the AI page: done W8) | W7 (PO-32) |
+| 1.7.10 File dialogs: AI checkpoint, PO-32 WAV open / save | the same native dialogs (AI checkpoints in the setup sheet: done W6; on the AI page: done W8; PO-32: done W7) | done W6 / W7 / W8 |
 | 1.7.10 Message boxes (errors, questions) | the alert sheet (red errors, green questions, closed only by its buttons) plus the display (#13, #22); errors nobody waits for go to the display, and to the alert sheet unless they come from MIDI or the PO-32 module | done W5 |
 
 ## 1.8 Widget conventions

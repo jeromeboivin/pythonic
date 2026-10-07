@@ -42,6 +42,7 @@ pythonic/web/
     css/panel.css  stage and panel styles
     css/setup.css  the setup sheet
     css/ai.css     the AI drum generator page
+    css/po32.css   the PO-32 page
     fonts/         bundled fonts + licences (SOURCES.txt)
     js/bridge.js       transport: connectBridge(), webChannelBridge(remote), createFakeBridge(opts)
     js/core-client.js  createCoreClient(bridge, {schedule})
@@ -68,6 +69,8 @@ pythonic/web/
     js/setup.js        mountSetup({panel, store, client, meta}): the setup sheet (registers the 'setup' page)
     js/ai-logic.js     pure AI page logic: laneView, modelView, bankText, previewArgs, leaveQuestion, parseSeed, ...
     js/ai-page.js      mountAiPage({panel, store, client, stage}): the AI drum generator drawer page
+    js/po32-logic.js   pure PO-32 page logic: stage flows, picks and letters, level meter, stage texts
+    js/po32.js         mountPo32Page(panel, {store, client}): the 'po32' drawer page (transfer, import)
     js/main.js         boot({bridge, stage}), demoBridge(); sets window.pythonic
     test/              runner.html, shim/, *.test.js (pure), *.engine-spec.js (DOM)
 ```
@@ -133,11 +136,11 @@ sends `resync` on creation. `act` resolves with the done or error event.
 `watch(addr, fn(value, addr), {now = true}) -> off` (called only when the value
 changes), `watched()` (addresses with live watchers), `readout(name)`,
 `watchReadout(name, fn, {now = true}) -> off` for `transport`, `modulation`,
-`audio`, `midi`; `onEvent(fn) -> off`; `version`.
+`audio`, `midi`, `po32`; `onEvent(fn) -> off`; `version`.
 
 Boot (`main.js`): connect, client, store (`client.onFrame(store.apply)`),
-`mountStage`, `describe('')` (every registered address), `mountPanel`, then
-`store.seed(await client.get(store.watched()))`.
+`mountStage`, `describe('')` (every registered address), `mountPanel`, the
+pages (`mountSetup`, `mountAiPage`, `mountPo32Page`), then `store.seed(await client.get(store.watched()))`.
 
 **Controls declare what they edit**: `data-address="global.tempo"` on the
 element of a control bound to an address, `data-verb="transport.toggle"` on
@@ -479,6 +482,49 @@ columns line up with the face's, so each lane sits under its strip:
 `panel.ai` = `{element, open, leave, settle(cancellable), patternMode,
 candidates, destroy}`.
 
+## PO-32 page (`po32.js`, `po32-logic.js`)
+
+Decisions #13 (one edit rack page, transfer and import tabs, the panel live)
+and #20 (inner layout). `mountPo32Page(panel, {store, client})` registers the
+`po32` page: `openPage('po32', {tab: 'transfer' | 'import'})` shows it as a
+drawer page (`drawer.show('po32', ...)`: a closed drawer opens and closing
+restores it); without a tab it opens on the last one, and the PO-32 button
+toggles it (lit while it shows). `◀ ch N edit` and ✕ close it. Each tab is a
+numbered stage flow (`.po-stage[data-stage][data-state]`): the current stage
+`now` (lit), done ones `done` (ticked), later ones `later` (dimmed, usable).
+
+- **Transfer**: 1 choose: sounds to 1–8 / 9–16 (`[data-send-bank]`), the
+  pattern chain (`#po32-chain`, `po32.chain_options`) with the note of the
+  PO-32 slots sent empty (`#po32-slots`, from `po32.prepare`'s `slots`), the 8
+  channels (`.po-check[data-channel]`, copied from the face mutes each time
+  the page opens, independent of MUTE after that); every change runs
+  `po32.prepare` (the length on `#po32-status`). 2 prepare the PO-32
+  (instructions). 3 send: progress bar (`#po32-progress`, `poll().po32
+  .progress`, also on the display), `#po32-send` (transfer / stop:
+  `po32.send` / `po32.cancel`), `#po32-save-wav` (native save dialog,
+  `po32.save_wav`, the replace question). A failed send shows on a red alert.
+- **Import**: 1 listen: input device (`#po32-input`, `audio.input_devices`;
+  the page's choice, defaulting to `pref.audio.input_device`, then the
+  default input; ↻ `audio.rescan`), monitor (`po32.listen`) and the level
+  meter (`#po32-meter`, `poll().po32.level`, dB, held peak), record / stop
+  (`po32.record` / `po32.stop`, which decodes), import wav… (native open
+  dialog, `po32.decode`), the decode status (`#po32-source`), keep
+  recordings (`pref.po32.save_recordings`). 2 bank: bank 0 / 1
+  (`[data-bank]`, enabled when decoded) and the bank's 8 sounds. 3 pick
+  patterns: 16 buttons (`.po-pat[data-pattern]`, 1-based, `n→L` when
+  picked; a click toggles the pick, at most 12, letters in order; a
+  right-click opens the letter menu, a held letter swaps), first 12, clear,
+  the count, ▶ preview (`po32.preview`; the core stops the transport and
+  ends the preview on a bank, focus or pick change), the focused pattern's
+  8×16 grid (`#po32-grid`, the preview step outlined). 4 import:
+  `po32.import` (channels 1–8 and all 12 patterns, one undo step); the
+  display confirms and the page stays open with every stage ticked.
+- Picks echo at once (`po32-logic.js` `pick` follows the core's rules), then
+  the core's values replace them. Verb failures that need reading (send,
+  input, decode, preview, import) go to a red alert; others to the display.
+  Closing the page cancels a send, ends a preview and closes the input, as
+  the tkinter dialogs do.
+
 ## Tests
 
 All from pytest, offscreen, no Node and no display needed:
@@ -546,6 +592,12 @@ before pytest-qt makes the QApplication. CI also sets
   state, the leave question on every way out) and `test_ai_real_core.py`
   (the real core with `tests/fake_ai_worker.py`: generate, try on the face,
   a knob edit, keep tried, one undo step; leave and revert).
+- **PO-32 page**: `test_po32_page.py` (fake core: both tabs, every stage,
+  opening, closing and the tab memory) and `test_po32_real_core.py` (a card
+  transfer made with the codec pushed into the fake input while recording,
+  decoded, picked and imported: the lanes change, one undo step; the meter;
+  a WAV decode and bank switch; a transfer sent through the pulled stream and
+  its WAV saved).
 - **Parity guard** (`test_parity_guard.py`): every address the core's
   `describe()` lists (with each registered page opened in turn) is bound by a `data-address` control or listed in
   `tests/web/parity_absent.json`: `{"absent": {"<fnmatch glob>": "<reason>"}}`
