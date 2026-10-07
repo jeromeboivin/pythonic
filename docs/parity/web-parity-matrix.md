@@ -27,7 +27,7 @@ Status: **done** (in the web panel), **W6 / W7 / W8** (planned there),
 | `sound morph` slider | right column sound morph knob (`morph.position`), dims while A = B (`morph.differs`) | done W2 |
 | Undo ↶ / Redo ↷ | left column undo / redo (`undo`, `redo`, `undo.can_*`) | done W2 |
 | `master` knob | top row master (`global.master`) | done W2 |
-| MIDI activity LED, click opens MIDI settings | right column MIDI LED (`midi.connected`, `poll().midi.activity`); click opens setup on the midi tab (`panel.openPage('setup', {tab: 'midi'})`) | done W2 / W5; the sheet W6 |
+| MIDI activity LED, click opens MIDI settings | right column MIDI LED (`midi.connected`, `poll().midi.activity`); click opens setup on the midi tab (`panel.openPage('setup', {tab: 'midi'})`) | done W2 / W5 / W6 |
 
 ## 1.2 Preset and channel strip
 
@@ -98,7 +98,7 @@ Status: **done** (in the web panel), **W6 / W7 / W8** (planned there),
 | Refresh Preset List | refresh list, and ↻ beside the folder list (`preset.refresh`) | done W5 |
 | Transfer to PO-32... / Import from PO-32... | transfer to PO-32… / import from PO-32… → `openPage('po32', {tab})` | done W5; the page W7 |
 | AI Drum Generator... | AI drum generator… → `openPage('ai')` | done W5; the page W8 |
-| Audio / MIDI / Synthesis / AI Settings... | setup… → `openPage('setup')` (one sheet with tabs, #22) | done W5; the sheet W6 |
+| Audio / MIDI / Synthesis / AI Settings... | setup… → `openPage('setup')` (one sheet with tabs, #22) | done W5 / W6 |
 | (recent files, never shown in tkinter) | recent files in the preset menu (`pref.recent_files`) | done W5 (new) |
 | (last preset, loaded at start-up) | reload last preset (`preset.load_last`) | done W5 (new) |
 
@@ -121,7 +121,7 @@ Status: **done** (in the web panel), **W6 / W7 / W8** (planned there),
 | Mapped to CCn (disabled) + Remove CC Mapping | CC badge on the control + remove CC n mapping | done W2 |
 | Pitch Bend → This Parameter + Remove Pitch Bend Mapping, Assign Pitch Bend | assign / remove pitch bend | done W2 |
 | MIDI Learn (CC) / Cancel MIDI Learn | MIDI learn (CC) / cancel MIDI learn | done W2 |
-| MIDI Settings... (opens CC mappings) | CC mappings… → `openPage('setup', {tab: 'midi'})` | done W5; the sheet W6 |
+| MIDI Settings... (opens CC mappings) | CC mappings… → `openPage('setup', {tab: 'midi'})`; left out on the sheet's own controls | done W5 / W6 |
 | (new) | reset to default | done W2 |
 
 ### 1.6.4 Substeps menu
@@ -135,17 +135,17 @@ Status: **done** (in the web panel), **W6 / W7 / W8** (planned there),
 | tkinter dialog | Web | Status |
 |---|---|---|
 | 1.7.1 Export Audio Options (tail radios + OK) | tail popover on the pattern MENU button: cut / add 2 s / loop +1 pass, save wav… (#13) | done W5 |
-| 1.7.2 Audio Settings | setup sheet, audio tab (#22) | W6 |
-| 1.7.3 Synthesis Settings | setup sheet, synthesis tab | W6 |
-| 1.7.4 AI Settings | setup sheet, ai tab (shared with the AI page) | W6 |
-| 1.7.5 MIDI Settings | setup sheet, midi tab | W6 |
-| 1.7.6 MIDI CC Mappings | setup sheet, midi tab, beside the input (unlimited rows) | W6 |
+| 1.7.2 Audio Settings | setup sheet, audio tab (#22): output device + rescan, buffer, sample rate (the device's rates), synth rate, mono, input device, the running stream; values live, stream settings wait for restart audio (a dot each). Apply Now / OK / Cancel: none (live values, #13) | done W6 |
+| 1.7.3 Synthesis Settings | setup sheet, synthesis tab: smoothing knob, applies at once | done W6 |
+| 1.7.4 AI Settings | setup sheet, ai tab: pattern and drum patch models (browse… native dialog, clear) and temperatures, the same `pref.ai.*` as the AI page; a note when the ML extras are missing | done W6 |
+| 1.7.5 MIDI Settings | setup sheet, midi tab: device (off / auto-detect / ports) + rescan, connection LED, base note with its 8 notes, follow MIDI clock with the synced tempo, the help line | done W6 |
+| 1.7.6 MIDI CC Mappings | setup sheet, midi tab, beside the input: unlimited rows (scroll after 10), any CC 0-127, + add, ✕, clear all (asks), live activity, pitch bend target; learning stays on the panel (#22) | done W6 |
 | 1.7.7 PO-32 transfer | PO-32 rack page, transfer tab (#20) | W7 |
 | 1.7.8 PO-32 import | PO-32 rack page, import tab (#20) | W7 |
 | 1.7.9 AI Drum Generator | AI rack page (#21) | W8 |
 | Custom substeps prompt | the sub menu's custom… field | done W3 |
 | 1.7.10 File dialogs: open / save preset, drum patch, preset folder, MIDI / WAV export | native `QFileDialog` from the bridge `fileDialog` slot, opened with `open()` (#14); the core checks overwrites and the page asks | done W4 / W5 |
-| 1.7.10 File dialogs: AI checkpoint, PO-32 WAV open / save | the same native dialogs | W6 / W7 / W8 |
+| 1.7.10 File dialogs: AI checkpoint, PO-32 WAV open / save | the same native dialogs (AI checkpoints in the setup sheet: done W6) | W6 / W7 / W8 |
 | 1.7.10 Message boxes (errors, questions) | the alert sheet (red errors, green questions, closed only by its buttons) plus the display (#13, #22); errors nobody waits for go to the display, and to the alert sheet unless they come from MIDI or the PO-32 module | done W5 |
 
 ## 1.8 Widget conventions
@@ -177,7 +177,7 @@ Notes, program change 0-11, start / stop / continue, clock sync, mapped CCs
 with pickup, pitch bend and MIDI learn are handled by the core for both
 GUIs (slice 3). Web cues: the MIDI LED, CC badges, the learn pulse, pickup
 ghost markers (W2), and the channel button flash on notes (W5). Device and
-settings: setup sheet midi tab (W6).
+settings: setup sheet midi tab (done W6).
 
 ## 1.11 Preferences
 

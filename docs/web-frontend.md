@@ -40,6 +40,7 @@ pythonic/web/
     css/tokens.css design tokens (palette, fonts, stage size) as custom properties
     css/fonts.css  @font-face of the bundled fonts
     css/panel.css  stage and panel styles
+    css/setup.css  the setup sheet
     fonts/         bundled fonts + licences (SOURCES.txt)
     js/bridge.js       transport: connectBridge(), webChannelBridge(remote), createFakeBridge(opts)
     js/core-client.js  createCoreClient(bridge, {schedule})
@@ -62,11 +63,13 @@ pythonic/web/
     js/files.js        createFileFlows(...): file verbs with progress, failures and the replace question
     js/presets.js      mountPresets(...): PRESET ◀ ▶ and the preset menu; neighbourFile, canSaveInPlace
     js/exports.js      mountExports(...): the pattern menu's export to MIDI / audio (tail popover)
+    js/setup-logic.js  pure setup sheet logic: tabs, note names, CC map rows and edits, target names / menu groups, rates
+    js/setup.js        mountSetup({panel, store, client, meta}): the setup sheet (registers the 'setup' page)
     js/main.js         boot({bridge, stage}), demoBridge(); sets window.pythonic
     test/              runner.html, shim/, *.test.js (pure), *.engine-spec.js (DOM)
 ```
 
-`window.pythonic` = `{ bridge, client, store, meta, panel, ready }` once
+`window.pythonic` = `{ bridge, client, store, meta, panel, setup, ready }` once
 booted (`{ ready: false, error }` if boot failed).
 
 ## Bridge (Python <-> JS)
@@ -377,6 +380,50 @@ and `export.wav` with the tail; the render's progress shows on the display
 file. `panel.exports`: `exportMidi(letter)`, `exportAudio(letter, tail)`,
 `openTailPopover(letter)`, `tail`.
 
+## Setup sheet (`setup.js`, `setup-logic.js`)
+
+Decision #22 (container #13, pickers #14). `mountSetup` (main.js, after the
+panel) registers the `setup` page: `panel.sheets.show('setup', element,
+{dismissable: true})`, tabs on top (`.su-tabs .btn[data-tab]`: audio | midi |
+synthesis | ai), the card's width follows the tab (`TAB_WIDTHS`). SETUP opens
+it on audio; `openPage('setup', {tab})` on a tab (the MIDI LED and CC
+mappings… use midi). ✕ or a click outside closes it. `pythonic.setup`:
+`open(options)`, `close()`, `tab`, `element`.
+
+- **audio**: lists (`.su-choice[data-address]`, a menu of the options) for
+  `pref.audio.device` (options from `audio.output_devices`; `(system
+  default)` = null), `.buffer_ms`, `.sample_rate` (the rates `audio.rates`
+  reports for the device, with a "takes n of 7 rates" note), `.synth_rate`
+  (0 = same as output), `px-toggle` `pref.audio.mono`; `#su-audio-rescan`
+  (`audio.rescan`); `#su-restart` (`audio.apply`) lit while
+  `pref.audio.pending` lists a field, whose `.su-dot` lights; the running
+  stream from the `audio.*` readouts; `pref.audio.input_device`
+  (`audio.input_devices`, `audio.default_input`).
+- **midi**: `midi.device` list: (off) = `midi.close`, (auto-detect) =
+  `midi.open` without a device, a port = `midi.open({device})`; ports from
+  `describe('midi.device').labels`, then `#su-midi-rescan` (`midi.rescan`);
+  the LED (`midi.connected`, activity); `#su-base-note` (octave menu, wheel,
+  `#su-base-down` / `#su-base-up`) and its 8 notes; `px-toggle`
+  `midi.clock_sync` and `midi.synced_tempo`. CC mappings (`.su-ccrows`,
+  `midi.cc_map`): rows `.su-ccrow[data-cc]` with the CC field (`.su-cc`, type
+  0-127 or wheel; a CC another row holds moves here), the control
+  (`.su-target`: a menu of sections, then controls: the selected channel's
+  sound parameters as `selected.<suffix>`, or globals), live activity
+  (`poll().midi.pickup` of that CC: LED and position bar), ✕; `#su-cc-add`
+  adds a draft row with a free CC that is written once a control is chosen;
+  `#su-cc-clear` asks first. `.su-bend` sets `midi.pitchbend_target`. A learn
+  in progress (`midi.learning`) shows with cancel; `#su-learn` closes the
+  sheet and points to the panel's right-click ▸ MIDI learn.
+- **synthesis**: `px-knob` `pref.smoothing_ms`.
+- **ai**: `pref.ai.pattern_model` / `.patch_model` (`.su-browse[data-kind]`:
+  native open dialog for `*.pt`; `.su-clear`: back to the bundled one, as
+  `ai.models` shows), `px-knob` `pref.ai.pattern_temperature` /
+  `.patch_temperature`; a note when `ai.available` is false.
+
+Right-click menus leave out MIDI learn and pitch bend for settings
+(`midi.*`, `audio.*`, `pref.*`: the core refuses them as targets) and CC
+mappings… for controls on the setup sheet.
+
 ## Tests
 
 All from pytest, offscreen, no Node and no display needed:
@@ -438,13 +485,14 @@ before pytest-qt makes the QApplication. CI also sets
   destination, bands moving while an LFO runs, the rack-open preference, a
   preset saved from the PRESET menu and loaded back from the folder list
   (after choosing the folder), export to MIDI from the pattern menu (and the
-  replace question on the second export).
+  replace question on the second export). `test_setup_real_core.py`: a base
+  note step, an added CC mapping and a buffer change with restart audio.
 - **Parity guard** (`test_parity_guard.py`): every address the core's
   `describe()` lists is bound by a `data-address` control or listed in
   `tests/web/parity_absent.json`: `{"absent": {"<fnmatch glob>": "<reason>"}}`
   (the guard selects each channel in turn, since the rack binds the selected one's).
-  It also fails on a bound address still listed and on globs that match
-  nothing. A slice that binds controls deletes their entries; a core change
+  The guard also opens each setup sheet tab. It fails on a bound address
+  still listed and on globs that match nothing. A slice that binds controls deletes their entries; a core change
   that adds addresses lists them there (or binds them).
 
 Each web slice adds page tests for the behaviours it builds and a manual
