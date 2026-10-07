@@ -7,8 +7,10 @@ it is left out. Slices: W2 face, W3 step row and patterns, W4 edit rack, W5
 menus and sheets, W6 setup sheet, W7 PO-32 page, W8 AI page. "Core" means
 the behaviour lives in the app core and both GUIs share it.
 
-Status: **done** (in the web panel), **W6 / W7 / W8** (planned there),
-**absent** (a decided absence, with the reason).
+Status: **done** (in the web panel, with the slice that built it),
+**absent** (a decided absence, with the reason). Every slice has landed;
+W9 audited this matrix and the map's decisions against the code and a real
+run (section 1.13).
 
 ## 1.0 Main window
 
@@ -196,3 +198,36 @@ keep the strip CTRL mode (W2) and the rack's open state (W4).
 | MIDI Program Change | core (selects patterns A-L) | done (core) |
 | Export all drums / current drum to WAV (unreachable) | PRESET menu and rack drum patch ▾ | done W4 / W5 |
 | LFO / pump target Morph | a destination of click to assign (core applies it) | done W4 |
+
+## 1.13 The map's decisions, audited (W9)
+
+Each decision of map #1 checked against the code and a real run of the
+app (real audio and MIDI through, a scripted session over DevTools,
+screenshots compared with the hardware-look prototype).
+
+| Decision | Where in the web panel | Status |
+|---|---|---|
+| Scale a fixed-ratio panel, letterboxed (#7) | `stage.js` fits the 1600×1000 stage (1600×700 with the rack closed) at one scale, centred | done |
+| Min window 1280×800 (#7) | `window.py` `MIN_SIZE`; 1280×560 with the rack closed (`fit_stage_height`) | done |
+| Rack open / closed, remembered (#7) | `pref.ui.rack_open`; a restart opens it as it was left; the window shrinks by the rack's height | done |
+| 8 strips: tune, decay, CTRL, lit level fader, select; MUTE latch; START/STOP (#7, #12) | `panel.js` | done |
+| Strip CTRL knob, panel-wide mode, user picks per strip (#12) | top row strip ctrl, `pref.ui.ctrl_knob` | done |
+| Channel buttons show the guessed drum type, else the number (#12) | `drum-type.js` | done |
+| Step modes, pads show every property, last step, all ch, 4 pages with follow, matrix in the drawer (#8) | `steps.js`, `steps-logic.js` | done |
+| Vertical drag 200 px, Shift fine, wheel 1 % (faders 2 %), track click jumps (#9) | `controls.js`, `values.js` | done |
+| Values printed under controls, touched control on the display (#9) | `px-touch` → display; long lines scroll (W9) | done |
+| Double-click types an exact value (#9) | knobs and faders | done; switches and lists pick with one click (absent: nothing to type) |
+| Right-click: reset, MIDI learn, CC mappings, pitch bend (#9) | `ctx.controlMenu` | done |
+| CC badge, blinking LED, pickup ghost marker (#9) | amber `CC n`, LED blink, ghost dot / line from `poll().midi.pickup` (checked with a CC sent through MIDI Through) | done |
+| Wheel and CC bursts one undo step, drags one gesture (#9) | client `burst` / `beginGesture`; core journal | done |
+| Edit rack in one row, click-to-assign destinations (#11) | `rack.js`, `rack-layout.js` | done |
+| Modulation arcs on the rack and on every strip (#11, #16) | `modulatedAddresses` over every channel's offsets | done |
+| TR-8S-inspired look: black panel, green accent, white tabs, lit faders, pointer-only knobs, amber MIDI cues (#12, #16) | `tokens.css`, `panel.css` | done |
+| No third-party name or logo in the UI (map) | wordmark PYTHONIC; no other brand in `static/` | done |
+| Bundled OFL fonts (#16) | `fonts.css`; files fetched by `tools/fetch_fonts.py` (not committed); the handler drops rules of missing files, the stacks fall back to system fonts | done (fonts optional) |
+| Secondary features: PO-32 and AI as rack pages, setup as a sheet, alert sheet, display messages (#13, #20, #21, #22) | `po32.js`, `ai-page.js`, `setup.js`, `sheet.js` | done |
+| Native file dialogs opened with `open()`, device lists from the core (#14) | bridge `fileDialog`, `describe()` labels + rescan verbs | done |
+| Frame budget ≤ 4 ms per 60 Hz tick, audio callback without UI calls, `gc.freeze()`, AI in a subprocess (#10) | `bridge.py` `FrameStats` (a `--quit-after` run prints it); the callback only writes the snapshot `poll` reads; `gc.freeze()` after start-up and bulk swaps; the worker runs below normal priority (W9) | done |
+| Keyboard shortcuts | none | absent (map #1: out of scope) |
+| Touch / multi-touch input | none (pointer events only) | absent (map #1: out of scope) |
+| Both GUIs at once, browser-tab front-end | one GUI per launch; `index.html` in a plain browser only shows a demo fake core | absent (map #1: out of scope) |

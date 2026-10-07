@@ -12,7 +12,7 @@ pip install -e ".[dev]"            # PySide6 is a dependency (not on Windows ARM
 pythonic                           # web interface (default); same as python run.py
 pythonic --ui tk                   # tkinter interface
 pythonic --devtools [PORT]         # Chromium DevTools on http://127.0.0.1:9222 (or PORT)
-pythonic --quit-after 5            # close after 5 s; non-zero exit if the page did not boot
+pythonic --quit-after 5            # close after 5 s; prints the frame timings; non-zero exit if the page did not boot
 ```
 
 Without QtWebEngine, `--ui web` starts tkinter with a dialog that explains
@@ -23,7 +23,16 @@ stands in for the core (tempo and START/STOP work).
 
 Fonts: `python tools/fetch_fonts.py` downloads the bundled OFL fonts into
 `pythonic/web/static/fonts/` (see `SOURCES.txt` there); until they are
-committed the panel falls back to system fonts.
+there the panel falls back to the system fonts of the stacks in
+`tokens.css`. The `app://` handler serves `css/fonts.css` without the
+`@font-face` rules of missing files, so the page asks for no file that is
+not there (DevTools would log each failed load as a console error).
+
+Real runs for checks: always with a scratch preferences folder (Linux:
+`XDG_CONFIG_HOME=/tmp/x pythonic ...`, which `platformdirs` honours), never
+the user's own. `--devtools` exposes the page to the Chrome DevTools
+protocol (`http://127.0.0.1:9222/json` lists it), enough to script a session
+(`Runtime.evaluate`, `Input.dispatchMouseEvent`, `Page.captureScreenshot`).
 
 ## Layout
 
@@ -31,10 +40,12 @@ committed the panel falls back to system fonts.
 pythonic/web/
   __init__.py      STATIC_DIR
   scheme.py        app:// scheme: register_scheme() before QApplication, install_handler(profile)
+                   (StaticHandler.missing: paths asked for and not found); available_fonts_css
   bridge.py        Bridge QObject (slots + frame signal), FrameStats, FRAME_HZ = 60, FRAME_BUDGET_MS = 4
   window.py        PanelWindow(core, owns_core=True): view + page + channel; MIN_SIZE 1280x800;
                    fit_stage_height(old, new) (the edit rack drawer); dispose()
-  app.py           run(quit_after, devtools_port, core): the --ui web entry; prepare_headless()
+  app.py           run(quit_after, devtools_port, core): the --ui web entry; prepare_headless();
+                   frame_report(stats): the line a --quit-after run prints
   static/
     index.html     loads css/*, qrc:///qtwebchannel/qwebchannel.js, js/main.js
     css/tokens.css design tokens (palette, fonts, stage size) as custom properties
@@ -103,7 +114,10 @@ window-modal `QFileDialog`s opened with `open()` (never `exec()`): the frame
 timer keeps running. Save dialogs do not confirm overwrites; the core's save
 verbs refuse to replace a file and the page asks. Device lists come from
 `describe()` labels (`pref.audio.device`, `midi.device`) and the rescan verbs.
-`bridge.stats` (`FrameStats`) keeps tick timings against the 4 ms budget.
+`bridge.stats` (`FrameStats`) keeps tick timings (wall clock, so waits for
+the GIL count) against the 4 ms budget; a `--quit-after` run prints them
+(`UI frames: n ticks, mean, max, k over the 4 ms budget`). Measured on a
+real run playing a preset: mean 0.5 ms, max 2.5 ms.
 
 ## JS modules
 
@@ -136,7 +150,12 @@ sends `resync` on creation. `act` resolves with the done or error event.
 `watch(addr, fn(value, addr), {now = true}) -> off` (called only when the value
 changes), `watched()` (addresses with live watchers), `readout(name)`,
 `watchReadout(name, fn, {now = true}) -> off` for `transport`, `modulation`,
-`audio`, `midi`, `po32`; `onEvent(fn) -> off`; `version`.
+`audio`, `midi`, `po32`; `onEvent(fn) -> off`; `version`. Local echo:
+for `ECHO_HOLD_MS` (250 ms) after `assume(addr)`, a different value a frame
+reports for that address is held back (a frame of an earlier set of a drag
+would pull the knob back) until the core reports the echoed value; when the
+hold ends the latest held value shows. `createStore({now, later})` takes a
+clock and a timer for tests.
 
 Boot (`main.js`): connect, client, store (`client.onFrame(store.apply)`),
 `mountStage`, `describe('')` (every registered address), `mountPanel`, the
@@ -163,10 +182,11 @@ Changing `data-address` rebinds; removing it disables the control ("off").
 | `<px-switch>` | `options` (comma-separated display names of the labels), `values` (the labels offered) | segmented buttons (up to 5 options), wheel steps; a value outside `values` shows lit beside them |
 | `<px-list>` | `options` | list box and menu (enums, int ranges), wheel steps |
 | `<px-target>` | `name` | a source's → destination button (`ch<N>.<source>.target`): the target's short name, wheel steps through the 28 targets, a click dispatches `px-assign` (`{address}`), right-click: assign / clear |
-| `<px-display>` | | `setBase(l1, l2)`, `show(l1, l2, ms = 1500)`, `alert(l1, l2, ms = 4000)`, `text()` |
+| `<px-display>` | | `setBase(l1, l2)`, `show(l1, l2, ms = 1500)`, `alert(l1, l2, ms = 4000)`, `text()`; a line too long to fit scrolls to its end and back (`.line.scroll`) and the message stays until read once |
 
-All controls: double-click opens an exact-value field (engine units, ratios
-in percent, pans `L30`/`C`/`R30`, `k` and `s` suffixes); right-click opens
+Knobs and faders: double-click opens an exact-value field (engine units, ratios
+in percent, pans `L30`/`C`/`R30`, `k` and `s` suffixes; switches and lists
+pick a value with one click). All controls: right-click opens
 reset to default, MIDI learn / cancel (`midi.learn` with the address as
 target), remove CC mapping (`midi.cc_map`), assign / remove pitch bend
 (`midi.pitchbend_target`). A drag is one gesture (`beginGesture` /
@@ -200,7 +220,9 @@ The display's first line is the selected pattern and the page on the pads
 (`PATTERN A  17-32`), the second the preset name. A click on the selected
 channel's button hits it (bridge `trigger`, velocity 64, Ctrl+click 127, as
 tkinter); a channel button flashes when a MIDI note (`poll().midi.notes`)
-or a click hits its channel.
+or a click hits its channel. UNDO / REDO show the step's label as the name
+of the control bound to it (`undoText`, values.js: `CH2 DECAY`), else the
+address in words.
 
 ## Step row and patterns (`steps.js`, `patterns.js`)
 
@@ -530,7 +552,7 @@ numbered stage flow (`.po-stage[data-stage][data-state]`): the current stage
 All from pytest, offscreen, no Node and no display needed:
 
 ```bash
-python -m pytest tests/web -q                      # the web layer (~7 s)
+python -m pytest tests/web -q                      # the web layer (~2 min)
 node --test pythonic/web/static/test/*.test.js     # optional local shortcut for pure specs
 ```
 
@@ -556,7 +578,10 @@ before pytest-qt makes the QApplication. CI also sets
   and the test fails on JS console errors.
 - **`Page`** (`tests/web/page.py`): `js(expr)` (value via JSON text),
   `run(statements)`, `wait_js(expr, timeout, pump)`, `wait_ready()`,
-  `rect(sel)`, `center(sel)`, `click(sel)`, `wheel(sel, steps)`,
+  `settle()` (waits until the page has seen the window's size and the
+  window matches the stage's height: the edit rack resizes it through the
+  bridge after the page changed; `rect` calls it, so input lands on fresh
+  boxes), `rect(sel)`, `center(sel)`, `click(sel)`, `wheel(sel, steps)`,
   `drag(sel, dy, modifiers)`, `press`, `right_click`, `double_click`,
   `type_text(text)` (real input on the view's focus proxy; `drag` takes `dx`
   for strokes along the pads; Chromium merges
