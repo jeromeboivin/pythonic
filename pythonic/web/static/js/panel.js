@@ -417,7 +417,7 @@ export function mountPanel(stage, { store, client, meta = {} }) {
     muteLatch = !muteLatch;
     latch.classList.toggle('on', muteLatch);
     stage.classList.toggle('mute-mode', muteLatch);
-    display.show('MUTE', muteLatch ? 'channel buttons mute' : 'channel buttons select');
+    display.show('MUTE', muteLatch ? 'buttons mute' : 'buttons select');
   });
 
   const learnButtons = [$('#learn-a'), $('#learn-b')];

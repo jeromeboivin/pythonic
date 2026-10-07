@@ -138,7 +138,14 @@ px-display {
   text-shadow: 0 0 6px rgba(194, 255, 92, .55); letter-spacing: .04em; white-space: pre; overflow: hidden;
   background-image: radial-gradient(rgba(194, 255, 92, .06) 1px, transparent 1px); background-size: 3px 3px;
 }
-px-display .line { min-height: 23px; overflow: hidden; text-overflow: ellipsis; }
+px-display .line { min-height: 23px; overflow: hidden; }
+px-display .line span { display: inline-block; }
+/* A line too long to fit scrolls to its end and back (--over: the overflow) */
+px-display .line.scroll span { animation: display-scroll var(--scroll) ease-in-out infinite alternate; }
+@keyframes display-scroll {
+  0%, 15% { transform: translateX(0); }
+  85%, 100% { transform: translateX(calc(-1 * var(--over))); }
+}
 px-display.alert { animation: alert-blink .5s 3 alternate; }
 @keyframes alert-blink { to { color: #fff; } }
 .rgrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }

@@ -842,7 +842,12 @@ class PxTarget extends PxStepped {
  * The green two-line dot display. `setBase(line1, line2)` is what it shows
  * at rest; `show(line1, line2, ms)` replaces it for a while (a touched
  * control, 1.5 s); `alert(line1, line2, ms)` shows a message (errors, 4 s).
+ * A line too long to fit scrolls to its end and back, and the message stays
+ * until it has been read once.
  */
+const SCROLL_PX_PER_S = 40;
+const SCROLL_PAUSE_S = 1;
+
 class PxDisplay extends HTMLElement {
   connectedCallback() {
     if (this.lines) return;
@@ -860,18 +865,33 @@ class PxDisplay extends HTMLElement {
 
   show(line1, line2, ms = 1500, cls = '') {
     this.connectedCallback();
-    this.paint([line1, line2], cls);
+    const readMs = this.paint([line1, line2], cls);
     clearTimeout(this.timer);
-    this.timer = setTimeout(() => { this.timer = null; this.paint(this.base); }, ms);
+    this.timer = setTimeout(() => { this.timer = null; this.paint(this.base); }, Math.max(ms, readMs));
   }
 
   alert(line1, line2, ms = 4000) { this.show(line1, line2, ms, 'alert'); }
 
+  /** Paint two lines; returns the ms a scrolling line needs to be read (0: none). */
   paint([a, b], cls = '') {
-    this.lines[0].textContent = a;
-    this.lines[1].textContent = b;
+    let readMs = 0;
+    [a, b].forEach((text, i) => {
+      const line = this.lines[i];
+      const span = el('span', '', text);
+      line.replaceChildren(span);
+      line.classList.remove('scroll');
+      const over = line.isConnected ? span.offsetWidth - line.clientWidth : 0;
+      if (over > 0) {
+        const seconds = SCROLL_PAUSE_S * 2 + over / SCROLL_PX_PER_S;
+        line.style.setProperty('--over', `${over}px`);
+        line.style.setProperty('--scroll', `${seconds.toFixed(2)}s`);
+        line.classList.add('scroll');
+        readMs = Math.max(readMs, Math.round(seconds * 1000) + 500);
+      }
+    });
     this.title = cls ? `${a} ${b}` : '';
     this.classList.toggle('alert', cls === 'alert');
+    return readMs;
   }
 
   text() { return this.lines.map((l) => l.textContent); }
