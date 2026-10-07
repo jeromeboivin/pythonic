@@ -145,8 +145,10 @@ def test_initialize_preset_is_one_step(app):
     app._on_pattern_edit(0, 0, 'trig', True)
     tick(app)
     app._init_preset()
-    tick(app)
+    wait_for(app, 'preset.initialize')
     assert app.core.get('pattern.A.ch1.step1.trig') is False
+    assert app.pattern_editors[0].triggers[0] is False
+    assert app.osc_decay_knob.get_value() != 1234.0
 
     press(app, app.undo_btn)
     assert app.core.get('ch1.osc.decay') == 1234.0

@@ -18,6 +18,8 @@ the audio stream, driven through an address-based interface (ADR 0001).
   (``pattern.*``) are in ``patterns.py``.
 - Programs (``program.*``) are in ``programs.py``, the sound morph
   (``morph.*``) in ``morph.py``.
+- Preset and drum-patch files (``preset.*``, ``drum_patch.*``) are in
+  ``presets.py``, the preferences (``pref.*``) in ``prefs.py``.
 - Undo and redo (``undo`` / ``redo`` verbs, ``undo.*`` addresses): every set
   is journaled (``undo.py``); a front-end brackets a drag with
   ``begin_gesture()`` / ``end_gesture()``, a wheel or controller passes
@@ -46,6 +48,8 @@ from .audio import AudioEngine
 from .midi import MidiInput, import_mido
 from .morph import Morph
 from .patterns import Patterns
+from .prefs import Prefs
+from .presets import Presets
 from .programs import Programs
 from .registry import Address, Registry
 from .sound import SOUND_PARAMS, SOUND_SUFFIXES
@@ -132,6 +136,10 @@ class AppCore:
         self.patterns.register(self.registry)
         self.midi = MidiInput(self, midi_backend, clock, prefs)
         self.midi.register(self.registry)
+        self.presets = Presets(self)
+        self.presets.register(self.registry)
+        self.prefs = Prefs(self)
+        self.prefs.register(self.registry)
         self._verbs = {
             'audio.start': self._verb_audio_start,
             'audio.stop': self._verb_audio_stop,
@@ -141,6 +149,7 @@ class AppCore:
             **self.morph.verbs(),
             **self.patterns.verbs(),
             **self.midi.verbs(),
+            **self.presets.verbs(),
         }
         self._running_action = None  # id of the verb running on the action thread
 
@@ -571,6 +580,7 @@ class AppCore:
         """ch1..ch8: every sound parameter, the mute and the patch name."""
         reg = self.registry.register
         fresh = DrumChannel(0, 44100)
+        self.init_sound = fresh.get_parameters()  # the sound of a new channel
         defaults = {p.suffix: p.get(fresh) for p in SOUND_PARAMS}
         for index in range(PythonicSynthesizer.NUM_CHANNELS):
             prefix = f'ch{index + 1}'

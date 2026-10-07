@@ -6,10 +6,8 @@ Visual interface of the drum synthesizer
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import numpy as np
-import json
 import os
 import random
-import copy
 
 # Import our synthesizer
 import sys
@@ -1577,13 +1575,14 @@ class PythonicGUI:
         menu.add_command(label="Cut Preset", command=self._cut_preset)
         menu.add_command(label="Copy Preset", command=self._copy_preset)
         menu.add_command(label="Paste Preset", command=self._paste_preset,
-                         state='normal' if getattr(self, '_preset_clipboard', None) else 'disabled')
+                         state='normal' if self.core.get('preset.clipboard') else 'disabled')
         menu.add_separator()
         menu.add_command(label="Initialize Preset", command=self._init_preset)
         menu.add_command(label="Randomize All", command=self._randomize_all)
         menu.add_separator()
         menu.add_command(label="Select Preset Folder...", command=self._select_preset_folder)
-        menu.add_command(label="Refresh Preset List", command=self._refresh_preset_list)
+        menu.add_command(label="Refresh Preset List",
+                         command=lambda: self.core.act('preset.refresh'))
         menu.add_separator()
         menu.add_command(label="Transfer to PO-32...", command=self._show_po32_transfer)
         menu.add_command(label="Import from PO-32...", command=self._show_po32_import)
@@ -1601,50 +1600,24 @@ class PythonicGUI:
             menu.grab_release()
     
     def _cut_preset(self):
-        """Cut preset to clipboard"""
-        self._copy_preset()
-        self._init_preset()
+        """Copy the preset to the core's clipboard, then initialize it"""
+        self._act_or_warn('preset.cut', "Cut preset failed")
     
     def _copy_preset(self):
-        """Copy current preset to clipboard"""
-        # Store preset data in memory for paste
-        self._preset_clipboard = self.preset_manager.export_preset_to_dict(self.pattern_manager)
-        self._preset_clipboard['morph'] = copy.deepcopy(self.morph_manager.to_dict())
+        """Copy the whole preset to the core's clipboard"""
+        self._act_or_warn('preset.copy', "Copy preset failed")
     
     def _paste_preset(self):
-        """Paste preset from clipboard (one undo step)"""
-        if hasattr(self, '_preset_clipboard') and self._preset_clipboard:
-            with self.core.bulk_change('Paste preset'):
-                self.preset_manager.import_preset_from_dict(self._preset_clipboard,
-                                                            self.pattern_manager)
-                self.morph_manager.from_dict(copy.deepcopy(self._preset_clipboard['morph']))
-                self.core.set('morph.position', self.morph_manager.position)
-            self._after_preset_replaced()
+        """Paste the clipboard's preset (one undo step; the views follow poll)"""
+        self._act_or_warn('preset.paste', "Paste preset failed")
     
     def _init_preset(self):
-        """Initialize/reset preset to defaults (one undo step)"""
-        with self.core.bulk_change('Initialize preset'):
-            for channel in self.synth.channels:
-                channel.reset_to_defaults()
-            self.pattern_manager.reset_all_patterns()
-            self.morph_manager._init_endpoints()
-        self._after_preset_replaced()
+        """Initialize the sounds, patterns and morph (one undo step)"""
+        self._act_or_warn('preset.initialize', "Initialize preset failed")
     
     def _randomize_all(self):
         """Randomize all drum patches and the selected pattern (one undo step)"""
-        with self.core.bulk_change('Randomize all'):
-            for channel in self.synth.channels:
-                channel.randomize()
-            self.core.wait(self.core.act('pattern.randomize', pattern=self._pattern))
-            self.morph_manager._init_endpoints()
-        self._after_preset_replaced()
-
-    def _after_preset_replaced(self):
-        """Refresh every view after the whole preset changed in place"""
-        self._update_ui_from_channel()
-        self._update_pattern_ui()
-        self._update_matrix_editor()
-        self._update_morph_ui()
+        self._act_or_warn('preset.randomize_all', "Randomize all failed")
     
     def _on_channel_select(self, channel_idx, event=None):
         """Handle channel selection
@@ -2512,6 +2485,9 @@ class PythonicGUI:
             'program.current': lambda v: self.program_var.set(str(v)),
             'undo.can_undo': self._show_undo_state,
             'undo.can_redo': self._show_undo_state,
+            'preset.path': self._refresh_preset_list,
+            'preset.files': self._refresh_preset_list,
+            'pref.preset_folder': self._refresh_preset_list,
         }
     
     def _show_morph_position(self, position):
@@ -2571,40 +2547,22 @@ class PythonicGUI:
             self.updating_ui = False
     
     def _save_preset(self):
-        """Save current preset to file"""
-        preset_folder = self.preferences_manager.get_preset_folder()
+        """Save the preset as JSON (the core writes the file)"""
         filename = filedialog.asksaveasfilename(
-            initialdir=preset_folder,
+            initialdir=self.core.get('pref.preset_folder'),
             defaultextension='.json',
             filetypes=[('JSON files', '*.json'), ('All files', '*.*')],
             title='Save Preset'
         )
-        
         if filename:
-            # Get synth data
-            data = self.synth.get_preset_data()
-            # Add pattern data (includes substeps via PatternChannel.to_dict)
-            data['patterns'] = self.pattern_manager.to_dict()
-            # Add global settings
-            data['tempo'] = self.pattern_manager.bpm
-            data['step_rate'] = self.pattern_manager.step_rate
-            data['swing'] = self.pattern_manager.swing
-            data['fill_rate'] = self.pattern_manager.fill_rate
-            # Add morph data
-            data['morph'] = self.morph_manager.to_dict()
-            # Add program bank data
-            data['programs'] = self.synth.get_programs_data()
-            
-            with open(filename, 'w') as f:
-                json.dump(data, f, indent=2)
-            self.preferences_manager.add_recent_file(filename)
-            self._refresh_preset_list()
+            # Tk's save dialog has asked before replacing a file
+            self._act_or_warn('preset.save', "Failed to save preset", path=filename,
+                              overwrite=True)
     
     def _load_preset(self):
         """Load preset from file"""
-        preset_folder = self.preferences_manager.get_preset_folder()
         filename = filedialog.askopenfilename(
-            initialdir=preset_folder,
+            initialdir=self.core.get('pref.preset_folder'),
             filetypes=[
                 ('Pythonic Preset', '*.mtpreset'),
                 ('JSON files', '*.json'),
@@ -2618,53 +2576,33 @@ class PythonicGUI:
     
     def _load_drum_patch(self):
         """Load a single drum patch (.mtdrum) into the currently selected channel"""
-        preset_folder = self.preferences_manager.get_preset_folder()
         filename = filedialog.askopenfilename(
-            initialdir=preset_folder,
+            initialdir=self.core.get('pref.preset_folder'),
             filetypes=[
                 ('Drum Patch', '*.mtdrum'),
                 ('All files', '*.*')
             ],
             title=f'Load Drum Patch into Channel {self.selected_channel + 1}'
         )
-        
         if filename:
-            try:
-                # Load the drum patch into the currently selected channel
-                with self.core.bulk_change('Load drum patch', parts=('channels',)):
-                    self.preset_manager.load_drum_patch(filename, self.selected_channel)
-                
-                # Update UI to reflect the new drum parameters
-                self._update_ui_from_channel()
-                
-                # Get the patch name from the file
-                import os
-                patch_name = os.path.splitext(os.path.basename(filename))[0]
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to load drum patch: {e}")
+            self._act_or_warn('drum_patch.load', "Failed to load drum patch", path=filename,
+                              channel=self.selected_channel + 1)
     
     def _save_drum_patch(self):
         """Save the currently selected drum to a .mtdrum file"""
-        preset_folder = self.preferences_manager.get_preset_folder()
-        
-        # Get current channel name as default filename
-        channel = self.synth.channels[self.selected_channel]
-        default_name = getattr(channel, 'name', f'Drum_{self.selected_channel + 1}')
-        
+        channel = self.selected_channel + 1
+        default_name = self.core.get(f'ch{channel}.name') or f'Drum_{channel}'
         filename = filedialog.asksaveasfilename(
-            initialdir=preset_folder,
+            initialdir=self.core.get('pref.preset_folder'),
             defaultextension='.mtdrum',
             initialfile=f'{default_name}.mtdrum',
             filetypes=[('Drum Patch', '*.mtdrum'), ('All files', '*.*')],
-            title=f'Save Drum {self.selected_channel + 1} Patch'
+            title=f'Save Drum {channel} Patch'
         )
-        
         if filename:
-            try:
-                # Save the drum patch
-                self.preset_manager.save_drum_patch(self.selected_channel, filename)
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to save drum patch: {e}")
+            # Tk's save dialog has asked before replacing a file
+            self._act_or_warn('drum_patch.save', "Failed to save drum patch", path=filename,
+                              channel=channel, overwrite=True)
     
     def _export_all_wavs(self):
         """Export all drums to WAV files"""
@@ -2698,153 +2636,21 @@ class PythonicGUI:
                 messagebox.showerror("Error", f"Failed to export: {e}")
     
     def _load_preset_file(self, filename, show_message=True):
-        """Load a preset file (internal helper); one undo step"""
-        with self.core.bulk_change('Load preset'):
-            self._read_preset_file(filename, show_message)
-
-    def _read_preset_file(self, filename, show_message):
-        try:
-            if filename.lower().endswith('.mtpreset'):
-                # Load native Pythonic preset format
-                preset_data = self.preset_manager.load_mtpreset(filename)
-                if preset_data and preset_data.get('drums'):
-                    for i, drum_params in enumerate(preset_data['drums']):
-                        if i < 8 and drum_params:
-                            channel = self.synth.channels[i]
-                            channel.set_parameters(drum_params)
-                    
-                    # Load patterns if available
-                    if preset_data.get('patterns'):
-                        self.pattern_manager.load_from_preset_data(preset_data['patterns'])
-                        # Update pattern UI to reflect loaded patterns
-                        self._update_pattern_ui()
-                    
-                    # Load tempo if available
-                    if 'tempo' in preset_data:
-                        self.pattern_manager.set_bpm(int(preset_data['tempo']))
-                        if hasattr(self, 'bpm_var'):
-                            self.bpm_var.set(str(self.pattern_manager.bpm))
-                    
-                    # Load step rate if available
-                    if 'step_rate' in preset_data:
-                        self.pattern_manager.set_step_rate(preset_data['step_rate'])
-                        # Update step rate button states
-                        for r, btn in self.step_rate_buttons:
-                            if r == preset_data['step_rate']:
-                                btn.config(bg=self.COLORS['highlight'])
-                            else:
-                                btn.config(bg=self.COLORS['bg_light'])
-
-                    # Swing, fill rate and master volume are part of the sound
-                    if 'swing' in preset_data:  # the slider follows poll
-                        self.pattern_manager.set_swing(float(preset_data['swing']))
-                    if 'fill_rate' in preset_data:
-                        rate = float(preset_data['fill_rate'])
-                        self.pattern_manager.set_fill_rate(rate)
-                        if hasattr(self, 'fill_rate_buttons'):
-                            for r, btn in self.fill_rate_buttons:
-                                btn.config(bg=self.COLORS['highlight'] if r == round(rate)
-                                           else self.COLORS['bg_light'])
-                    if 'master_volume_db' in preset_data:
-                        self.synth.set_master_volume(float(preset_data['master_volume_db']))
-                        if hasattr(self, 'master_knob'):
-                            self.master_knob.set_value(self.synth.master_volume_db)
-                    for i, muted in enumerate(preset_data.get('mutes') or []):
-                        if i < len(self.synth.channels):
-                            self.synth.mute_channel(i, bool(muted))
-                            if hasattr(self, 'channel_buttons'):
-                                self.channel_buttons[i].set_muted(bool(muted))
-                            if hasattr(self, 'mute_buttons') and i < len(self.mute_buttons):
-                                self.mute_buttons[i].set_value(bool(muted))
-                    
-                    # Initialize morph endpoints from loaded state
-                    # (mtpreset Morph block has Time/AB but we use the loaded
-                    # drum patches as both endpoints since the format doesn't
-                    # store full A/B parameter snapshots)
-                    self.morph_manager._init_endpoints()
-                    # Set morph position from mtpreset if available
-                    morph_pos = preset_data.get('morph_position')
-                    if morph_pos is not None:
-                        self.core.set('morph.position', float(morph_pos))
-                    else:
-                        self.core.set('morph.position', 0.5)  # Center morph after loading
-                    self._update_morph_ui()
-                    
-                    self._update_ui_from_channel()
-                    self.preferences_manager.add_recent_file(filename)
-                    self.preferences_manager.set('last_preset', filename)
-                    self._refresh_preset_list()
-                else:
-                    messagebox.showerror("Error", "Failed to parse preset file")
-            else:
-                # Load JSON format
-                with open(filename, 'r') as f:
-                    data = json.load(f)
-                self.synth.load_preset_data(data)
-                
-                # Load patterns if available (includes substeps)
-                if 'patterns' in data:
-                    self.pattern_manager.from_dict(data['patterns'])
-                    self._update_pattern_ui()
-                
-                # Load global settings
-                if 'tempo' in data:
-                    self.pattern_manager.set_bpm(int(data['tempo']))
-                    if hasattr(self, 'bpm_var'):
-                        self.bpm_var.set(str(self.pattern_manager.bpm))
-                
-                if 'step_rate' in data:
-                    self.pattern_manager.set_step_rate(data['step_rate'])
-                    if hasattr(self, 'step_rate_buttons'):
-                        for r, btn in self.step_rate_buttons:
-                            if r == data['step_rate']:
-                                btn.config(bg=self.COLORS['highlight'])
-                            else:
-                                btn.config(bg=self.COLORS['bg_light'])
-                
-                if 'swing' in data:
-                    self.pattern_manager.set_swing(data['swing'])
-                
-                if 'fill_rate' in data:
-                    self.pattern_manager.set_fill_rate(int(data['fill_rate']))
-                
-                # Load morph data if available
-                if 'morph' in data:
-                    self.morph_manager.from_dict(data['morph'])
-                    self.core.set('morph.position', self.morph_manager.position)
-                else:
-                    # No morph data - initialize fresh endpoints
-                    self.morph_manager._init_endpoints()
-                    self.core.set('morph.position', 0.5)
-                self._update_morph_ui()
-                
-                # Load program bank if available
-                if 'programs' in data:  # the combobox follows poll
-                    self.synth.load_programs_data(data['programs'])
-                else:
-                    # No program data — reset bank
-                    self.synth._programs = [None] * self.synth.NUM_PROGRAMS
-                    self.synth._current_program = 0
-                
-                self._update_ui_from_channel()
-                self.preferences_manager.add_recent_file(filename)
-                self.preferences_manager.set('last_preset', filename)
-                self._refresh_preset_list()
-        except Exception as e:
-            if show_message:
-                messagebox.showerror("Error", f"Failed to load preset: {e}")
+        """Load a preset file through the core (one undo step; every view
+        follows the changes poll reports)"""
+        if show_message:
+            self._act_or_warn('preset.load', "Failed to load preset", path=filename)
+        else:
+            self.core.act('preset.load', path=filename)
     
     def _select_preset_folder(self):
-        """Select a new preset folder"""
-        current_folder = self.preferences_manager.get_preset_folder()
+        """Select a new preset folder (the list follows poll)"""
         folder = filedialog.askdirectory(
-            initialdir=current_folder,
+            initialdir=self.core.get('pref.preset_folder'),
             title='Select Preset Folder'
         )
-        
         if folder:
-            self.preferences_manager.set_preset_folder(folder)
-            self._refresh_preset_list()
+            self.core.set('pref.preset_folder', folder)
     
     # ============ MIDI (routed by the core) ============
     # The core opens the MIDI input and routes notes, program change,
@@ -3080,7 +2886,7 @@ class PythonicGUI:
     
     def _show_po32_transfer(self):
         """Open the PO-32 Tonic transfer dialog"""
-        preset_name = getattr(self.preset_manager, 'current_preset_name', 'Untitled')
+        preset_name = self.core.get('preset.name')
         PO32TransferDialog(
             self.root,
             self.synth,
@@ -4193,52 +3999,26 @@ class PythonicGUI:
         y = self.root.winfo_y() + (self.root.winfo_height() - dialog.winfo_height()) // 2
         dialog.geometry(f"+{x}+{y}")
 
-    def _refresh_preset_list(self):
-        """Refresh the preset combo box with files from the preset folder"""
-        preset_folder = self.preferences_manager.get_preset_folder()
-        
-        # Get all preset files from the folder
-        preset_files = []
-        if os.path.exists(preset_folder):
-            for file in os.listdir(preset_folder):
-                if file.lower().endswith(('.mtpreset', '.json')):
-                    preset_files.append(file)
-        
-        # Sort alphabetically
-        preset_files.sort()
-        
-        # Update combo box
+    def _refresh_preset_list(self, _value=None):
+        """Show the preset folder's files (core's preset.files) in the combo
+        box, with the current preset selected"""
+        preset_files = self.core.get('preset.files')
         self.preset_combo['values'] = preset_files
-        
-        # Try to select the currently loaded preset in the combo box
-        last_preset = self.preferences_manager.get('last_preset')
-        if last_preset:
-            preset_filename = os.path.basename(last_preset)
-            if preset_filename in preset_files:
-                self.preset_combo.set(preset_filename)
-            else:
-                self.preset_combo.set('')
-        elif preset_files:
-            self.preset_combo.set('')
+        current = self.core.get('preset.path')
+        name = os.path.basename(current) if current else ''
+        same_folder = current and os.path.dirname(current) == os.path.abspath(
+            self.core.get('pref.preset_folder'))
+        self.preset_combo.set(name if same_folder and name in preset_files else '')
     
     def _on_preset_combo_select(self, event=None):
-        """Handle preset selection from combo box"""
+        """Handle preset selection from combo box (a file of the preset folder)"""
         selected = self.preset_combo.get()
         if selected:
-            preset_folder = self.preferences_manager.get_preset_folder()
-            filepath = os.path.join(preset_folder, selected)
-            if os.path.exists(filepath):
-                self._load_preset_file(filepath, show_message=False)
+            self._load_preset_file(selected, show_message=False)
     
     def _load_last_preset(self):
-        """Load the last loaded preset if it exists"""
-        last_preset = self.preferences_manager.get('last_preset')
-        if last_preset and os.path.exists(last_preset):
-            try:
-                self._load_preset_file(last_preset, show_message=False)
-            except Exception as e:
-                # Silently fail if last preset can't be loaded
-                print(f"Warning: Could not load last preset: {e}")
+        """Load the last loaded preset if it exists (errors stay silent)"""
+        self.core.act('preset.load_last')
     
     # ============== UI tick ==============
     

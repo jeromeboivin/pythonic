@@ -1,6 +1,7 @@
 """
-Tests for the preset menu actions: clipboard, initialize, randomize
-and drum WAV export.
+Tests for the engine parts of the preset menu actions: initialize,
+randomize and drum WAV export (the clipboard is the core's, see
+test_preset_io_core.py).
 """
 
 import numpy as np
@@ -8,7 +9,6 @@ from scipy.io import wavfile
 
 from pythonic.drum_channel import DrumChannel
 from pythonic.lfo import ModTarget
-from pythonic.pattern_manager import PatternManager
 from pythonic.preset_manager import PresetManager
 from pythonic.synthesizer import PythonicSynthesizer
 
@@ -58,42 +58,6 @@ def test_randomize_is_reproducible_with_a_seeded_rng():
     a.randomize(np.random.default_rng(7))
     b.randomize(np.random.default_rng(7))
     assert a.get_parameters() == b.get_parameters()
-
-
-# ---------------------------------------------------------------------------
-# PresetManager clipboard dicts
-# ---------------------------------------------------------------------------
-
-def test_preset_dict_round_trip_with_patterns():
-    synth = PythonicSynthesizer(SAMPLE_RATE)
-    pm = PatternManager(num_channels=8, pattern_length=16)
-    presets = PresetManager(synth)
-    pm.randomize_pattern(0)
-    synth.channels[2].set_osc_frequency(321.0)
-    clip = presets.export_preset_to_dict(pm)
-    expected_patterns = pm.to_dict()
-
-    for ch in synth.channels:
-        ch.reset_to_defaults()
-    pm.reset_all_patterns()
-    presets.import_preset_from_dict(clip, pm)
-
-    assert abs(synth.channels[2].oscillator.frequency - 321.0) < 1e-6
-    assert pm.to_dict() == expected_patterns
-
-
-def test_preset_dict_is_detached_from_live_state():
-    synth = PythonicSynthesizer(SAMPLE_RATE)
-    presets = PresetManager(synth)
-    clip = presets.export_preset_to_dict()
-    name = synth.channels[0].name
-
-    presets.import_preset_from_dict(clip)
-    synth.channels[0].name = "Changed"
-    clip['channels'][1]['name'] = "Edited later"
-
-    assert clip['channels'][0]['name'] == name
-    assert synth.channels[1].name != "Edited later"
 
 
 # ---------------------------------------------------------------------------
