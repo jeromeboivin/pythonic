@@ -59,6 +59,46 @@ class FakeStream:
         return out
 
 
+class FakeInputStream:
+    """An input stream: the test feeds it samples with push(), which runs the
+    callback as PortAudio would."""
+
+    def __init__(self, backend, device=None, channels=1, callback=None,
+                 samplerate=44100, blocksize=2048, dtype=None):
+        self.backend = backend
+        self.device = device
+        self.channels = channels
+        self.callback = callback
+        self.samplerate = samplerate
+        self.blocksize = blocksize
+        self.started = False
+        self.aborted = False
+        self.closed = False
+
+    def start(self):
+        if self.backend.fail_input:
+            raise RuntimeError('fake input failure')
+        self.started = True
+
+    def stop(self):
+        self.started = False
+
+    def abort(self):
+        self.aborted = True
+        self.started = False
+
+    def close(self):
+        self.closed = True
+
+    def push(self, samples):
+        """Run the callback over `samples` (mono floats), block by block."""
+        samples = np.asarray(samples, dtype=np.float32)
+        for start in range(0, len(samples), self.blocksize):
+            block = samples[start:start + self.blocksize].reshape(-1, 1)
+            block = np.repeat(block, self.channels, axis=1)
+            self.callback(block, len(block), None, FakeStatus())
+
+
 class FakeAudioBackend:
     """Implements the parts of the sounddevice API the app core uses."""
 
@@ -74,6 +114,8 @@ class FakeAudioBackend:
         self.supported_rates = set(supported_rates)
         self.default = type('Default', (), {'device': [1, 0]})()
         self.streams = []
+        self.inputs = []
+        self.fail_input = False
         self.fail_open = False
         self.fail_start = False
         self.abort_hangs = threading.Event()
@@ -103,3 +145,12 @@ class FakeAudioBackend:
         stream = FakeStream(self, **kwargs)
         self.streams.append(stream)
         return stream
+
+    def InputStream(self, **kwargs):
+        stream = FakeInputStream(self, **kwargs)
+        self.inputs.append(stream)
+        return stream
+
+    @property
+    def input(self):
+        return self.inputs[-1] if self.inputs else None

@@ -9,6 +9,12 @@ latency). While no stream runs, the submitting thread applies the queue itself.
 
 The callback takes no locks: the queue is a ``deque`` (atomic append and
 popleft) and every value it publishes is a plain attribute write.
+
+Rendered buffers (a PO-32 transfer, a PO-32 preview) play through the same
+stream: ``play(player)`` installs a ``Player`` at block start, and after the
+synth has rendered a block the callback copies the next slice of the
+player's buffer into it (replacing the block, or mixed into it). The buffer
+is at the output rate already, so the callback only copies slices.
 """
 
 import threading
@@ -49,6 +55,79 @@ def block_size_for(buffer_ms, rate):
     return max(64, int(round(buffer_ms / 1000.0 * rate)))
 
 
+PLAYING = 'playing'
+DONE = 'done'
+STOPPED = 'stopped'
+
+
+class Player:
+    """A rendered buffer the output stream plays after the synth's block.
+
+    ``buffer`` is mono (n,) or stereo (n, 2) float32 at the output rate.
+    ``replace`` silences the synth while it plays (a transfer must reach the
+    receiver clean); otherwise it is mixed in. ``loop`` starts it over at the
+    end. ``stop_on_play``: the panel's transport starting ends it.
+    ``state`` goes from ``playing`` to ``done`` (the audio thread, at the
+    end) or ``stopped`` (any thread: a cancel, the stream stopping). ``pos``
+    is the next frame to play; both are plain attributes read by poll.
+    """
+
+    __slots__ = ('buffer', 'pos', 'loop', 'replace', 'stop_on_play', 'state')
+
+    def __init__(self, buffer, *, loop=False, replace=False, stop_on_play=False):
+        self.buffer = buffer
+        self.pos = 0
+        self.loop = loop
+        self.replace = replace
+        self.stop_on_play = stop_on_play
+        self.state = PLAYING
+
+    @property
+    def frames(self):
+        return len(self.buffer)
+
+    @property
+    def progress(self):
+        if self.state == DONE or not len(self.buffer):
+            return 1.0
+        return self.pos / len(self.buffer)
+
+    def stop(self):
+        """End it from any thread (the callback drops it at its next block)."""
+        if self.state == PLAYING:
+            self.state = STOPPED
+
+    def mix(self, out, frames):
+        """Audio thread: copy the next ``frames`` into ``out`` (frames, 2)."""
+        buf = self.buffer
+        total = len(buf)
+        pos = self.pos
+        stereo = buf.ndim == 2
+        if self.replace:
+            out.fill(0.0)
+        done = 0
+        while done < frames:
+            take = total - pos
+            if take > frames - done:
+                take = frames - done
+            if take > 0:
+                chunk = buf[pos:pos + take]
+                if stereo:
+                    out[done:done + take] += chunk
+                else:
+                    out[done:done + take, 0] += chunk
+                    out[done:done + take, 1] += chunk
+                pos += take
+                done += take
+            if pos >= total:
+                if self.loop and total:
+                    pos = 0
+                else:
+                    self.state = DONE
+                    break
+        self.pos = pos
+
+
 class AudioEngine:
     """Owns the output stream, the command queue and the per-block render."""
 
@@ -69,6 +148,7 @@ class AudioEngine:
         self._gen = 0
         self._stream = None
         self._triggers = []
+        self.player = None  # a Player; set at block start, dropped by the callback
 
         # Stream configuration (changed only while no stream runs)
         self.out_rate = 44100
@@ -146,6 +226,38 @@ class AudioEngine:
     def live(self):
         return self._live
 
+    # ------------------------------------------------------------------ players
+    def play(self, player):
+        """Start a Player at the next block start (it replaces one playing).
+        Without a running stream it is stopped at once."""
+        return self.submit_call(self._set_player, player)
+
+    def _set_player(self, player):
+        old = self.player
+        if old is not None and old is not player:
+            old.stop()
+        if not self._live:  # applied inline: nothing would ever play it
+            player.stop()
+            self.player = None
+            return
+        self.player = player
+
+    def _play_player(self, outdata, frames):
+        player = self.player
+        if player is None:
+            return
+        if player.state == PLAYING and player.stop_on_play and self.pattern_manager.is_playing:
+            player.stop()
+        if player.state == PLAYING:
+            try:
+                player.mix(outdata, frames)
+            except Exception as exc:
+                player.stop()
+                self.error_count += 1
+                self.last_error = exc
+        if player.state != PLAYING:
+            self.player = None
+
     # ------------------------------------------------------------------ synth swap
     def install(self, synth, sequencer):
         """Swap in a synth built off the audio thread (runs at block start)."""
@@ -176,6 +288,8 @@ class AudioEngine:
             outdata.fill(0)
             self.error_count += 1
             self.last_error = exc
+        if self.player is not None:
+            self._play_player(outdata, frames)
 
     def _render(self, outdata, frames, now):
         callback_start = time.perf_counter()
@@ -411,10 +525,48 @@ class AudioEngine:
             self._live = False
             self._stream = None
             self._device_name = None
+            player, self.player = self.player, None
+            if player is not None:
+                player.stop()  # a transfer or preview ends with the stream
             self._drain_inline()
         if error:
             print(f"ERROR: {error}", flush=True)
         return error
+
+    # ------------------------------------------------------------------ input streams
+    def open_input(self, device_name, rate, blocksize, callback):
+        """Open and start a mono float32 input stream on an input device
+        (None: the system default). Returns (stream, device name). The
+        callback runs on the backend's input thread."""
+        if self.backend is None:
+            raise AudioUnavailable('Audio input not available: sounddevice is not installed')
+        device = None
+        if device_name:
+            for i, dev in enumerate(self.backend.query_devices()):
+                if dev['max_input_channels'] > 0 and dev['name'] == device_name:
+                    device = i
+                    break
+            else:
+                raise AudioUnavailable(f"Audio input device '{device_name}' not found")
+        stream = self.backend.InputStream(device=device, channels=1, samplerate=rate,
+                                          blocksize=blocksize, dtype='float32',
+                                          callback=callback)
+        finished, exc = run_with_timeout(stream.start, self.stream_timeout)
+        if not finished or exc is not None:
+            run_with_timeout(lambda: (stream.abort(), stream.close()), self.stream_timeout)
+            reason = exc if finished else f'start() did not return within {self.stream_timeout:g} s'
+            raise AudioUnavailable(f'Could not open the audio input: {reason}')
+        return stream, device_name or self.default_input_name()
+
+    def close_input(self, stream):
+        """Abort and close an input stream with a timeout; an error message or None."""
+        finished, exc = run_with_timeout(lambda: (stream.abort(), stream.close()),
+                                         self.stream_timeout)
+        if not finished:
+            return f'Audio input did not stop within {self.stream_timeout:g} s'
+        if exc is not None:
+            return f'Audio input failed to stop cleanly: {exc}'
+        return None
 
     # ------------------------------------------------------------------ readouts
     def _resolve_device_name(self, index):

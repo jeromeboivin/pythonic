@@ -24,6 +24,9 @@ the audio stream, driven through an address-based interface (ADR 0001).
   the export thread with an offline synth and report progress through poll.
 - The AI generators (``ai.*``) are in ``ai.py``; the models run in a
   subprocess (``ai_worker.py``), so the core never imports torch.
+- The PO-32 transfer and import (``po32.*``) are in ``po32.py``; transfers
+  and previews play through the live stream, recordings use an input stream
+  the core opens on its audio backend.
 - Undo and redo (``undo`` / ``redo`` verbs, ``undo.*`` addresses): every set
   is journaled (``undo.py``); a front-end brackets a drag with
   ``begin_gesture()`` / ``end_gesture()``, a wheel or controller passes
@@ -54,6 +57,7 @@ from .export import Export
 from .midi import MidiInput, import_mido
 from .morph import Morph
 from .patterns import Patterns
+from .po32 import Po32
 from .prefs import STREAM_SETTINGS, Prefs
 from .presets import Presets
 from .programs import Programs
@@ -155,6 +159,8 @@ class AppCore:
         self.ai = Ai(self, **{k: v for k, v in (('worker', ai_worker), ('install', ai_install))
                               if v is not _DEFAULT})
         self.ai.register(self.registry)
+        self.po32 = Po32(self)
+        self.po32.register(self.registry)
         self._verbs = {
             'audio.start': self._verb_audio_start,
             'audio.stop': self._verb_audio_stop,
@@ -168,6 +174,7 @@ class AppCore:
             **self.prefs.verbs(),
             **self.export.verbs(),
             **self.ai.verbs(),
+            **self.po32.verbs(),
         }
         self._running_action = None  # id of the verb running on the action thread
 
@@ -330,10 +337,13 @@ class AppCore:
         pattern indexes (0..11) and the indexes of the chain being played.
         ``midi`` holds the MIDI activity and per-channel note counters and the
         pickup state of each CC-driven control (controller position, linked).
+        ``po32`` holds the input level, the recording length, the send
+        progress and the preview step.
         """
         self.undo.journal.close_idle()
         self._collect_audio_reports()
         self.ai.collect()
+        self.po32.collect()
         with self._cond:
             self._promote_applied()
             version = self._version
@@ -361,6 +371,7 @@ class AppCore:
             },
             'audio': self.audio.status(),
             'midi': self.midi.readout(),
+            'po32': self.po32.readout(),
         }
 
     def wait(self, action_id, timeout=10.0):
@@ -393,6 +404,7 @@ class AppCore:
         self._worker.join(timeout=self.audio.stream_timeout + 5.0)
         self.export.close()
         self.ai.close()
+        self.po32.close()
         self.audio.stop()
         self.synth.cleanup()
 
@@ -534,6 +546,7 @@ class AppCore:
         self.undo.journal.close_idle()
         self._collect_audio_reports()
         self.ai.collect()
+        self.po32.collect()
         audio = self.audio
         now = time.monotonic()
         count = audio.callback_count
