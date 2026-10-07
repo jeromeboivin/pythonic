@@ -202,7 +202,7 @@ export function mountAiPage({ panel, store, client, stage }) {
   const bankNote = el('span', 'note ai-banknote');
   bankNote.dataset.address = 'ai.bank';
   const newBank = button('↻', { id: 'ai-new-bank', cls: 'arr', verb: 'ai.generate_patterns' });
-  newBank.title = 'generate a new bank of 12 patterns for the kit on the face';
+  newBank.title = 'generate a new bank of 12 patterns for the drum patches on the face';
   bankRow.append(patternTemp, bankNote, newBank);
   const actions = el('div', 'ai-actions');
   const loop = button('▶ loop', { id: 'ai-loop', verb: 'ai.pattern_try', address: 'ai.preview' });
@@ -329,7 +329,7 @@ export function mountAiPage({ panel, store, client, stage }) {
     if (s !== null) args.seed = s;
     return args;
   };
-  /** The kit changed: drop the AI pattern bank (tkinter). */
+  /** The drum patches changed: drop the AI pattern bank (tkinter). */
   const invalidateBank = () => {
     if (value('ai.bank') && value('ai.bank') !== 'none') panel.act('ai.clear_patterns');
   };

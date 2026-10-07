@@ -36,7 +36,7 @@ Perfect for producers, sound designers, and developers interested in audio synth
 - **Pattern Sequencer** - 12 patterns of 1-64 steps with velocity, accents, fills, probability, substeps and chains
 - **Sound Morph** - Blend between two learned sets of sounds
 - **Undo / Redo** - Every edit, drag and preset change
-- **Preset System** - Save and load complete drum kits and single drum patches
+- **Preset System** - Save and load whole presets and single drum patches
 - **Exports** - Patterns to MIDI or audio, drums to WAV, transfers to and from a PO-32
 - **Real-time Audio** - Low-latency playback via `sounddevice`
 
@@ -319,10 +319,10 @@ Other checkpoints can be chosen with **load…** on the AI page or in setup ▸ 
 2. Adjust the patch **temperature** (lower = conservative, higher = experimental), the **candidates** count and an optional **seed**
 3. Pick a drum type per lane (it starts from the channel's drum type) and click **gen**, or **generate all 8**
 4. The first candidate plays on the face at once; browse candidates with ‹ / ›, edit them with the panel's controls
-5. **keep tried** makes them part of the kit (one undo step); **revert all** brings the old sounds back; leaving the page asks which
+5. **keep tried** makes them part of the preset (one undo step); **revert all** brings the old sounds back; leaving the page asks which
 6. On the right, keep the current patterns or generate new ones, preview them (**▶ loop**, **▶ bank A→L**) and **replace patterns**
 
-In the tkinter dialog, candidates are previewed per slot and **Apply Selected** copies the checked slots into the kit.
+In the tkinter dialog, candidates are previewed per slot and **Apply Selected** copies the checked slots into the preset.
 
 ## ⚙️ Technical Specifications
 

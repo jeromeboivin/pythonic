@@ -3,7 +3,7 @@ AI Drum Generator Dialog
 
 TR-8-inspired 8-lane interface for the app core's AI generators (``ai.*``):
 per-slot generation, candidates tried on the live channels, one-shot,
-pattern-loop and bank previews, and selective keep back into the kit. The
+pattern-loop and bank previews, and selective keep back into the preset. The
 models run in the core's AI worker process; this dialog only reads the
 ``ai.*`` addresses on its own timer and starts ``ai.*`` verbs.
 """
@@ -468,7 +468,7 @@ class DrumGeneratorDialog:
         self.replace_patterns_btn.config(state='normal' if can_replace else 'disabled')
 
     def _invalidate_pattern_bank(self):
-        """Drop the AI pattern bank when the kit or the mode changes."""
+        """Drop the AI pattern bank when the drum patches or the mode change."""
         if self.core.get('ai.bank') != 'none':
             self._act('ai.clear_patterns')
 
@@ -563,7 +563,7 @@ class DrumGeneratorDialog:
     # ================================================================
 
     def _maybe_generate_pattern_bank(self):
-        """Generate a pattern bank for the tried kit in generate mode."""
+        """Generate a pattern bank for the tried drum patches in generate mode."""
         if self._closed or self._pattern_mode != 'generate':
             return
         self._act('ai.generate_patterns', None, temperature=self.pattern_temp_var.get(),
@@ -588,8 +588,8 @@ class DrumGeneratorDialog:
         self._toggle_preview('bank')
 
     def _toggle_preview(self, mode):
-        """Loop the playing pattern (or chain all 12 from A) with the tried kit,
-        on the main transport; stopping puts the preset's patterns back."""
+        """Loop the playing pattern (or chain all 12 from A) with the tried drum
+        patches, on the main transport; stopping puts the preset's patterns back."""
         if self.core.get('ai.preview') != 'off':
             self._act('ai.pattern_try', "Preview", mode=None)
         else:

@@ -254,7 +254,7 @@ sounds as **one undo step**; `ai.revert` puts the old sounds back.
 | `ai.keep` | channels=None (every trying lane; listed lanes not trying are tried first) | `{'kept'}`; one undo step |
 | `ai.revert` | | `{'reverted', 'preview'}`: old sounds back, pattern preview stopped |
 | `ai.clear` | | revert, then forget candidates, lane types and the bank |
-| `ai.generate_patterns` | temperature=None (`pref.ai.pattern_temperature`), seed=None | `{'patterns': 12}`: a bank A-L for the kit on the face (no swing) |
+| `ai.generate_patterns` | temperature=None (`pref.ai.pattern_temperature`), seed=None | `{'patterns': 12}`: a bank A-L for the drum patches on the face (no swing) |
 | `ai.clear_patterns` | | drops the bank |
 | `ai.pattern_try` | mode `'loop'` / `'bank'` / None (stop), bank=True | loop: the AI version of the playing (else selected) pattern; bank: all 12 chained from A; without a bank, the preset's patterns. Starts the transport; stopping it (any way) ends the preview and puts the preset's patterns back |
 | `ai.replace_patterns` | channels=None (as `ai.keep`) | `{'kept', 'patterns'}`: kept sounds plus all 12 bank patterns, one undo step |

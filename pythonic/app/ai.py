@@ -38,7 +38,7 @@ undo step; ``ai.revert`` puts the kept sounds back.
   journals the tried values.
 
 **Patterns.** ``ai.generate_patterns`` makes a bank of 12 patterns (A-L)
-for the kit on the face (tried candidates included). ``ai.pattern_try``
+for the drum patches on the face (tried candidates included). ``ai.pattern_try``
 previews: ``loop`` plays the AI version of the playing pattern (the selected
 one when stopped), ``bank`` plays all 12 chained from A; without a bank (or
 with ``bank=False``) they play the preset's own patterns. Stopping the
@@ -787,8 +787,8 @@ class Ai:
             return result
 
     # ================================================================== verbs: patterns
-    def _kit(self):
-        """The kit on the face and the timing, for the pattern model."""
+    def _face_sounds(self):
+        """The drum patches on the face and the timing, for the pattern model."""
         core = self._core
         pm = core.pattern_manager
 
@@ -809,7 +809,7 @@ class Ai:
         if temperature is None:
             temperature = self._core.get('pref.ai.pattern_temperature')
         temperature = min(3.0, max(0.1, float(temperature)))
-        raw, tempo, _swing, fill_rate, step_rate = self._kit()
+        raw, tempo, _swing, fill_rate, step_rate = self._face_sounds()
         action_id = self._core._running_action
         with self._lock:
             token = self._bank_token = next(self._tokens)
@@ -926,7 +926,7 @@ class Ai:
         index = pattern_index(pattern, core.pattern_manager.selected_pattern_index)
         ch = None if channel is None else channel_index(channel)
         path = self._pattern_model()
-        raw, tempo, swing, fill_rate, step_rate = self._kit()
+        raw, tempo, swing, fill_rate, step_rate = self._face_sounds()
         temperature = core.get('pref.ai.pattern_temperature')
         action_id = core._running_action
         verb = 'ai.randomize_pattern'
