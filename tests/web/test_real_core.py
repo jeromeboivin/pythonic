@@ -4,6 +4,7 @@ fake audio backend's callback is pulled by hand (``pump``), so blocks, the
 playhead and verbs waiting for a block start advance under the test's control.
 """
 
+import json
 import statistics
 from pathlib import Path
 
@@ -242,3 +243,67 @@ def test_closing_the_rack_is_saved_as_a_preference(open_panel, real_core):
     page.qtbot.waitUntil(lambda: real_core.get('pref.ui.rack_open') is False)
     assert real_core.preferences.get('ui_rack_open') is False
     page.qtbot.waitUntil(lambda: page.window.height() == 560)
+
+
+# ---------------------------------------------------------------- menus (web slice W5)
+
+def _pick(page, label, within):
+    page.wait_js(f"[...document.querySelectorAll({within!r})].some((i) => i.textContent === {label!r})")
+    page.run(f"[...document.querySelectorAll({within!r})].forEach((i) => "
+             f"{{ if (i.textContent === {label!r}) i.dataset.pick = 'yes'; }})")
+    page.click('[data-pick="yes"]')
+
+
+def test_a_preset_saved_from_the_menu_loads_back_from_the_folder_list(open_panel, real_core, tmp_path):
+    page = open_panel(real_core, owns_core=False)
+    pump = real_core.backend.stream.pull
+    assert finish(real_core, real_core.act('preset.load', path=str(PRESETS / '808.mtpreset')))['status'] == 'done'
+    tempo = real_core.get('global.tempo')
+    page.wait_js(f"document.querySelector('#tempo-value').textContent === '{tempo}'")
+    page.wheel('#tempo-value', steps=1)
+    page.wait_js(f"document.querySelector('#tempo-value').textContent === '{tempo + 1}'")
+    page.qtbot.waitUntil(lambda: (pump(), real_core.get('global.tempo'))[1] == tempo + 1)
+
+    folder = tmp_path / 'kits'
+    folder.mkdir()
+    page.click('#preset-button')
+    _pick(page, 'save preset as…', '#preset-menu .it')
+    page.answer_dialog(folder / 'mine.json')
+    page.wait_js("pythonic.panel.display.text()[1] === 'saved'", pump=pump)
+    assert json.loads((folder / 'mine.json').read_text())
+    page.wait_js("String(pythonic.store.value('preset.path')).endsWith('mine.json')", pump=pump)
+    assert page.js("pythonic.panel.display.text()") == ['SAVE PRESET', 'saved']
+
+    page.wheel('#tempo-value', steps=-1)
+    page.wheel('#tempo-value', steps=-1)
+    page.qtbot.waitUntil(lambda: (pump(), real_core.get('global.tempo'))[1] != tempo + 1)
+
+    # the saved file's folder becomes the preset folder; its list loads it back
+    page.click('#preset-button')
+    _pick(page, 'preset folder…', '#preset-menu .it')
+    page.answer_dialog(folder)
+    page.wait_js("JSON.stringify(pythonic.store.value('preset.files')) === '[\"mine.json\"]'", pump=pump)
+    assert real_core.get('pref.preset_folder') == str(folder)
+    page.click('#preset-button')
+    _pick(page, 'mine', '#preset-menu .pm-files .it')
+    page.wait_js(f"document.querySelector('#tempo-value').textContent === '{tempo + 1}'", pump=pump)
+    assert real_core.get('global.tempo') == tempo + 1
+    assert real_core.get('pref.recent_files')[0] == str(folder / 'mine.json')
+
+
+def test_export_to_midi_from_the_pattern_menu_writes_the_file(open_panel, real_core, tmp_path):
+    page = open_panel(real_core, owns_core=False)
+    pump = real_core.backend.stream.pull
+    assert finish(real_core, real_core.act('preset.load', path=str(PRESETS / '808.mtpreset')))['status'] == 'done'
+    target = tmp_path / 'out' / 'a.mid'
+    target.parent.mkdir()
+    for attempt in range(2):
+        page.click('#pattern-menu')
+        _pick(page, 'export to MIDI…', '.px-menu.pmenu .it')
+        page.answer_dialog(target)
+        if attempt:  # the file exists now: the page asks, replace saves again
+            page.wait_js("!!document.querySelector('.alert-sheet.tone-ok')", pump=pump)
+            page.click('.alert-buttons .btn.primary')
+        page.wait_js("pythonic.panel.display.text()[1] === 'saved a.mid'", pump=pump)
+        assert target.read_bytes()[:4] == b'MThd'
+        page.run("pythonic.panel.display.show('', '')")
