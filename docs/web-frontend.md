@@ -49,7 +49,11 @@ pythonic/web/
     js/modulation.js   modulatedAddresses(readout, value): {address: {offset, source}}
     js/midi-cues.js    ccsFor, withoutAddress, isBendTarget, ghostPosition
     js/drum-type.js    guessDrumType(name): the channel button label
-    js/panel.js        mountPanel(stage, {store, client, meta}) -> {ctx, display, slot(name), destroy}
+    js/panel.js        mountPanel(stage, {store, client, meta}) -> {ctx, display, slot(name), drawer, steps, patterns, act, destroy}
+    js/steps-logic.js  pure step-row logic: addresses, padView, withStep, editChannels, dragValue, pages, follow, patternStates, chains
+    js/steps.js        mountStepRow(...): step-mode buttons, page bars, pads, the matrix; selectedPattern(store)
+    js/patterns.js     mountPatterns(...): pattern buttons A-L, chain, pattern menu, lane copy / paste
+    js/drawer.js       createDrawer(slot): the edit rack drawer's pages (matrix now, rack pages later)
     js/main.js         boot({bridge, stage}), demoBridge(); sets window.pythonic
     test/              runner.html, shim/, *.test.js (pure), *.engine-spec.js (DOM)
 ```
@@ -160,9 +164,72 @@ suffixes or null]}`; the CTRL knob's `data-address` follows it. Slots for
 the later slices are elements with `data-slot` (`panel.slot(name)`):
 `step-entry` and `patterns` (left column), `preset-prev`, `preset-next`,
 `preset`, `rack-toggle`, `po32`, `setup` (right column placeholders),
-`steps` (bottom row; placeholder pads with the playhead), `rack` (the edit
-rack drawer, 1568x294 at y = 690). A slice fills its slot with `px-*`
-elements and buttons with `data-verb`.
+`steps` (bottom row), `rack` (the edit rack drawer, 1568x294 at y = 690).
+A slice fills its slot with `px-*` elements and buttons with `data-verb`.
+The display's first line is the selected pattern and the page on the pads
+(`PATTERN A  17-32`), the second the preset name.
+
+## Step row and patterns (`steps.js`, `patterns.js`)
+
+Decision #8 (vocabulary #15). The page **reads lanes**
+(`pattern.<P>.ch<N>.<field>`, lists, for the 8 channels of the selected
+pattern, plus `pattern.<P>.length`) and **writes steps**
+(`pattern.<P>.ch<N>.step<S>.<field>`), echoing the lanes into the store at
+once (`withStep`: a trigger turned off clears accent and fill). The selected
+pattern comes from `poll()['transport'].selected_pattern` (else
+`pattern.selected`); switching it re-watches the lanes and reads any the
+store lacks.
+
+- **Step modes** (left column, `[data-mode]`): trig / accent / fill toggle on
+  press and paint along the row (every step between two pointer moves; a
+  stroke is one `beginGesture` / `endGesture`); accent and fill reach only
+  triggered steps. velo (triggered pads) and prob (any pad) are vertical
+  drags, 200 design px = the range, Shift x0.1, one gesture. sub opens the
+  substep menu (none, the 14 presets, custom… with an `o`/`-` field).
+- **Pads** (`.pads .stp[data-step]`, absolute step numbers) show every
+  property whatever the mode: `on` (trigger, lit at `--lvl` = velocity as
+  brightness, 1 when accented), `accent` dot, `filled` stripe, probability
+  below 100 %, substep dots; velo and prob modes add a bar and the value.
+  Steps past the length are `out` (dim, not editable). Beat groups `g1..g4`.
+- **last step** (`#last-step`, bound to `pattern.<P>.length`) arms; the next
+  pad on any page sets the length (one undo step). **all ch** (`#all-ch`)
+  writes the same step on all 8 channels, muted ones included, as one
+  gesture. **follow** (`#follow`) keeps the pads on the playing page; a page
+  bar (`.pg[data-page]`) turns it off. The playhead (`.ph`) and the pulsing
+  page bar show only while the selected pattern is the one playing.
+- **Matrix** (`#matrix-toggle`): the 8 channels x 16 steps of the page as a
+  page of the edit rack drawer, cells (`.matrix .stp[data-channel][data-step]`)
+  drawn and edited like the pads (a paint stroke stays in its row); a
+  channel label selects the channel; ⊞ again or `◀ edit rack` hides it.
+- **Patterns** (`.pbtn[data-pattern]`, bound to `pattern.<P>.empty`, its
+  wrapper to `.chained`, its length badge to `.length`; the grid to
+  `pattern.selected`): click = `pattern.select` (queued while playing);
+  classes `on` (selected), `playing`, `queued` (blinks), `empty`,
+  `chain-in` / `chain-out` (amber links), the length when not 16.
+  `#chain-prev` / `#chain-next` toggle the selected pattern's links and show
+  the chain on the display; `#lane-copy` / `#lane-paste` copy and paste the
+  selected channel's lane. MENU (`#pattern-menu`) and a right-click on a
+  pattern open the pattern menu: play next (`pattern.queue`, while playing),
+  cut / copy / paste / exchange / clear, shift left / right, reverse,
+  randomize, alter, randomize accents + fills, randomize (AI) and randomize
+  chN (AI) (`ai.randomize_pattern`, off without `ai.available`), copy / paste
+  lane chN, clear all chains. Results show on the display (`nothing to
+  paste`); errors alert there.
+
+**Extension points.**
+
+- `panel.drawer` (`drawer.js`): `setBase(element)` (the edit rack slice puts
+  the rack in), `show(name, element, {onHide})`, `hide(name)`,
+  `toggle(name, build)`, `current`, `onChange(fn)`, and
+  `setOpener({isOpen, setOpen})`: the edit rack slice plugs in the drawer's
+  open / closed state (window shrink, saved preference); until then the
+  drawer is always open. A page opens a closed drawer and closing the page
+  restores it (also for the PO-32 and AI pages, #13).
+- `panel.patterns.addMenuItems((letter, index) => [[label, action], ...])`:
+  more pattern menu entries (export to MIDI / audio, #13);
+  `panel.patterns.openMenu(index, x, y)`.
+- `panel.steps`: `state` (`mode`, `page`, `follow`, `allCh`, `armed`,
+  `selected`), `setMode(field)`, `setPage(page)`, `render()`, `matrix`.
 
 ## Tests
 
@@ -183,7 +250,10 @@ before pytest-qt makes the QApplication. CI also sets
   `*.engine-spec.js` runs inside QtWebEngine via `test/runner.html?spec=...`
   (an import map maps `node:test` / `node:assert/strict` to small shims), one
   pytest test per file. Write specs in `node:test` style: `test(name, fn)`,
-  `assert.equal/deepEqual/ok/throws/rejects`.
+  `assert.equal/deepEqual/ok/throws/rejects`. The spec view is hidden, so
+  Chromium delays `setTimeout` up to 1 s: wait with a `MessageChannel` tick
+  (see `steps.engine-spec.js`), not timers. Shared fixtures that are not
+  specs (`pattern-fixtures.js`) sit beside them.
 - **Page tests** (the main layer): fixtures `panel` (the real page over a
   `FakeCore`), `open_panel(core, owns_core=True)`, `fake_core`, `core_table`
   (session: `describe()` and values of every address of a real core),
@@ -194,7 +264,8 @@ before pytest-qt makes the QApplication. CI also sets
   `run(statements)`, `wait_js(expr, timeout, pump)`, `wait_ready()`,
   `rect(sel)`, `center(sel)`, `click(sel)`, `wheel(sel, steps)`,
   `drag(sel, dy, modifiers)`, `press`, `right_click`, `double_click`,
-  `type_text(text)` (real input on the view's focus proxy; Chromium merges
+  `type_text(text)` (real input on the view's focus proxy; `drag` takes `dx`
+  for strokes along the pads; Chromium merges
   wheel events sent at once, so turn notch by notch), `pixel(x, y)`, `color_at(sel, fx, fy)`,
   `close_to(color, expected, tolerance)`, `wait_pixels(check)` (coarse
   `grab()` checks, no screenshot diffs; painting lags the DOM, so wait for
@@ -206,10 +277,14 @@ before pytest-qt makes the QApplication. CI also sets
   next poll; `calls` (`('set', addr, value, opts)`, `('act', verb, args)`,
   `('gesture', phase)`), `sets()`, `verbs_called()`, `post_change(addr, v)`
   (a change from the core's side), `transport`, `readouts`, `verbs` (verb ->
-  handler), `closed`.
+  handler), `closed`; `patterns` (`FakePatterns`: step and lane addresses
+  with the core's rules, lanes reported on every step set, `set(parsed,
+  value)` for core-side edits); `pattern.select` moves the transport's
+  selected pattern.
 - **Real-core end-to-end tests** (`test_real_core.py`): play and the playhead,
   a tempo edit through a preset file round trip, the frame budget, a tune
-  drag and its undo, select and mute, the CTRL preference.
+  drag and its undo, select and mute, the CTRL preference, a paint stroke
+  and its one-step undo, follow over a 32-step pattern, lane copy / paste.
 - **Parity guard** (`test_parity_guard.py`): every address the core's
   `describe()` lists is bound by a `data-address` control or listed in
   `tests/web/parity_absent.json`: `{"absent": {"<fnmatch glob>": "<reason>"}}`.
