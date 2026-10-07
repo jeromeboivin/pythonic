@@ -44,7 +44,12 @@ pythonic/web/
     js/core-client.js  createCoreClient(bridge, {schedule})
     js/store.js        createStore(), READOUTS
     js/stage.js        fitStage(w, h), mountStage(el), STAGE_WIDTH/HEIGHT
-    js/panel.js        mountPanel(stage, {store, client, meta}), PANEL_ADDRESSES
+    js/values.js       toPosition/fromPosition (the core's curves), drag/wheel math, formatValue, parseValue
+    js/controls.js     px-knob, px-fader, px-toggle, px-switch, px-list, px-display; createControlContext, provideContext
+    js/modulation.js   modulatedAddresses(readout, value): {address: {offset, source}}
+    js/midi-cues.js    ccsFor, withoutAddress, isBendTarget, ghostPosition
+    js/drum-type.js    guessDrumType(name): the channel button label
+    js/panel.js        mountPanel(stage, {store, client, meta}) -> {ctx, display, slot(name), destroy}
     js/main.js         boot({bridge, stage}), demoBridge(); sets window.pythonic
     test/              runner.html, shim/, *.test.js (pure), *.engine-spec.js (DOM)
 ```
@@ -105,12 +110,59 @@ changes), `watched()` (addresses with live watchers), `readout(name)`,
 `audio`, `midi`; `onEvent(fn) -> off`; `version`.
 
 Boot (`main.js`): connect, client, store (`client.onFrame(store.apply)`),
-`mountStage`, `describe(PANEL_ADDRESSES)`, `mountPanel`, then
+`mountStage`, `describe('')` (every registered address), `mountPanel`, then
 `store.seed(await client.get(store.watched()))`.
 
 **Controls declare what they edit**: `data-address="global.tempo"` on the
 element of a control bound to an address, `data-verb="transport.toggle"` on
 one that starts a verb. The parity guard reads them.
+
+## Controls (`controls.js`)
+
+Custom elements, each bound to the address in its `data-address` and that
+address's `describe()` metadata (range, curve, labels, unit). They bind
+themselves when inserted under a root that has a control context
+(`provideContext(stage, createControlContext({store, client, meta, root}))`;
+the panel does this for the stage, so later slices only insert elements).
+Changing `data-address` rebinds; removing it disables the control ("off").
+
+| Element | Attributes | Behaviour |
+|---|---|---|
+| `<px-knob>` | `label`, `name` (display name), `size` (px), `wheel-step` (engine units, instead of 1 %) | drag up/down, 200 design px = range, Shift x0.1; wheel 1 %; pointer and end dots, modulation band, ghost marker |
+| `<px-fader>` | `label`, `name`, `length` (track px = drag range) | as the knob, wheel 2 %; a track click jumps; lit by `--cc` |
+| `<px-toggle>` | `label`, `variant` (`red`) | a lit button for a bool address |
+| `<px-switch>` | `options` (comma-separated display names) | segmented buttons (up to 5 options), wheel steps |
+| `<px-list>` | `options` | list box and menu (enums, int ranges), wheel steps |
+| `<px-display>` | | `setBase(l1, l2)`, `show(l1, l2, ms = 1500)`, `alert(l1, l2, ms = 4000)`, `text()` |
+
+All controls: double-click opens an exact-value field (engine units, ratios
+in percent, pans `L30`/`C`/`R30`, `k` and `s` suffixes); right-click opens
+reset to default, MIDI learn / cancel (`midi.learn` with the address as
+target), remove CC mapping (`midi.cc_map`), assign / remove pitch bend
+(`midi.pitchbend_target`). A drag is one gesture (`beginGesture` /
+`endGesture`), a wheel turn a burst, typed values, resets and clicks one
+undo step each. Each touch dispatches a bubbling `px-touch` event
+(`{address, name, value, text}`); the panel display shows it for 1.5 s.
+MIDI cues come from the store: the CC badge from `midi.cc_map`
+(`selected.*` targets on the selected channel), the learn pulse from
+`midi.learning`, the LED blink and the pickup ghost from `poll()['midi']
+.pickup`. Modulation bands come from `poll()['modulation'].channels`,
+coloured by the first source (LFO 1, LFO 2, pump) that is on and aims there.
+The context also offers `ctx.openMenu(items, x, y)`, `ctx.set(address,
+value, {burst})` (local echo + set) and `ctx.ensure(address)`.
+
+## The face (`panel.js`)
+
+Strips, top row, left and right columns and START/STOP as decided in #7 and
+#12. The strip CTRL mode is the preference `pref.ui.ctrl_knob` = `{mode:
+'off'|'pan'|'reverb_mix'|'delay_mix'|'lfo1_depth'|'user', user: [8 sound
+suffixes or null]}`; the CTRL knob's `data-address` follows it. Slots for
+the later slices are elements with `data-slot` (`panel.slot(name)`):
+`step-entry` and `patterns` (left column), `preset-prev`, `preset-next`,
+`preset`, `rack-toggle`, `po32`, `setup` (right column placeholders),
+`steps` (bottom row; placeholder pads with the playhead), `rack` (the edit
+rack drawer, 1568x294 at y = 690). A slice fills its slot with `px-*`
+elements and buttons with `data-verb`.
 
 ## Tests
 
@@ -140,8 +192,10 @@ before pytest-qt makes the QApplication. CI also sets
   and the test fails on JS console errors.
 - **`Page`** (`tests/web/page.py`): `js(expr)` (value via JSON text),
   `run(statements)`, `wait_js(expr, timeout, pump)`, `wait_ready()`,
-  `rect(sel)`, `center(sel)`, `click(sel)`, `wheel(sel, steps)` (QTest input on
-  the view's focus proxy), `pixel(x, y)`, `color_at(sel, fx, fy)`,
+  `rect(sel)`, `center(sel)`, `click(sel)`, `wheel(sel, steps)`,
+  `drag(sel, dy, modifiers)`, `press`, `right_click`, `double_click`,
+  `type_text(text)` (real input on the view's focus proxy; Chromium merges
+  wheel events sent at once, so turn notch by notch), `pixel(x, y)`, `color_at(sel, fx, fy)`,
   `close_to(color, expected, tolerance)`, `wait_pixels(check)` (coarse
   `grab()` checks, no screenshot diffs; painting lags the DOM, so wait for
   pixels instead of sleeping), `answer_dialog(path | None)`, `tick()`,
@@ -154,7 +208,8 @@ before pytest-qt makes the QApplication. CI also sets
   (a change from the core's side), `transport`, `readouts`, `verbs` (verb ->
   handler), `closed`.
 - **Real-core end-to-end tests** (`test_real_core.py`): play and the playhead,
-  a tempo edit through a preset file round trip, the frame budget.
+  a tempo edit through a preset file round trip, the frame budget, a tune
+  drag and its undo, select and mute, the CTRL preference.
 - **Parity guard** (`test_parity_guard.py`): every address the core's
   `describe()` lists is bound by a `data-address` control or listed in
   `tests/web/parity_absent.json`: `{"absent": {"<fnmatch glob>": "<reason>"}}`.
