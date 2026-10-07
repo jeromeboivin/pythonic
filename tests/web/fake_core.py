@@ -158,6 +158,7 @@ class FakeCore:
             'pattern.select': self._select,
         }
         self.closed = False
+        self.running = None
         self._version = 0
         self._changes = {}
         self._events = []
@@ -201,11 +202,14 @@ class FakeCore:
         if address.startswith('pattern.') and address.endswith('.length'):
             self.patterns.report(address.split('.')[1])
 
+    DEFERRED = object()  # a verb handler's result: the test finishes it later (finish)
+
     def act(self, verb, **args):
         action_id = next(self._ids)
         self.calls.append(('act', verb, args))
         handler = self.verbs.get(verb)
         event = {'id': action_id, 'verb': verb}
+        self.running = action_id  # handlers may post progress events for it
         if handler is None:
             event.update(status='done', result=None)
         else:
@@ -213,8 +217,23 @@ class FakeCore:
                 event.update(status='done', result=handler(**args))
             except Exception as exc:
                 event.update(status='error', error=str(exc))
+        if event.get('result') is self.DEFERRED:
+            return action_id
         self._post(event)
         return action_id
+
+    def progress(self, action_id, fraction):
+        """Post a progress event of an action (exports)."""
+        self._post({'id': action_id, 'verb': None, 'status': 'progress', 'progress': fraction})
+
+    def finish(self, action_id, result=None, error=None):
+        """End a deferred action with its result (or an error)."""
+        event = {'id': action_id, 'verb': None}
+        event.update({'status': 'error', 'error': error} if error else {'status': 'done', 'result': result})
+        self._post(event)
+
+    def trigger(self, channel, velocity=127, at=None):
+        self.calls.append(('trigger', channel, velocity))
 
     def begin_gesture(self):
         self.calls.append(('gesture', 'begin'))

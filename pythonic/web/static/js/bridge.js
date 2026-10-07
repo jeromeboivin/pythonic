@@ -8,7 +8,8 @@
 //
 // Slots (see pythonic/web/bridge.py): get(addresses), set(changes),
 // act({verb, args}), describe(prefix | addresses), gesture('begin'|'end'),
-// resync(null), fileDialog(options), resizeWindow({from, to}).
+// resync(null), fileDialog(options), resizeWindow({from, to}),
+// trigger({channel, velocity}).
 
 /** Connect to the Python bridge over QWebChannel; null outside the app. */
 export function connectBridge(scope = globalThis) {
@@ -59,8 +60,9 @@ export function webChannelBridge(remote) {
  * A stand-in bridge with the same interface, for specs and for opening the
  * page in a plain browser. `describe` maps addresses to metadata, `values`
  * holds their values. Sets apply at once and are reported by the next
- * pushFrame(); `act` answers with an id and `actions[verb](args, fake)` may
- * return a result (reported as a done event on the next frame).
+ * pushFrame(); `act` answers with an id and `actions[verb](args, fake, id)` may
+ * return a result (reported as a done event on the next frame); `post(event)`
+ * queues any other event (progress, errors without an action).
  * `calls` records every call as [slot, payload].
  */
 export function createFakeBridge({ describe = {}, values = {}, actions = {} } = {}) {
@@ -102,7 +104,7 @@ export function createFakeBridge({ describe = {}, values = {}, actions = {} } = 
           const handler = actions[payload.verb];
           let event;
           try {
-            event = { id, verb: payload.verb, status: 'done', result: handler ? handler(payload.args || {}, fake) ?? null : null };
+            event = { id, verb: payload.verb, status: 'done', result: handler ? handler(payload.args || {}, fake, id) ?? null : null };
           } catch (err) {
             event = { id, verb: payload.verb, status: 'error', error: String(err.message || err) };
           }
@@ -124,6 +126,8 @@ export function createFakeBridge({ describe = {}, values = {}, actions = {} } = 
           return null;
         case 'resizeWindow':
           return { size: null };
+        case 'trigger':
+          return {};
         case 'fileDialog': {
           const id = nextId++;
           const path = fake.dialogAnswers.length ? fake.dialogAnswers.shift() : null;
@@ -136,6 +140,8 @@ export function createFakeBridge({ describe = {}, values = {}, actions = {} } = 
     },
     onFrame: (fn) => frames.add(fn),
     onDialog: (fn) => dialogs.add(fn),
+    /** Queue an event for the next frame (progress, errors without an action). */
+    post(event) { events.push(event); },
     /** Emit a frame with the changes and events since the last one. */
     pushFrame(extra = {}) {
       version += 1;

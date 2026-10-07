@@ -67,3 +67,44 @@ test('frames reach listeners', () => {
   bridge.pushFrame();
   assert.deepEqual(seen, [1, 2]);
 });
+
+test('progress events reach onProgress and the act resolves with the done event', async () => {
+  const { bridge, client } = setup();
+  const seen = [];
+  const pending = client.act('preset.load', { path: 'x' }, { onProgress: (p) => seen.push(p) });
+  await new Promise((r) => setTimeout(r, 0));
+  const id = bridge.calls.filter(([s]) => s === 'act').length;
+  bridge.pushFrame({ events: [{ id, verb: 'preset.load', status: 'progress', progress: 0.25 }] });
+  bridge.post({ id, verb: 'preset.load', status: 'progress', progress: 0.5 });
+  bridge.post({ id, verb: 'preset.load', status: 'done', result: { path: 'x' } });
+  bridge.pushFrame();
+  const event = await pending;
+  assert.equal(event.status, 'done');
+  assert.deepEqual(seen, [0.25, 0.5]);
+});
+
+test('errors nobody waits for reach onUnclaimedError, awaited ones do not', async () => {
+  const { bridge, client } = setup();
+  const seen = [];
+  client.onUnclaimedError((e) => seen.push(e.error));
+  bridge.post({ id: null, verb: null, status: 'error', source: 'audio', error: 'stream stalled' });
+  bridge.pushFrame();
+  assert.deepEqual(seen, ['stream stalled']);
+  const pending = client.act('boom');
+  await new Promise((r) => setTimeout(r, 0));
+  for (let i = 0; i < 4; i += 1) bridge.pushFrame();
+  assert.equal((await pending).status, 'error');
+  // an error of an action no caller waits for, reported a few frames later
+  bridge.post({ id: 99, verb: 'po32.send', status: 'error', error: 'orphan' });
+  bridge.pushFrame();
+  assert.deepEqual(seen, ['stream stalled']);
+  bridge.pushFrame();
+  bridge.pushFrame();
+  assert.deepEqual(seen, ['stream stalled', 'orphan']);
+});
+
+test('trigger goes to the bridge slot', async () => {
+  const { bridge, client } = setup();
+  await client.trigger(3, 64);
+  assert.deepEqual(bridge.calls.at(-1), ['trigger', { channel: 3, velocity: 64 }]);
+});

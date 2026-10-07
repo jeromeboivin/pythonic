@@ -150,3 +150,13 @@ def test_resize_window_follows_the_stage_height_at_the_panel_scale(open_panel, f
 
 def test_resize_window_without_a_window_does_nothing(fake_core):
     assert call(Bridge(fake_core), 'resizeWindow', {'from': 1000, 'to': 700}) == {'size': None}
+
+
+def test_trigger_hits_a_channel_now(fake_core):
+    bridge = Bridge(fake_core)
+    assert call(bridge, 'trigger', {'channel': 3, 'velocity': 64}) == {}
+    assert call(bridge, 'trigger', {'channel': 8}) == {}
+    assert [c for c in fake_core.calls if c[0] == 'trigger'] == [('trigger', 2, 64), ('trigger', 7, 127)]
+    for bad in ({'channel': 0}, {'channel': 9}, {'channel': 1, 'velocity': 0}, {'velocity': 3},
+                {'channel': True}):
+        assert 'error' in call(bridge, 'trigger', bad)

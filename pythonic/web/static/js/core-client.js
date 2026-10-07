@@ -2,6 +2,10 @@
 // bridge (bridge.js). Sets are coalesced per animation frame (latest value
 // wins per address, one bridge call per frame); verbs resolve with their
 // poll event; file dialogs resolve with the chosen path or null.
+//
+// Error events nobody waits for (errors not tied to an action: audio callback,
+// stalled stream, MIDI, AI worker; or an action whose caller is gone) go to
+// the onUnclaimedError listeners (the panel's global error handler).
 
 const defaultSchedule = (fn) => (typeof requestAnimationFrame === 'function'
   ? requestAnimationFrame(() => fn()) : setTimeout(fn, 0));
@@ -11,18 +15,42 @@ export function createCoreClient(bridge, { schedule = defaultSchedule } = {}) {
   let flushQueued = false;
   let flushing = Promise.resolve();
   const waiting = new Map(); // action id -> resolve
-  const early = new Map(); // events that arrived before their id came back
+  const early = new Map(); // id -> {event, frames}: events that arrived before their id came back
+  const progress = new Map(); // action id -> fn(fraction, event)
+  const unclaimed = new Set(); // fn(event): error events nobody waits for
+  let asking = 0; // act calls waiting for their id
   const dialogs = new Map(); // dialog id -> resolve
   const earlyDialogs = new Map();
   const frameListeners = new Set();
 
+  const reportUnclaimed = (event) => { for (const fn of [...unclaimed]) fn(event); };
   bridge.onFrame((frame) => {
     for (const event of frame.events || []) {
-      if (event.id == null || event.status === 'progress') continue; // not an end
+      if (event.id == null) { // not tied to an action
+        if (event.status === 'error') reportUnclaimed(event);
+        continue;
+      }
+      if (event.status === 'progress') { // not an end
+        const fn = progress.get(event.id);
+        if (fn) fn(event.progress, event);
+        continue;
+      }
+      progress.delete(event.id);
       const resolve = waiting.get(event.id);
       if (resolve) { waiting.delete(event.id); resolve(event); } else {
-        early.set(event.id, event);
+        early.set(event.id, { event, frames: 0 });
         if (early.size > 64) early.delete(early.keys().next().value);
+      }
+    }
+    // An error still unclaimed two frames later, with no act waiting for
+    // its id, belongs to nobody
+    if (!asking) {
+      for (const [id, entry] of [...early]) {
+        entry.frames += 1;
+        if (entry.frames > 2) {
+          early.delete(id);
+          if (entry.event.status === 'error') reportUnclaimed(entry.event);
+        }
       }
     }
     for (const fn of [...frameListeners]) fn(frame);
@@ -75,11 +103,19 @@ export function createCoreClient(bridge, { schedule = defaultSchedule } = {}) {
     },
     /** Send the queued changes now; Promise<{address: error}>. */
     flush,
-    /** Start a verb; Promise of its poll event ({status, result} or {status: 'error', error}). */
-    async act(verb, args = {}) {
+    /** Start a verb; Promise of its poll event ({status, result} or {status: 'error', error}).
+     * `onProgress(fraction, event)` gets its progress events (exports). */
+    async act(verb, args = {}, { onProgress = null } = {}) {
       await flush();
-      const { id } = await bridge.call('act', { verb, args });
-      if (early.has(id)) { const e = early.get(id); early.delete(id); return e; }
+      asking += 1;
+      let id;
+      try {
+        ({ id } = await bridge.call('act', { verb, args }));
+      } finally {
+        asking -= 1;
+      }
+      if (early.has(id)) { const { event } = early.get(id); early.delete(id); return event; }
+      if (onProgress) progress.set(id, onProgress);
       return new Promise((resolve) => waiting.set(id, resolve));
     },
     /** Metadata of addresses (a list) or of every registered address under a prefix. */
@@ -96,6 +132,10 @@ export function createCoreClient(bridge, { schedule = defaultSchedule } = {}) {
     openFile: (options = {}) => dialog('open', options),
     saveFile: (options = {}) => dialog('save', options),
     chooseFolder: (options = {}) => dialog('folder', options),
+    /** Hit a channel (1..8) now, as a pad would (the core's trigger). */
+    trigger: (channel, velocity = 127) => bridge.call('trigger', { channel, velocity }),
+    /** Error events nobody waits for: fn(event) -> off. */
+    onUnclaimedError(fn) { unclaimed.add(fn); return () => unclaimed.delete(fn); },
     /** Every frame (poll result) after the client has resolved its events. */
     onFrame(fn) { frameListeners.add(fn); return () => frameListeners.delete(fn); },
   };

@@ -26,6 +26,8 @@ over unchanged, and JSON keeps one format both ways):
   changed design height (the edit rack drawer closed or opened); the window grows or
   shrinks by the difference at the panel's scale (``PanelWindow.fit_stage_height``);
   ``{"size": null}`` without a window
+- ``trigger('{"channel": 1..8, "velocity": 1..127}')`` -> ``{}``: hit a channel now
+  (``core.trigger``, 0-based there), as a pad or a MIDI note would
 
 Malformed requests answer ``{"error": message}``.
 """
@@ -233,6 +235,23 @@ class Bridge(QObject):
         if self.window is None:
             return to_json({'size': None})
         return to_json({'size': list(self.window.fit_stage_height(old, new))})
+
+    @Slot(str, result=str)
+    def trigger(self, request):
+        try:
+            hit = json.loads(request)
+            channel = hit['channel']
+            velocity = hit.get('velocity', 127)
+            if (not isinstance(channel, int) or isinstance(channel, bool)
+                    or not 1 <= channel <= 8):
+                raise ValueError(f'not a channel: {channel!r} (1-8)')
+            if (not isinstance(velocity, int) or isinstance(velocity, bool)
+                    or not 1 <= velocity <= 127):
+                raise ValueError(f'not a velocity: {velocity!r} (1-127)')
+        except (ValueError, KeyError, TypeError) as exc:
+            return to_json({'error': _message(exc)})
+        self.core.trigger(channel - 1, velocity)
+        return to_json({})
 
     def _dialog_finished(self, dialog_id, result):
         dialog = self._dialogs.pop(dialog_id, None)
