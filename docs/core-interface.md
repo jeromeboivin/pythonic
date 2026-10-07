@@ -30,7 +30,8 @@ Also: `trigger(channel, velocity=127, at=None)` queues a pad hit with its
 arrival time (`channel` is **0-based** here, 0..7; `at` defaults to now) and
 the hit lands at the matching sample offset; `begin_gesture()` /
 `end_gesture()` (undo, below); `wait(action_id, timeout)` blocks until an
-action has finished (tests and shutdown only).
+action has finished (tests and shutdown only); `call_soon(fn)` runs fn on the
+action thread (modules finishing deferred actions).
 
 ### Values and `describe`
 
@@ -84,6 +85,7 @@ action has finished (tests and shutdown only).
 | `audio.running|device|device_is_default|sample_rate|synth_rate|block_size|buffer_ms|mono` | read-only | the running stream |
 | `audio.output_devices`, `audio.input_devices`, `audio.default_input` | read-only | device names |
 | `pref.*` | settings | below |
+| `ai.*` | | the AI generators, below |
 
 Step and lane addresses are resolved on first use: `registry.names()` lists
 the registered addresses only (not `pattern.<P>.ch<N>...` nor `pref.ui.*`).
@@ -151,6 +153,7 @@ pattern), `channel` 1..8.
 | `midi.close`, `midi.rescan` | | `{'device': None}`, `{'devices'}` |
 | `midi.learn` | target | finishes when a CC arrives (`{'cc', 'target'}`) or with status `cancelled` |
 | `midi.learn_cancel` | | `{'cancelled'}` |
+| `ai.*` | | the AI generators, below |
 
 **Files.** Paths are absolute, or names relative to `pref.preset_folder`. A
 preset load replaces the whole preset (sounds, globals, programs, morph,
@@ -193,6 +196,68 @@ version = state['version']
 A front-end keeps no copy of engine state it cannot rebuild from `get` and
 `changes`: after any verb, the values it changed arrive in `changes`.
 
+## AI generators (`ai.*`)
+
+The drum patch and pattern models run in a **worker subprocess**
+(`pythonic/app/ai_worker.py`, JSON lines over its stdin and stdout), so the
+GUI process never imports torch. It starts on first use, a request after a
+failure starts a new one, and `close()` stops it. `AppCore(ai_worker=argv)`
+replaces it (tests use `tests/fake_ai_worker.py`); `ai_worker=None` turns the
+AI off. Verbs that need the worker return at once on the action thread and
+finish when its reply arrives (their event comes later through poll).
+
+**Trying candidates (the preview overlay).** Each channel has a *lane*: a
+drum type, its candidates and the current one. Trying a candidate puts it on
+the live channel, so the running pattern plays it; the channel's sound before
+the first try is kept and nothing is journaled. `ai.keep` commits the tried
+sounds as **one undo step**; `ai.revert` puts the old sounds back.
+
+- Generating a lane tries its candidate 1 at once.
+- **Knob edits on a trying channel go into the tried sound:** a `set` of a
+  `ch<N>.*` sound address of a trying channel changes the live channel and is
+  not an undo step of its own; `ai.keep` commits it with the candidate,
+  `ai.revert` / `ai.untry` drop it. Pattern sets during a swapped AI pattern
+  preview work the same way (dropped when the preview ends).
+- Anything else that replaces the sounds (preset load / paste / initialize /
+  randomize all, drum patch load, program select, the undo or redo of a step
+  touching a trying channel) reverts the trial first; anything that replaces
+  patterns (pattern ops, AI randomize, preset load, their undo) ends the
+  pattern preview first. Front-ends ask "keep or revert" before leaving the
+  AI page (or loading a preset); when they do not, the core reverts.
+- Limits: the morph position (endpoints differing) and LFO / pump morph
+  modulation set every channel's sound, tried lanes included; Edit all from
+  another channel onto a trying channel journals the tried values.
+
+| Address | Kind | What |
+|---|---|---|
+| `ai.available` | bool | the ML extras (torch) are installed, found without importing them |
+| `ai.install_command` | str | the command that installs them (`pip install -r requirements-ml.txt` with this Python) |
+| `ai.installing` | bool | `ai.install` is running |
+| `ai.state` | enum | `unavailable`, `idle`, `installing`, `loading`, `generating` |
+| `ai.models` | json | `{'patch': m, 'pattern': m}`, `m = {path, bundled, status, error, sampling}`; `path` is `pref.ai.<kind>_model` if the file exists, else the bundled checkpoint, else None; `status` `missing`, `unloaded`, `loading`, `loaded`, `error` |
+| `ai.ch<N>.type` | enum, settable | the lane's drum type, one of 18; until set, the channel's drum type, else the slot default (BD, SD, CH, OH, TOM, TOM, CLAP, CY) |
+| `ai.ch<N>.candidates`, `ai.ch<N>.candidate` | int | n and i of `‹ i/n ›` (i is 1-based, 0 without candidates) |
+| `ai.ch<N>.name`, `ai.ch<N>.trying`, `ai.ch<N>.generating`, `ai.ch<N>.error` | | the current candidate's name, the lane is trying it, generating…, the last error |
+| `ai.tried` | list | channels trying a candidate (for keep tried and the leave prompt) |
+| `ai.bank` | enum | AI patterns: `none`, `generating`, `ready` |
+| `ai.preview` | enum | pattern preview: `off`, `loop`, `bank` |
+
+| Verb | Arguments | Result |
+|---|---|---|
+| `ai.load_model` | kind (`patch` / `pattern`), path=None (the resolved one) | `{'kind', 'path', 'sampling'}`; an explicit path is saved to `pref.ai.<kind>_model` once loaded |
+| `ai.generate` | channel=None (all 8), type=None, temperature=None (`pref.ai.patch_temperature`), candidates=8 (1..32), seed=None | `{'channels', 'failed': [{'channel', 'error'}]}` once every lane has its candidates; an error when all failed |
+| `ai.try` | channel, candidate=None (the current), step=0 (±1 for the arrows, wraps) | `{'channel', 'candidate', 'name'}` |
+| `ai.untry` | channel | `{'channel', 'reverted'}`: back to the old sound, the candidates stay |
+| `ai.keep` | channels=None (every trying lane; listed lanes not trying are tried first) | `{'kept'}`; one undo step |
+| `ai.revert` | | `{'reverted', 'preview'}`: old sounds back, pattern preview stopped |
+| `ai.clear` | | revert, then forget candidates, lane types and the bank |
+| `ai.generate_patterns` | temperature=None (`pref.ai.pattern_temperature`), seed=None | `{'patterns': 12}`: a bank A-L for the kit on the face (no swing) |
+| `ai.clear_patterns` | | drops the bank |
+| `ai.pattern_try` | mode `'loop'` / `'bank'` / None (stop), bank=True | loop: the AI version of the playing (else selected) pattern; bank: all 12 chained from A; without a bank, the preset's patterns. Starts the transport; stopping it (any way) ends the preview and puts the preset's patterns back |
+| `ai.replace_patterns` | channels=None (as `ai.keep`) | `{'kept', 'patterns'}`: kept sounds plus all 12 bank patterns, one undo step |
+| `ai.randomize_pattern` | pattern=None, channel=None (the whole pattern) | `{'pattern', 'channel'}`: one AI pattern (tempo, swing, fill and step rate, `pref.ai.pattern_temperature`) over the pattern or one lane, one undo step |
+| `ai.install` | | `{'installed', 'output'}` (the last lines); runs in the background, the worker uses the new packages without a restart |
+
 ## Undo
 
 - Every `set` of an undoable address is one step. Bracket a drag or a paint
@@ -204,10 +269,12 @@ A front-end keeps no copy of engine state it cannot rebuild from `get` and
   load) are one snapshot step each. Depth 50.
 - Not undone: transport, selection (`global.channel`, `pattern.selected`),
   mutes, Edit all, settings (`pref.*`, `midi.*`).
-- Code that still writes the engine directly (the AI generator and PO-32
-  dialogs, until their slices) wraps its writes in
+- Code that still writes the engine directly (the PO-32 dialog, until its
+  slice) wraps its writes in
   `with core.bulk_change(label, parts=...):` to make them one step reported by
   poll.
+- Tried AI candidates and AI pattern previews stay outside the journal until
+  `ai.keep` / `ai.replace_patterns` (one step each), above.
 
 ## Edit all
 
