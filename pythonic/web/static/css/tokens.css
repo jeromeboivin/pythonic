@@ -37,6 +37,7 @@
 
   /* MIDI cues: CC badge, blinking LED, pickup ghost marker */
   --midi: #ffb020;
+  --learn: #2f6bff;          /* MIDI learn pulse */
 
   /* Pad beat groups: steps 1-4, 5-8, 9-12, 13-16 */
   --pad-g1: #ff2e2e;
