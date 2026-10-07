@@ -142,10 +142,11 @@ before pytest-qt makes the QApplication. CI also sets
   `run(statements)`, `wait_js(expr, timeout, pump)`, `wait_ready()`,
   `rect(sel)`, `center(sel)`, `click(sel)`, `wheel(sel, steps)` (QTest input on
   the view's focus proxy), `pixel(x, y)`, `color_at(sel, fx, fy)`,
-  `close_to(color, expected, tolerance)` (coarse `grab()` checks, no
-  screenshot diffs), `answer_dialog(path | None)`, `tick()`,
+  `close_to(color, expected, tolerance)`, `wait_pixels(check)` (coarse
+  `grab()` checks, no screenshot diffs; painting lags the DOM, so wait for
+  pixels instead of sleeping), `answer_dialog(path | None)`, `tick()`,
   `bound_addresses()`, `console_errors()`; `choose_in_dialog(qtbot, dialog,
-  path)`.
+  path)`, `same_path(a, b)` (Qt answers paths with `/` on Windows).
 - **`FakeCore`** (`tests/web/fake_core.py`): get/set/describe/act/poll from
   the real metadata, sets coerced as the real core does and reported by the
   next poll; `calls` (`('set', addr, value, opts)`, `('act', verb, args)`,

@@ -4,6 +4,7 @@ import pytest
 from PySide6.QtCore import QSize
 
 from pythonic.web.window import MIN_SIZE
+from tests.web.page import same_path
 
 
 def test_the_page_boots_and_reads_the_tempo(panel):
@@ -22,9 +23,8 @@ def test_a_wider_window_letterboxes_the_stage(panel, qtbot):
     panel.window.resize(1920, 1000)
     qtbot.waitUntil(lambda: panel.js("document.querySelector('#stage').dataset.scale") == '1')
     assert panel.rect('#stage') == pytest.approx((160, 0, 1600, 1000))
-    qtbot.wait(100)
-    letterbox, stage = panel.pixel(40, 500), panel.pixel(900, 400)
-    assert letterbox == (0, 0, 0)
+    panel.wait_pixels(lambda: panel.pixel(40, 500) == (0, 0, 0))  # letterbox
+    stage = panel.pixel(900, 400)
     assert panel.close_to(stage, (11, 11, 12), tolerance=3) and stage != (0, 0, 0)
 
 
@@ -47,9 +47,9 @@ def test_start_stop_runs_the_verb_and_lights_from_the_transport(panel, qtbot):
     panel.click('#start-stop')
     qtbot.waitUntil(lambda: panel.core.verbs_called() == ['transport.toggle'])
     panel.wait_js("document.querySelector('#start-stop').classList.contains('on')")
-    qtbot.wait(50)
+    panel.wait_pixels(lambda: panel.color_at('#start-stop')[1] > 180)  # lit green
     r, g, b = panel.color_at('#start-stop')
-    assert g > 180 and g > r  # lit green
+    assert g > r and g > b
 
 
 def test_the_playhead_outlines_its_pad(panel):
@@ -69,7 +69,7 @@ def test_a_file_dialog_from_the_page_returns_the_path(panel, qtbot, tmp_path):
     assert panel.bridge.stats.count > frames  # the frame timer runs while it is open
     panel.answer_dialog(target)
     panel.wait_js('window.__path !== undefined')
-    assert panel.js('window.__path') == str(target)
+    assert same_path(panel.js('window.__path'), target)
 
     panel.run("pythonic.client.saveFile({}).then((p) => { window.__saved = p; });")
     panel.answer_dialog(None)

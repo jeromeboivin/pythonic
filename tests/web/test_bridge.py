@@ -5,7 +5,7 @@ import json
 from PySide6.QtWidgets import QFileDialog, QWidget
 
 from pythonic.web.bridge import FRAME_BUDGET_MS, Bridge
-from tests.web.page import choose_in_dialog
+from tests.web.page import choose_in_dialog, same_path
 
 
 def call(bridge, slot, payload):
@@ -111,7 +111,7 @@ def test_file_dialog_opens_without_blocking_and_reports_the_path(fake_core, qtbo
     assert dialog.fileMode() == QFileDialog.FileMode.ExistingFile
     choose_in_dialog(qtbot, dialog, target)
     qtbot.waitUntil(lambda: len(results) == 1, timeout=3000)
-    assert results == [{'id': reply['id'], 'path': str(target)}]
+    assert results[0]['id'] == reply['id'] and same_path(results[0]['path'], target)
 
     reply = call(bridge, 'fileDialog', {'mode': 'save', 'suffix': '.json'})
     (dialog,) = bridge.open_dialogs()

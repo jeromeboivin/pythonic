@@ -11,7 +11,8 @@ Page-test helpers: drive the real app:// page in a PanelWindow from pytest-qt.
 - ``rect(selector)``, ``click(selector)``, ``wheel(selector, steps)``: real
   pointer input through QTest on the view's focus proxy, at an element's centre
 - ``pixel(x, y)``, ``color_at(selector)``: coarse ``grab()`` pixel checks;
-  ``close_to(color, expected, tolerance)``
+  ``close_to(color, expected, tolerance)``; ``wait_pixels(check)`` (painting
+  lags the DOM: wait for pixels, never sleep)
 - ``answer_dialog(path | None)``: choose a file in the dialog the page
   opened, or cancel it
 - ``tick()``: push one bridge frame now; ``bound_addresses()``: the
@@ -19,6 +20,7 @@ Page-test helpers: drive the real app:// page in a PanelWindow from pytest-qt.
 """
 
 import json
+from pathlib import Path
 
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QWheelEvent
@@ -27,6 +29,11 @@ from PySide6.QtWidgets import QApplication, QLineEdit
 
 # Network errors of optional resources (fonts not fetched yet) are not page errors
 IGNORED_CONSOLE = ('Failed to load resource',)
+
+
+def same_path(a, b):
+    """Paths equal across separators and case rules (Qt answers with / on Windows)."""
+    return a is not None and b is not None and Path(a).resolve() == Path(b).resolve()
 
 
 def choose_in_dialog(qtbot, dialog, path, timeout=5000):
@@ -38,7 +45,8 @@ def choose_in_dialog(qtbot, dialog, path, timeout=5000):
         edit.setText(path)
     else:
         dialog.selectFile(path)
-    qtbot.waitUntil(lambda: dialog.selectedFiles() == [path], timeout=timeout)
+    qtbot.waitUntil(lambda: [same_path(f, path) for f in dialog.selectedFiles()] == [True],
+                    timeout=timeout)
     dialog.accept()
 
 
@@ -141,6 +149,10 @@ class Page:
     @staticmethod
     def close_to(color, expected, tolerance=40):
         return all(abs(a - b) <= tolerance for a, b in zip(color, expected))
+
+    def wait_pixels(self, check, timeout=5000):
+        """Wait until check() holds on grabbed pixels (painting lags the DOM)."""
+        self.qtbot.waitUntil(lambda: bool(check()), timeout=timeout)
 
     # ------------------------------------------------------------------ app
     def answer_dialog(self, path=None, timeout=5000):
