@@ -1,6 +1,7 @@
 """
 Pythonic - Main Entry Point
-Run this script to start the application
+Run this script to start the application; arguments are passed through to
+the ``pythonic`` command (``--ui web|tk``, ``--devtools``, ...).
 """
 
 import sys
@@ -10,7 +11,7 @@ import os
 project_root = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, project_root)
 
-from gui.main_window import main
+from pythonic.launch import main
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

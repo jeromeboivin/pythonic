@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pythonic"
+dynamic = ["version"]
+description = "A Python drum synthesizer with a step sequencer"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.21.0",
+    "scipy>=1.7.0",
+    "numba>=0.59.0",
+    "sounddevice>=0.4.5",
+    "mido>=1.2.10",
+    "python-rtmidi>=1.4.9",
+    "platformdirs>=3.0.0",
+    "cma>=3.3.0",
+    # The web interface (QtWebEngine). No QtWebEngine wheels exist for
+    # Windows ARM64: those machines run the tkinter interface.
+    "PySide6-Essentials>=6.8; sys_platform != 'win32' or platform_machine != 'ARM64'",
+    "PySide6-Addons>=6.8; sys_platform != 'win32' or platform_machine != 'ARM64'",
+]
+
+[project.optional-dependencies]
+# The AI drum generators. CPU-only PyTorch by default; for GPU support install
+# the CUDA or ROCm build from https://pytorch.org/get-started/locally/ first.
+ml = ["torch>=2.0.0"]
+dev = ["pytest>=7.0.0", "pytest-qt>=4.4"]
+
+[project.scripts]
+pythonic = "pythonic.launch:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "pythonic.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["pythonic*", "gui*"]
+
+[tool.setuptools.package-data]
+"pythonic.web" = ["static/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

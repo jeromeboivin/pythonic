@@ -1,0 +1,80 @@
+/* The stage (1600x1000 design pixels, scaled by js/stage.js) and the
+   placeholder panel of the first web slice, in the hardware look. */
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; height: 100%; overflow: hidden; user-select: none;
+  background: var(--letterbox); color: var(--label);
+  font-family: var(--font-label); font-weight: 500;
+}
+.stage {
+  position: absolute; left: 0; top: 0; transform-origin: 0 0;
+  width: var(--stage-width); height: var(--stage-height);
+  background: var(--panel); overflow: hidden;
+}
+.stage * { line-height: 1.15; }
+
+/* Buttons: green text, lit when on */
+.btn {
+  background: var(--button); color: var(--button-text); border: 0; border-radius: 4px;
+  font: 700 14px var(--font-label); letter-spacing: .05em; text-transform: uppercase;
+  padding: 6px 10px; cursor: pointer; box-shadow: 0 2px 0 #000, inset 0 1px 0 #303134;
+}
+.btn.on {
+  background: var(--button-lit-bg); color: var(--button-lit-text); text-shadow: 0 0 8px var(--button-lit-glow);
+  box-shadow: 0 0 10px rgba(45, 255, 138, .25), 0 2px 0 #000;
+}
+.btn.sq { width: 40px; height: 40px; padding: 0; font-size: 22px; }
+.lbl { font-weight: 700; font-size: 14px; letter-spacing: .05em; text-transform: uppercase; color: var(--label); }
+.row { display: flex; align-items: center; gap: 10px; }
+
+.wordmark { position: absolute; left: 32px; top: 26px; font-weight: 700; font-size: 34px; letter-spacing: .06em; }
+.wordmark b { color: var(--accent); font-weight: 700; }
+
+/* Green two-line dot display */
+.display {
+  position: absolute; right: 32px; top: 26px; width: 360px; height: 72px;
+  background: var(--display-bg); border: 1px solid var(--box); border-radius: 3px; padding: 8px 12px;
+  font: 900 20px/1.25 var(--font-display); color: var(--display-text);
+  text-shadow: 0 0 6px rgba(194, 255, 92, .55); letter-spacing: .04em; white-space: pre; overflow: hidden;
+  background-image: radial-gradient(rgba(194, 255, 92, .06) 1px, transparent 1px); background-size: 3px 3px;
+}
+.display .line { min-height: 25px; }
+
+/* Master tempo: red seven-segment display, nudge buttons, wheel */
+.tempo {
+  position: absolute; right: 32px; top: 128px; width: 360px;
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+}
+.tempo .row { justify-content: center; }
+.seg7 {
+  width: 100%; height: 64px; background: var(--tempo-bg); color: var(--tempo-text); border-radius: 4px;
+  font: 700 40px/64px var(--font-tempo); text-align: right; padding: 0 16px; letter-spacing: .02em;
+  text-shadow: 0 0 6px rgba(255, 74, 48, .6); box-shadow: inset 0 0 0 1px #3a1410; cursor: ns-resize;
+}
+
+/* START/STOP and the 16 pads */
+.transport {
+  position: absolute; left: 32px; top: 790px; width: 140px;
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+}
+.ss {
+  width: 120px; height: 74px; border-radius: 6px; border: 0; cursor: pointer;
+  background: #17301f; box-shadow: inset 0 0 0 2px #2a2a2a, 0 2px 0 #000;
+}
+.ss.on { background: radial-gradient(circle, #8dffc6 0%, #19c56c 55%, #0b6a39 100%); box-shadow: 0 0 22px rgba(45, 255, 138, .6); }
+.wtab {
+  background: var(--label); color: #000; font-weight: 700; font-size: 13px; padding: 2px 8px;
+  border-radius: 1px; text-transform: uppercase;
+}
+.steps { position: absolute; left: 200px; right: 32px; top: 760px; display: flex; flex-direction: column; gap: 8px; }
+.pnums, .pads { display: grid; grid-template-columns: repeat(16, 1fr); gap: 10px; }
+.pnums { text-align: center; font-weight: 700; font-size: 15px; }
+.pad {
+  height: 104px; border-radius: 4px; --gc: var(--pad-g1);
+  background: color-mix(in srgb, var(--gc) 20%, #121212); box-shadow: inset 0 0 0 2px #262626, 0 2px 0 #000;
+}
+.pad.g2 { --gc: var(--pad-g2); }
+.pad.g3 { --gc: var(--pad-g3); }
+.pad.g4 { --gc: var(--pad-g4); }
+.pad.on { background: radial-gradient(circle at 50% 45%, #fff 0%, var(--gc) 60%); box-shadow: 0 0 18px var(--gc); }
+.pad.ph { outline: 3px solid var(--playhead); outline-offset: 2px; }

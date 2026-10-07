@@ -20,7 +20,7 @@ source "$VENV_DIR/bin/activate"
 # Install/upgrade dependencies
 echo "Installing dependencies..."
 pip install --upgrade pip -q
-pip install -r requirements.txt -q
+pip install -e ".[dev]" -q
 
 # Run tests
 echo "Running tests..."

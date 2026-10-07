@@ -1,0 +1,26 @@
+/* Bundled fonts, all SIL OFL 1.1 (licences and sources in ../fonts/SOURCES.txt).
+   Nothing depends on system fonts, so every OS draws the same panel. */
+@font-face {
+  font-family: "Barlow Condensed";
+  font-weight: 500;
+  font-style: normal;
+  src: url("../fonts/BarlowCondensed-Medium.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Barlow Condensed";
+  font-weight: 700;
+  font-style: normal;
+  src: url("../fonts/BarlowCondensed-Bold.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Doto";
+  font-weight: 900;
+  font-style: normal;
+  src: url("../fonts/Doto-Black.woff2") format("woff2");
+}
+@font-face {
+  font-family: "DSEG7 Classic";
+  font-weight: 700;
+  font-style: normal;
+  src: url("../fonts/DSEG7Classic-Bold.woff2") format("woff2");
+}

@@ -1,0 +1,62 @@
+/* Design tokens: the locked palette and type of the panel, defined once.
+   Components read these custom properties; nothing else hard-codes a colour. */
+:root {
+  /* Panel */
+  --panel: #0b0b0c;
+  --letterbox: #000000;
+  --label: #f2f2f2;
+  --dim: #c9c9cc;
+  --rule: #f2f2f2;           /* thin dividers between strips and top-row sections */
+  --box: #2a2a2d;
+  --knob-cap: #141416;
+  --knob-ring: #3b3b3f;
+
+  /* Accent: lit buttons, morph ring */
+  --accent: #22e384;
+  --button: #1c1d1f;
+  --button-text: #18a95d;
+  --button-lit-bg: #10291b;
+  --button-lit-text: #66ffb3;
+  --button-lit-glow: #2dff8a;
+  --mute-text: #ff4a4a;
+
+  /* Fader lights, channels 1-8 (red to violet) */
+  --ch1: #ff2d2d;
+  --ch2: #ff7a1f;
+  --ch3: #c4ff3a;
+  --ch4: #2dff7a;
+  --ch5: #24e0ff;
+  --ch6: #2f7bff;
+  --ch7: #7a55ff;
+  --ch8: #d24dff;
+
+  /* Modulation sources: saturated, solid lines */
+  --lfo1: #3cc8ff;
+  --lfo2: #ff5fa8;
+  --pump: #d9e04a;
+
+  /* MIDI cues: CC badge, blinking LED, pickup ghost marker */
+  --midi: #ffb020;
+
+  /* Pad beat groups: steps 1-4, 5-8, 9-12, 13-16 */
+  --pad-g1: #ff2e2e;
+  --pad-g2: #ff7650;
+  --pad-g3: #e4ef9c;
+  --pad-g4: #cbc8ff;
+  --playhead: #ffffff;
+
+  /* Displays */
+  --display-bg: #040704;
+  --display-text: #c2ff5c;   /* green two-line dot display */
+  --tempo-bg: #120706;
+  --tempo-text: #ff4a30;     /* red seven-segment tempo display */
+
+  /* Type (bundled SIL OFL fonts, see fonts/SOURCES.txt) */
+  --font-label: "Barlow Condensed", "DejaVu Sans Condensed", "Arial Narrow", sans-serif;
+  --font-display: "Doto", "DejaVu Sans Mono", monospace;
+  --font-tempo: "DSEG7 Classic", "DejaVu Sans Mono", monospace;
+
+  /* Stage: the panel's design size, scaled to the window */
+  --stage-width: 1600px;
+  --stage-height: 1000px;
+}

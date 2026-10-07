@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Pythonic JS specs</title>
+<!-- The same node:test-style spec files run here (inside QtWebEngine, from
+     pytest: tests/web/test_js_specs.py) and, for pure modules, under
+     `node --test pythonic/web/static/test/*.test.js`. *.test.js = pure logic;
+     *.engine-spec.js = needs the DOM, so only the engine runs it. -->
+<script type="importmap">
+{ "imports": { "node:test": "./shim/node-test.js", "node:assert/strict": "./shim/node-assert.js",
+               "node:assert": "./shim/node-assert.js" } }
+</script>
+<script type="module">
+import { registered } from './shim/node-test.js';
+globalThis.__pythonicNoBoot = true;
+const specs = new URLSearchParams(location.search).getAll('spec');
+const results = [];
+for (const spec of specs) {
+  const start = registered.length;
+  try {
+    await import(`./${spec}`);
+  } catch (e) {
+    results.push({ spec, name: '(import)', ok: false, error: String(e && e.stack || e) });
+    continue;
+  }
+  for (const { name, fn } of registered.slice(start)) {
+    try {
+      await fn();
+      results.push({ spec, name, ok: true });
+    } catch (e) {
+      results.push({ spec, name, ok: false, error: String(e && e.stack || e) });
+    }
+    document.body.replaceChildren();
+  }
+}
+window.__results = results;
+</script>
+</head>
+<body></body>
+</html>

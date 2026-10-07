@@ -40,7 +40,7 @@ Perfect for producers, sound designers, and developers interested in audio synth
 
 ### Prerequisites
 
-- **Python 3.8+** (tested up to Python 3.12)
+- **Python 3.10+** (tested up to Python 3.12)
 - **pip** package manager
 - **MIDI interface** (optional, for MIDI control)
 
@@ -67,8 +67,11 @@ source venv/bin/activate
 3. **Install dependencies**
 
 ```bash
-pip install -r requirements.txt
+pip install -e .            # the app; add ".[dev]" for the tests, ".[ml]" for the AI generators
 ```
+
+This installs PySide6 with QtWebEngine for the web interface (about 650 MB),
+except on Windows ARM64, where the tkinter interface is used.
 
 > **Note**: If you encounter issues with `mido` or `python-rtmidi`, they're only required for MIDI functionality. The synth works without them.
 
@@ -77,14 +80,14 @@ pip install -r requirements.txt
 ### Run the Application
 
 ```bash
-python run.py
+pythonic                # the web interface (default)
+pythonic --ui tk        # the tkinter interface
+pythonic --devtools     # web interface with Chromium DevTools on http://127.0.0.1:9222
 ```
 
-Or use the provided shell script:
-
-```bash
-./run.sh
-```
+`python run.py` and `./run.sh` take the same arguments. If the web interface
+is asked for but PySide6 is missing, the tkinter interface starts and offers
+to install it.
 
 On first launch, Pythonic automatically creates:
 - Configuration directory for preferences
@@ -181,9 +184,9 @@ pythonic/
 │   └── test_reference_wavs.py # Audio comparison tests
 ├── test_patches/          # Test presets and analysis
 ├── tools/                 # Development utilities
-├── run.py                 # Application entry point
+├── run.py                 # Application entry point (same arguments as `pythonic`)
 ├── run.sh                 # Shell launcher script
-└── requirements.txt       # Python dependencies
+└── pyproject.toml         # Package, dependencies and extras ([ml], [dev])
 ```
 
 ## 🔊 Signal Flow
@@ -231,12 +234,12 @@ git lfs install
 git lfs pull
 ```
 
-**Option A — In-app install**: Open the generator dialog (Preset menu → *AI Drum Generator...*) and click **Install ML Support**. This runs `pip install -r requirements-ml.txt` in the current environment after confirmation.
+**Option A — In-app install**: Open the generator dialog (Preset menu → *AI Drum Generator...*) and click **Install ML Support**. This runs `pip install torch` (the `[ml]` extra) in the current environment after confirmation.
 
 **Option B — Manual install**:
 
 ```bash
-pip install -r requirements-ml.txt
+pip install -e ".[ml]"
 ```
 
 > For GPU acceleration, install the appropriate CUDA/ROCm PyTorch variant first following [pytorch.org](https://pytorch.org/get-started/locally/). The CPU-only build works fine for inference.

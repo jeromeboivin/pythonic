@@ -1,0 +1,16 @@
+Bundled fonts of the web interface (all SIL Open Font License 1.1)
+
+  BarlowCondensed-Medium.woff2  Barlow Condensed 500 (labels, buttons)
+  BarlowCondensed-Bold.woff2    Barlow Condensed 700
+  Doto-Black.woff2              Doto 900 (green dot display)
+  DSEG7Classic-Bold.woff2       DSEG7 Classic Bold (red tempo display)
+
+Licences: OFL-BarlowCondensed.txt, OFL-Doto.txt, OFL-DSEG.txt
+
+Upstream: Barlow Condensed and Doto from the Google Fonts library
+(github.com/google/fonts, ofl/barlowcondensed and ofl/doto, Latin subset as
+packaged by Fontsource); DSEG from github.com/keshikan/DSEG (v0.46).
+
+`python tools/fetch_fonts.py` downloads the files into this folder; commit
+them with their licences. Until they are here the panel falls back to system
+fonts (see css/fonts.css and css/tokens.css).
