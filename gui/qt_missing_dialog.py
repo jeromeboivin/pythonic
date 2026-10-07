@@ -5,11 +5,15 @@ Windows ARM64, where no QtWebEngine exists) installs it with pip, then asks
 for a restart.
 """
 
+import queue
 import threading
 import tkinter as tk
 from tkinter import messagebox
 
 from pythonic.install import EXTRAS, install_extra, windows_arm64
+
+
+POLL_MS = 100  # how often the Tk thread looks for the install's result
 
 
 def explanation(reason, arm64=None):
@@ -45,15 +49,28 @@ def show_qt_missing(root, reason, arm64=None):
         install = tk.Button(buttons, text='Install', width=10)
         install.pack(side='right', padx=6)
 
+        lines = []
+        results = queue.Queue()  # the worker's only way back: polled on the Tk thread
+
         def run_install():
             install.config(state='disabled', text='Installing...')
-            lines = []
+            del lines[:]
 
             def work():
-                ok = install_extra('qt', lines.append)
-                dialog.after(0, lambda: finished(ok))
+                results.put(install_extra('qt', lines.append))
 
             threading.Thread(target=work, daemon=True).start()
+            dialog.after(POLL_MS, wait)
+
+        def wait():
+            if not dialog.winfo_exists():
+                return
+            try:
+                ok = results.get_nowait()
+            except queue.Empty:
+                dialog.after(POLL_MS, wait)
+                return
+            finished(ok)
 
         def finished(ok):
             if ok:
