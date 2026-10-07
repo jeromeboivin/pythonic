@@ -29,6 +29,7 @@
     "midi.*": "MIDI LED, MIDI learn and the setup sheet MIDI tab (MIDI slice)",
     "audio.*": "setup sheet audio tab (setup slice)",
     "pref.audio.*": "setup sheet audio tab (setup slice)",
+    "ai.*": "AI drum generator rack page (AI slice)",
     "pref.ai.*": "AI drum generator page and setup sheet AI tab (AI slice)",
     "pref.smoothing_ms": "setup sheet synthesis tab (setup slice)",
     "pref.preset_folder": "preset menu: choose folder (preset slice)",

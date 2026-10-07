@@ -105,6 +105,7 @@ import sys
 import threading
 
 from pythonic.drum_generator import DRUM_TYPES, SLOT_MAP, infer_drum_type
+from pythonic.install import pip_command
 from pythonic.pattern_manager import PatternManager
 from pythonic.preset_manager import (apply_drum_patch_to_channel, channel_to_raw_patch,
                                      convert_drum_patch_data)
@@ -124,7 +125,6 @@ BUNDLED_MODELS = {
     'patch': os.path.join(_ROOT, 'drum_cvae_best.pt'),
     'pattern': os.path.join(_ROOT, 'drum_patterns', 'pattern_cvae_best.pt'),
 }
-REQUIREMENTS = os.path.join(_ROOT, 'requirements-ml.txt')
 WORKER_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ai_worker.py')
 NO_EXTRAS = ('the ML extras are not installed (torch): install them with '
              'ai.install, or run: {command}')
@@ -275,7 +275,7 @@ class Ai:
         self._worker = (WorkerProcess(worker, on_exit=self._on_worker_exit)
                         if worker is not None else None)
         if install is _DEFAULT:
-            install = [sys.executable, '-m', 'pip', 'install', '-r', REQUIREMENTS]
+            install = pip_command('ml')  # the [ml] extra's packages
         self._install_command = list(install)
         self._available = self._worker is not None and self._extras()
         self._lock = threading.RLock()

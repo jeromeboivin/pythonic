@@ -93,7 +93,7 @@ def test_without_the_ml_extras_the_ai_is_unavailable_and_says_how_to_install(mak
     assert core.get('ai.available') is False
     assert core.get('ai.state') == 'unavailable'
     command = core.get('ai.install_command')
-    assert 'pip install' in command and 'requirements-ml.txt' in command
+    assert 'pip install' in command and 'torch' in command
     event = act(core, 'ai.generate', channel=1)
     assert event['status'] == 'error' and 'pip install' in event['error']
 

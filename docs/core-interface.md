@@ -231,7 +231,7 @@ sounds as **one undo step**; `ai.revert` puts the old sounds back.
 | Address | Kind | What |
 |---|---|---|
 | `ai.available` | bool | the ML extras (torch) are installed, found without importing them |
-| `ai.install_command` | str | the command that installs them (`pip install -r requirements-ml.txt` with this Python) |
+| `ai.install_command` | str | the command that installs them (`pip install` of the `[ml]` extra's packages with this Python) |
 | `ai.installing` | bool | `ai.install` is running |
 | `ai.state` | enum | `unavailable`, `idle`, `installing`, `loading`, `generating` |
 | `ai.models` | json | `{'patch': m, 'pattern': m}`, `m = {path, bundled, status, error, sampling}`; `path` is `pref.ai.<kind>_model` if the file exists, else the bundled checkpoint, else None; `status` `missing`, `unloaded`, `loading`, `loaded`, `error` |
