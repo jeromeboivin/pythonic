@@ -1,10 +1,10 @@
 // The edit rack drawer under the face (map decisions #7, #8, #13): it shows
-// one page at a time. Its base page is the selected channel's edit rack (the
-// edit rack slice sets it); other pages (the ⊞ matrix, later the PO-32 and AI
+// one page at a time. Its base page is the selected channel's edit rack
+// (rack.js sets it); other pages (the ⊞ matrix, later the PO-32 and AI
 // pages) replace it until they are hidden:
 //
 //   const drawer = createDrawer(slotElement);
-//   drawer.setBase(rackElement);                  // the edit rack slice
+//   drawer.setBase(rackElement);                  // the edit rack (rack.js)
 //   drawer.show('matrix', element, { onHide });   // replaces the current page
 //   drawer.hide('matrix');                        // back to the base page
 //   drawer.toggle('matrix', () => element, opts); // show, or hide when shown
@@ -13,9 +13,9 @@
 //
 // Opening a page opens the drawer when it was closed, and hiding the page
 // restores the closed state. The drawer's open / closed state belongs to the
-// edit rack slice (window shrink, saved preference): it plugs in with
-// drawer.setOpener({ isOpen: () => bool, setOpen: (open) => void }). Until
-// then the drawer is always open.
+// edit rack (rack.js: window shrink, saved preference), plugged in with
+// drawer.setOpener({ isOpen: () => bool, setOpen: (open) => void }); without
+// one the drawer is always open.
 
 export function createDrawer(slot) {
   let base = null;
@@ -37,7 +37,7 @@ export function createDrawer(slot) {
       base = element;
       if (!page) showBase();
     },
-    /** Plug in the drawer's open / closed state (the edit rack slice). */
+    /** Plug in the drawer's open / closed state (the edit rack, rack.js). */
     setOpener(next) { opener = next; },
     /** Show a page in place of the current one; opens the drawer if closed. */
     show(name, element, { onHide = null } = {}) {

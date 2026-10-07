@@ -8,10 +8,12 @@
 // Extension slots for later slices (elements with data-slot):
 //   step-entry  left column: step-mode buttons, last step, all ch, follow, matrix (steps.js)
 //   patterns    left column: patterns A-L, chain, menu, copy, paste (patterns.js)
-//   preset, rack-toggle, po32, setup   right column buttons (shown as placeholders)
+//   preset, po32, setup   right column buttons (shown as placeholders)
+//   rack-toggle           the edit rack button (rack.js)
 //   steps       bottom row: page bars, step numbers and the 16 pads (steps.js)
 //   rack        the edit rack drawer under the face: panel.drawer (drawer.js) shows
-//               one page at a time (the ⊞ matrix, the edit rack as its base page)
+//               one page at a time (the ⊞ matrix, the edit rack as its base page,
+//               rack.js, which also owns the rack-toggle button and the open state)
 // A slice fills a slot (replaceChildren) with px-* controls; they bind to the
 // panel's control context on insertion (panel.ctx).
 
@@ -19,6 +21,7 @@ import { guessDrumType } from './drum-type.js';
 import { createControlContext, provideContext } from './controls.js';
 import { createDrawer } from './drawer.js';
 import { mountPatterns } from './patterns.js';
+import { mountRack } from './rack.js';
 import { pageRange } from './steps-logic.js';
 import { mountStepRow, selectedPattern } from './steps.js';
 import { formatValue } from './values.js';
@@ -384,6 +387,7 @@ export function mountPanel(stage, { store, client, meta = {} }) {
   const steps = mountStepRow({ store, client, ctx, display, slot, drawer,
     onView: (next) => { view = next; baseDisplay(); } });
   const patterns = mountPatterns({ store, ctx, display, act, slot, selected: () => selectedPattern(store) });
+  const rack = mountRack({ store, client, ctx, display, act, stage, slot, drawer });
   baseDisplay();
 
   return {
@@ -397,11 +401,14 @@ export function mountPanel(stage, { store, client, meta = {} }) {
     steps,
     /** The pattern buttons and menu (patterns.js): addMenuItems, openMenu. */
     patterns,
+    /** The edit rack (rack.js): open, setOpen, arm, disarm, assigning. */
+    rack,
     /** Run a verb; its error shows on the display. */
     act,
     destroy() {
       steps.destroy();
       patterns.destroy();
+      rack.destroy();
       offs.forEach((off) => off());
       ctx.destroy();
       stage.removeEventListener('px-touch', onTouch);

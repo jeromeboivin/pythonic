@@ -20,8 +20,20 @@ def matching(name, patterns):
     return [p for p in patterns if fnmatch.fnmatchcase(name, p)]
 
 
+def bound_on_every_channel(panel):
+    """The addresses bound with each channel selected in turn (the edit rack
+    binds the selected channel's sound)."""
+    bound = set()
+    for n in range(1, 9):
+        panel.core.post_change('global.channel', n)
+        panel.wait_js("document.querySelector('px-knob[data-suffix=\"osc.freq\"]').dataset.address"
+                      f" === 'ch{n}.osc.freq'")
+        bound |= panel.bound_addresses()
+    return bound
+
+
 def test_every_address_is_bound_or_listed_absent(panel, core_table):
-    bound = panel.bound_addresses()
+    bound = bound_on_every_channel(panel)
     patterns = absent_patterns()
     names = set(core_table['describe'])
 
@@ -35,6 +47,16 @@ def test_every_address_is_bound_or_listed_absent(panel, core_table):
     assert not stale, f'bound addresses still listed as absent: {stale}'
     unused = sorted(p for p in patterns if not any(fnmatch.fnmatchcase(n, p) for n in names))
     assert not unused, f'absent patterns that match no address: {unused}'
+
+
+def test_the_rack_binds_every_sound_address_of_every_channel(panel, core_table):
+    bound = bound_on_every_channel(panel)
+    sound = {name for name in core_table['describe']
+             if name.startswith('ch') and name.split('.')[1] in
+             ('osc', 'noise', 'mix', 'eq', 'fx', 'vel', 'lfo1', 'lfo2', 'pump')}
+    assert len(sound) == 8 * 59
+    assert sound <= bound
+    assert 'global.edit_all' in bound
 
 
 def test_the_face_binds_its_controls(panel):
