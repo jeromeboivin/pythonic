@@ -76,7 +76,7 @@ px-list .lbox::after, .lbox::after { content: "▾"; position: absolute; right: 
 px-toggle .cc { right: -4px; top: -12px; }
 
 .px-menu {
-  position: absolute; z-index: 30; background: #0e0e10; border: 1px solid #3a3c40; border-radius: 6px; padding: 4px;
+  position: absolute; z-index: 60; background: #0e0e10; border: 1px solid #3a3c40; border-radius: 6px; padding: 4px;
   box-shadow: 0 8px 30px rgba(0, 0, 0, .7); min-width: 120px;
 }
 .px-menu .it { padding: 5px 12px; font-size: 13px; cursor: pointer; border-radius: 3px; white-space: nowrap; }
@@ -85,7 +85,7 @@ px-toggle .cc { right: -4px; top: -12px; }
 .px-menu .it.dis { color: #55575b; cursor: default; }
 .px-menu hr { border: 0; border-top: 1px solid #2a2a2d; margin: 3px 4px; }
 .px-menu.list .it { text-transform: uppercase; font-weight: 700; }
-.px-entry { position: absolute; z-index: 31; }
+.px-entry { position: absolute; z-index: 61; }
 .px-entry input {
   width: 90px; font: 700 14px var(--font-label); background: #000; color: #fff;
   border: 1px solid var(--accent); border-radius: 3px; padding: 3px 6px; outline: none;
@@ -337,3 +337,45 @@ px-target.armed .btn.dest { background: var(--src); color: #000; text-shadow: no
 .cell .sub i { width: 4px; height: 4px; }
 .cell .bar { left: 3px; width: 4px; top: 3px; bottom: 3px; }
 .cell .pv { font-size: 11px; top: 50%; transform: translateY(-50%); }
+
+/* ------------------------------------------------------------ overlay sheets (sheet.js)
+   A layer dims the stage; the panel plays on behind but takes no input.
+   Menus (z 60) open above sheets (z 40+), so lists inside a sheet work. */
+.sheet-layer { position: absolute; inset: 0; z-index: 40; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, .55); }
+.sheet {
+  background: #0d0d0f; border: 1px solid #3a3a3e; border-radius: 10px; box-shadow: 0 20px 60px rgba(0, 0, 0, .8);
+  padding: 12px 14px; max-height: calc(100% - 32px); overflow: auto;
+}
+.sheet.alert { padding: 0; border: 0; background: transparent; box-shadow: none; overflow: visible; }
+.alert-sheet {
+  background: #0d0d0f; border: 1px solid #3a3a3e; border-top: 3px solid var(--accent); border-radius: 10px;
+  padding: 14px 16px; box-shadow: 0 20px 60px rgba(0, 0, 0, .8);
+}
+.alert-sheet.tone-error { border-top-color: var(--error); }
+.alert-title { font-weight: 700; font-size: 16px; margin-bottom: 8px; color: var(--label); }
+.alert-text { font-size: 13px; color: #d0d0d2; margin-bottom: 14px; line-height: 1.35; white-space: pre-wrap; word-break: break-word; user-select: text; }
+.alert-buttons { display: flex; justify-content: flex-end; gap: 8px; }
+.alert-buttons .btn { padding: 7px 16px; min-width: 70px; }
+
+/* ------------------------------------------------------------ preset menu (presets.js) */
+.px-menu.preset-menu { display: flex; gap: 6px; padding: 6px; }
+.preset-menu .pm-list { width: 270px; display: flex; flex-direction: column; gap: 3px; border-right: 1px solid #2a2a2d; padding-right: 6px; }
+.preset-menu .pm-h { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; padding: 3px 6px 1px; }
+.preset-menu .pm-h .pm-folder { flex: 1; color: var(--button-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: none; letter-spacing: 0; font-size: 12px; }
+.preset-menu .pm-files { max-height: 300px; overflow-y: auto; }
+.preset-menu .pm-recent { max-height: 132px; overflow-y: auto; }
+.preset-menu .pm-files .it, .preset-menu .pm-recent .it { overflow: hidden; text-overflow: ellipsis; padding: 3px 8px; font-size: 13px; }
+.preset-menu .pm-recent .it small { color: #6c6e72; margin-left: 6px; font-size: 11px; }
+.preset-menu .pm-empty { color: #55575b; font-size: 12px; padding: 3px 8px; }
+.preset-menu .pm-cmds { min-width: 230px; }
+.preset-menu .pm-cmds .it { padding: 3px 12px; font-size: 13px; }
+.preset-menu .pm-cmds .it.head { color: var(--dim); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; cursor: default; }
+.preset-menu .pm-cmds .it.head:hover { background: none; }
+
+/* ------------------------------------------------------------ export audio popover (exports.js) */
+.px-menu.tail-pop { padding: 10px 12px; width: 380px; display: flex; flex-direction: column; gap: 10px; }
+.tail-pop .tp-title { font-size: 12px; font-weight: 700; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
+.tail-pop .tp-opts { display: flex; gap: 4px; }
+.tail-pop .tp-opts .btn { flex: 1; }
+.tail-pop .tp-note { font-size: 11px; color: #8a8a8d; }
+.tail-pop .tp-go { display: flex; justify-content: flex-end; }

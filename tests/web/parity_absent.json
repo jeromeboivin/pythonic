@@ -1,7 +1,6 @@
 {
   "_about": "Parity guard of the web front-end (tests/web/test_parity_guard.py). Every address the core's describe() lists must be bound to a control on the page (an element with data-address; the edit rack binds the selected channel's, so the guard selects each channel in turn) or match a pattern below, with the reason it is absent. Patterns are fnmatch globs. A slice that binds an address removes it from here (the guard fails while a bound address is still listed, and on patterns that match nothing).",
   "absent": {
-    "preset.*": "preset display, browser and menu (preset slice)",
     "midi.device": "setup sheet MIDI tab (setup slice)",
     "midi.synced_tempo": "setup sheet MIDI tab (setup slice)",
     "midi.base_note": "setup sheet MIDI tab (setup slice)",
@@ -14,8 +13,6 @@
     "ai.*": "AI drum generator rack page (AI slice)",
     "pref.ai.*": "AI drum generator page and setup sheet AI tab (AI slice)",
     "pref.smoothing_ms": "setup sheet synthesis tab (setup slice)",
-    "pref.preset_folder": "preset menu: choose folder (preset slice)",
-    "pref.recent_files": "preset menu: recent files (preset slice)",
     "po32.*": "PO-32 rack page, transfer and import tabs (PO-32 slice)",
     "pref.po32.*": "PO-32 rack page import tab: keep recordings (PO-32 slice)"
   }

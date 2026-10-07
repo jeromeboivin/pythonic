@@ -84,9 +84,9 @@ function sectionElement(section) {
 /**
  * Build the rack into the drawer and wire the right column's edit rack
  * button. Returns { element, open, setOpen(open, {save}), arm(source),
- * disarm(), assigning, destroy() }.
+ * disarm(), assigning, patchItems(), destroy() }.
  */
-export function mountRack({ store, client, ctx, display, act, stage, slot, drawer }) {
+export function mountRack({ store, client, ctx, display, stage, slot, drawer, files }) {
   const offs = [];
   const watch = (address, fn, options) => { const off = store.watch(address, fn, options); offs.push(off); return off; };
   const selected = () => store.value('global.channel') || 1;
@@ -241,38 +241,30 @@ export function mountRack({ store, client, ctx, display, act, stage, slot, drawe
   offs.push(drawer.onChange(() => disarm()));
 
   // ------------------------------------------------------------ drum patch menu
-  const finishSave = (verb, args, label) => act(verb, args).then((event) => {
-    const r = event.result || {};
-    if (event.status !== 'done') return;
-    if (r.saved) { display.show(label, 'saved'); return; }
-    if (!r.exists) return;
-    const box = patchMenu.getBoundingClientRect();
-    ctx.openMenu([
-      [`${String(r.path || '').split(/[\\/]/).pop()} exists`, null],
-      ['Replace it', () => finishSave(verb, { ...args, overwrite: true }, label)],
-      ['Cancel', () => {}],
-    ], box.left, box.bottom + 2);
-  });
+  // Also in the PRESET menu (presets.js), so it stays reachable with the rack closed
   const patchName = (n) => String(store.value(`ch${n}.name`) || `channel ${n}`);
   const patchItems = () => {
     const n = selected();
+    const label = `CH${n} DRUM PATCH`;
     return [
-      [`Load drum patch into CH${n}…`, async () => {
+      [`load drum patch into CH${n}…`, async () => {
         const path = await client.openFile({ title: `Load drum patch into channel ${n}`,
-          filters: ['Drum patches (*.mtdrum)', 'All files (*)'] });
+          filters: ['Drum patches (*.mtdrum)', 'All files (*)'], folder: store.value('pref.preset_folder') });
         if (!path) return;
-        const event = await act('drum_patch.load', { path, channel: n });
-        if (event.status === 'done') display.show(`CH${n} DRUM PATCH`, String(event.result.name || '').toUpperCase());
+        const r = await files.run('drum_patch.load', { path, channel: n },
+          { label, failTitle: 'Could not load the drum patch' });
+        if (r) display.show(label, String(r.name || '').toUpperCase());
       }],
-      [`Save drum patch of CH${n}…`, async () => {
+      [`save drum patch of CH${n}…`, async () => {
         const path = await client.saveFile({ title: `Save drum patch of channel ${n}`,
-          filters: ['Drum patches (*.mtdrum)'], name: `${patchName(n)}.mtdrum`, suffix: 'mtdrum' });
-        if (path) finishSave('drum_patch.save', { path, channel: n }, `CH${n} DRUM PATCH`);
+          filters: ['Drum patches (*.mtdrum)'], name: `${patchName(n)}.mtdrum`, suffix: 'mtdrum',
+          folder: store.value('pref.preset_folder') });
+        if (path) files.save('drum_patch.save', { path, channel: n }, { label, failTitle: 'Could not save the drum patch' });
       }],
-      [`Export CH${n} hit as WAV…`, async () => {
+      [`export CH${n} hit as WAV…`, async () => {
         const path = await client.saveFile({ title: `Export channel ${n} as WAV`,
           filters: ['WAV audio (*.wav)'], name: `${patchName(n)}.wav`, suffix: 'wav' });
-        if (path) finishSave('export.drum_wav', { path, channel: n }, `CH${n} WAV`);
+        if (path) files.save('export.drum_wav', { path, channel: n }, { label: `CH${n} WAV`, failTitle: 'Could not export the WAV file' });
       }],
     ];
   };
@@ -320,6 +312,8 @@ export function mountRack({ store, client, ctx, display, act, stage, slot, drawe
     arm,
     disarm,
     get assigning() { return armed; },
+    /** The drum patch menu's entries for the selected channel ([label, action]). */
+    patchItems,
     destroy() {
       offs.forEach((off) => off());
       channelOffs.forEach((off) => off());

@@ -19,6 +19,7 @@
   --button-lit-text: #66ffb3;
   --button-lit-glow: #2dff8a;
   --mute-text: #ff4a4a;
+  --error: #ff4a4a;          /* the alert sheet's top edge for errors */
 
   /* Fader lights, channels 1-8 (red to violet) */
   --ch1: #ff2d2d;

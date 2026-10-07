@@ -6,6 +6,7 @@ assert.ok = assert;
 assert.equal = (a, b, message) => { if (!Object.is(a, b)) fail(message ?? `${show(a)} !== ${show(b)}`); };
 assert.notEqual = (a, b, message) => { if (Object.is(a, b)) fail(message ?? `${show(a)} === ${show(b)}`); };
 assert.deepEqual = (a, b, message) => { if (show(a) !== show(b)) fail(message ?? `${show(a)} != ${show(b)}`); };
+assert.match = (s, re, message) => { if (!re.test(s)) fail(message ?? `${show(s)} does not match ${re}`); };
 assert.throws = (fn, message) => {
   try { fn(); } catch { return; }
   fail(message ?? 'did not throw');

@@ -8,7 +8,8 @@
 // Extension slots for later slices (elements with data-slot):
 //   step-entry  left column: step-mode buttons, last step, all ch, follow, matrix (steps.js)
 //   patterns    left column: patterns A-L, chain, menu, copy, paste (patterns.js)
-//   preset, po32, setup   right column buttons (shown as placeholders)
+//   preset-prev, preset-next, preset   the PRESET buttons and menu (presets.js)
+//   po32, setup           open the PO-32 page and the setup sheet (panel.openPage)
 //   rack-toggle           the edit rack button (rack.js)
 //   steps       bottom row: page bars, step numbers and the 16 pads (steps.js)
 //   rack        the edit rack drawer under the face: panel.drawer (drawer.js) shows
@@ -16,12 +17,26 @@
 //               rack.js, which also owns the rack-toggle button and the open state)
 // A slice fills a slot (replaceChildren) with px-* controls; they bind to the
 // panel's control context on insertion (panel.ctx).
+//
+// Pages: panel.registerPage(name, open) registers what opens a secondary
+// feature (open(options): show a drawer page or a sheet); panel.openPage(name,
+// options) opens it from the PO-32 and SETUP buttons, the PRESET menu, the
+// MIDI LED and a control's right-click ▸ CC mappings. Names: 'po32' ({tab:
+// 'transfer' | 'import'}), 'ai', 'setup' ({tab: 'audio' | 'midi' | 'synthesis'
+// | 'ai'}). An unregistered page says so on the alert sheet.
+// Sheets: panel.sheets (sheet.js) shows overlay sheets and the alert sheet;
+// error events nobody waits for go to the display and, when they need
+// reading, to the alert sheet (reportError).
 
 import { guessDrumType } from './drum-type.js';
 import { createControlContext, provideContext } from './controls.js';
 import { createDrawer } from './drawer.js';
+import { mountExports } from './exports.js';
+import { createFileFlows } from './files.js';
 import { mountPatterns } from './patterns.js';
 import { mountRack } from './rack.js';
+import { mountPresets } from './presets.js';
+import { createSheets } from './sheet.js';
 import { pageRange } from './steps-logic.js';
 import { mountStepRow, selectedPattern } from './steps.js';
 import { formatValue } from './values.js';
@@ -74,6 +89,21 @@ export function ctrlAddress(setup, channel) {
 }
 
 /** The addresses the face shows (main.js reads every registered address's metadata). */
+/** Pages a later slice registers (panel.registerPage), with their titles. */
+export const PAGE_TITLES = { po32: 'PO-32 transfer and import', ai: 'AI drum generator', setup: 'Setup' };
+
+/** Error sources whose errors need reading (the alert sheet); others only show on the display. */
+const DISPLAY_ONLY_SOURCES = new Set(['midi', 'po32']);
+
+/** The alert sheet's title for an error nobody waited for. */
+export function errorTitle(event) {
+  const source = event.source || null;
+  if (source === 'audio') return 'Audio problem';
+  if (source === 'ai') return 'The AI generator stopped';
+  if (source === 'core') return 'Something went wrong';
+  return event.verb ? `${event.verb} failed` : 'Something went wrong';
+}
+
 export const PANEL_ADDRESSES = [
   'global.tempo', 'global.swing', 'global.step_rate', 'global.fill_rate', 'global.master',
   'global.channel', 'global.edit_all', 'morph.position', 'morph.learning', 'morph.differs',
@@ -135,12 +165,17 @@ function faceHtml() {
     <div class="col right">
       <px-display id="display"></px-display>
       <div class="rgrid">
-        <button class="btn sq slot" type="button" data-slot="preset-prev" disabled>◀</button>
-        <button class="btn sq slot" type="button" data-slot="preset-next" disabled>▶</button>
-        <button class="btn sq slot w2" type="button" data-slot="preset" disabled>preset</button>
+        <div style="display:contents" data-address="preset.files">
+        <div style="display:contents" data-address="preset.clipboard">
+        <div style="display:contents" data-address="pref.preset_folder">
+        <div style="display:contents" data-address="pref.recent_files">
+        <button class="btn sq slot" type="button" data-slot="preset-prev" data-address="preset.path" disabled>◀</button>
+        <button class="btn sq slot" type="button" data-slot="preset-next" data-address="preset.path" disabled>▶</button>
+        <button class="btn sq slot w2" type="button" data-slot="preset" data-address="preset.name" disabled>preset</button>
+        </div></div></div></div>
         <button class="btn sq slot w2" type="button" data-slot="rack-toggle" disabled>edit rack</button>
-        <button class="btn sq slot" type="button" data-slot="po32" disabled>po-32</button>
-        <button class="btn sq slot" type="button" data-slot="setup" disabled>setup</button>
+        <button class="btn sq" type="button" data-slot="po32" id="po32-button">po-32</button>
+        <button class="btn sq" type="button" data-slot="setup" id="setup-button">setup</button>
         <button class="btn sq red w2" type="button" id="mute-latch">mute</button>
         <button class="btn sq" type="button" id="learn-a" data-verb="morph.learn" data-endpoint="a" data-address="morph.learning">learn a</button>
         <button class="btn sq" type="button" id="learn-b" data-verb="morph.learn" data-endpoint="b" data-address="morph.learning">learn b</button>
@@ -150,7 +185,7 @@ function faceHtml() {
         <px-knob data-address="global.tempo" label="tempo" name="tempo" size="40" wheel-step="1"></px-knob>
         <px-knob data-address="global.swing" label="swing" name="swing" size="32"></px-knob>
       </div>
-      <div class="row midi-row">midi <span class="mled" id="midi-led" data-address="midi.connected"></span></div>
+      <div class="row midi-row" id="midi-row" title="MIDI setup">midi <span class="mled" id="midi-led" data-address="midi.connected"></span></div>
       <div class="col morph-box" id="morph" data-address="morph.differs">
         <px-knob data-address="morph.position" label="sound morph" name="sound morph" size="116"></px-knob>
       </div>
@@ -192,12 +227,33 @@ export function mountPanel(stage, { store, client, meta = {} }) {
     if (event.status === 'error') display.alert(verb.toUpperCase(), event.error);
     return event;
   });
-  // Errors not tied to an action: audio callback, stalled stream, MIDI
-  offs.push(store.onEvent((event) => {
-    if (event.status === 'error' && event.id == null) {
-      display.alert(`${String(event.source || 'core').toUpperCase()} ERROR`, event.error);
-    }
-  }));
+  // ------------------------------------------------------------ sheets and pages
+  let rack = null;
+  const sheets = createSheets(stage, { onShow: () => { ctx.closeMenus(); if (rack) rack.disarm(); } });
+  const files = createFileFlows({ client, display, sheets });
+  const pages = new Map();
+  /** Register what opens a page: open(options); returns a function that unregisters it. */
+  const registerPage = (name, open) => {
+    pages.set(name, open);
+    return () => { if (pages.get(name) === open) pages.delete(name); };
+  };
+  /** Open a page (PO-32, AI, setup); an unregistered one says so on the alert sheet. */
+  const openPage = (name, options = {}) => {
+    const open = pages.get(name);
+    if (open) return open(options);
+    sheets.alert({ title: PAGE_TITLES[name] || name, text: 'Coming soon: this part of the panel is not built yet.',
+      tone: 'ok' });
+    return null;
+  };
+  ctx.openCcMappings = () => openPage('setup', { tab: 'midi' });
+
+  /** Errors nobody waits for: audio callback, stalled stream, MIDI, AI worker, ... */
+  const reportError = (event) => {
+    const source = String(event.source || 'core');
+    display.alert(`${(event.source || event.verb || 'core').toUpperCase()} ERROR`, event.error);
+    if (!DISPLAY_ONLY_SOURCES.has(source)) sheets.alert({ title: errorTitle(event), text: event.error, tone: 'error' });
+  };
+  offs.push(client.onUnclaimedError(reportError));
 
   // ------------------------------------------------------------ strips
   const ctrlKnobs = CHANNELS.map((n) => $(`.strip[data-channel="${n}"] .ctrl`));
@@ -224,7 +280,14 @@ export function mountPanel(stage, { store, client, meta = {} }) {
       strips[i].querySelector('.tab').textContent = name || '';
       chButtons[i].textContent = guessDrumType(name) || String(n);
     });
-    chButtons[i].addEventListener('click', () => {
+    chButtons[i].addEventListener('click', (e) => {
+      if (!muteLatch && store.value('global.channel') === n) {
+        // The selected channel again: hit it (tkinter: 64, Ctrl+click 127)
+        const velocity = e.ctrlKey || e.metaKey ? 127 : 64;
+        client.trigger(n, velocity).catch((err) => console.warn('trigger', err));
+        display.show(`CH${n}`, `hit ${velocity}`);
+        return;
+      }
       if (muteLatch) {
         const muted = !store.value(`ch${n}.mute`);
         ctx.set(`ch${n}.mute`, muted);
@@ -364,6 +427,9 @@ export function mountPanel(stage, { store, client, meta = {} }) {
   let lastActivity = null;
   let ledTimer = null;
   watch('midi.connected', (v) => led.classList.toggle('connected', !!v));
+  $('#midi-row').addEventListener('click', () => openPage('setup', { tab: 'midi' }));
+  $('#po32-button').addEventListener('click', () => openPage('po32'));
+  $('#setup-button').addEventListener('click', () => openPage('setup'));
   offs.push(store.watchReadout('midi', (midi) => {
     const activity = midi ? midi.activity : null;
     if (lastActivity !== null && activity !== lastActivity) {
@@ -387,7 +453,10 @@ export function mountPanel(stage, { store, client, meta = {} }) {
   const steps = mountStepRow({ store, client, ctx, display, slot, drawer,
     onView: (next) => { view = next; baseDisplay(); } });
   const patterns = mountPatterns({ store, ctx, display, act, slot, selected: () => selectedPattern(store) });
-  const rack = mountRack({ store, client, ctx, display, act, stage, slot, drawer });
+  rack = mountRack({ store, client, ctx, display, stage, slot, drawer, files });
+  const presets = mountPresets({ store, client, ctx, display, act, stage, slot, files, openPage,
+    patchItems: rack.patchItems });
+  const exportsMenu = mountExports({ client, ctx, display, stage, patterns, files });
   baseDisplay();
 
   return {
@@ -405,7 +474,24 @@ export function mountPanel(stage, { store, client, meta = {} }) {
     rack,
     /** Run a verb; its error shows on the display. */
     act,
+    /** Overlay sheets and the alert sheet (sheet.js): show, hide, alert, ask. */
+    sheets,
+    /** File verbs with dialogs, progress and the overwrite question (files.js): run, save. */
+    files,
+    /** The PRESET buttons and menu (presets.js). */
+    presets,
+    /** The pattern menu's exports (exports.js): exportMidi, exportAudio, openTailPopover. */
+    exports: exportsMenu,
+    registerPage,
+    openPage,
+    /** Registered page names. */
+    get pages() { return [...pages.keys()]; },
+    /** Show an error nobody waited for (the global handler). */
+    reportError,
     destroy() {
+      sheets.destroy();
+      exportsMenu.destroy();
+      presets.destroy();
       steps.destroy();
       patterns.destroy();
       rack.destroy();

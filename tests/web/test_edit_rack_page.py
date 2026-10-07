@@ -215,8 +215,9 @@ def test_the_drum_patch_menu_loads_and_saves_the_selected_channel(panel, qtbot, 
     panel.wait_js("!!document.querySelector('.px-menu')")
     panel.run("document.querySelectorAll('.px-menu .it')[1].click()")
     panel.answer_dialog(patch)
-    panel.wait_js("[...document.querySelectorAll('.px-menu .it')].some((i) => i.textContent === 'Replace it')")
-    panel.run("[...document.querySelectorAll('.px-menu .it')].find((i) => i.textContent === 'Replace it').click()")
+    panel.wait_js("!!document.querySelector('.sheet-layer[data-sheet=\"alert\"] .alert-sheet.tone-ok')")
+    assert 'kick.mtdrum' in panel.js("document.querySelector('.alert-title').textContent")
+    panel.click('.alert-buttons .btn.primary')  # replace
     qtbot.waitUntil(lambda: len([c for c in core.calls if c[:2] == ('act', 'drum_patch.save')]) == 2)
     saves = [c[2] for c in core.calls if c[:2] == ('act', 'drum_patch.save')]
     assert [s.get('overwrite', False) for s in saves] == [False, True]

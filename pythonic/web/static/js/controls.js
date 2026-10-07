@@ -213,6 +213,7 @@ export function createControlContext({ store, client, meta = {}, root }) {
       items.push(isBendTarget(address, bend, ctx.selectedChannel())
         ? ['Remove pitch bend', () => ctx.set('midi.pitchbend_target', null)]
         : ['Assign pitch bend', () => ctx.set('midi.pitchbend_target', address)]);
+      if (ctx.openCcMappings) items.push(null, ['CC mappings…', () => ctx.openCcMappings()]);
     }
     return ctx.openMenu(items, clientX, clientY);
   };
