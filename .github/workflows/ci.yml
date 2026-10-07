@@ -45,10 +45,15 @@ jobs:
       # tkinter needs a display on Linux: xvfb. The web tests stay offscreen.
       - name: Tests (Linux)
         if: runner.os == 'Linux'
-        run: xvfb-run -a python -m pytest tests -q
+        timeout-minutes: 10
+        run: xvfb-run -a python -m pytest tests -q --ignore=tests/web
       - name: Tests
         if: runner.os != 'Linux'
-        run: python -m pytest tests -q
+        timeout-minutes: 10
+        run: python -m pytest tests -q --ignore=tests/web
+      - name: Web front-end tests
+        timeout-minutes: 8
+        run: python -m pytest tests/web -v
 
       # Headless start-up of both interfaces (no audio device is fine)
       - name: Start-up, web interface
