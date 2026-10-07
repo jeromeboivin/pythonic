@@ -52,14 +52,15 @@ def test_a_tempo_edit_round_trips_through_a_preset_file(open_panel, real_core, t
             return real_core.get('global.tempo') == value
         page.qtbot.waitUntil(check, timeout=5000)
 
-    page.click('#tempo-up')
+    page.wheel('#tempo-value', steps=1)
     page.wait_js(f"document.querySelector('#tempo-value').textContent === '{tempo + 1}'")
     core_tempo_is(tempo + 1)
 
     saved = tmp_path / 'edited.json'
     assert finish(real_core, real_core.act('preset.save', path=str(saved)))['status'] == 'done'
-    page.click('#tempo-down')
-    page.click('#tempo-down')
+    page.wheel('#tempo-value', steps=-1)
+    page.wait_js(f"document.querySelector('#tempo-value').textContent === '{tempo}'")
+    page.wheel('#tempo-value', steps=-1)
     page.wait_js(f"document.querySelector('#tempo-value').textContent === '{tempo - 1}'")
     core_tempo_is(tempo - 1)
     # No poll between the applied set and the load: the load's value still wins
@@ -84,3 +85,45 @@ def test_a_frame_tick_fits_the_frame_budget(real_core):
         durations.append(bridge.stats.total_ms - before)
     assert statistics.median(durations) < FRAME_BUDGET_MS / 2
     assert bridge.stats.count == 180
+
+
+def test_a_tune_drag_changes_the_core_and_undo_brings_it_back(open_panel, real_core):
+    page = open_panel(real_core, owns_core=False)
+    pump = real_core.backend.stream.pull
+    knob = '.strip[data-channel="2"] px-knob[data-address="ch2.osc.pitch"]'
+    before = real_core.get('ch2.osc.pitch')
+    page.drag(f'{knob} .dial', dy=-40)  # +25 % of 48 st
+
+    def pitch_moved():
+        pump()
+        return real_core.get('ch2.osc.pitch') > before + 5
+    page.qtbot.waitUntil(pitch_moved, timeout=5000)
+    page.wait_js(f"document.querySelector('{knob} .val').textContent.startsWith('+')", pump=pump)
+    page.wait_js("!document.querySelector('#undo').disabled", pump=pump)
+
+    page.click('#undo')  # the drag was one gesture: one undo step
+    page.wait_js(f"document.querySelector('{knob} .val').textContent === '0.0 st'", pump=pump)
+    assert real_core.get('ch2.osc.pitch') == before
+
+
+def test_a_channel_button_selects_and_mutes_in_the_core(open_panel, real_core):
+    page = open_panel(real_core, owns_core=False)
+    pump = real_core.backend.stream.pull
+    page.click('.strip[data-channel="5"] .chb')
+    page.qtbot.waitUntil(lambda: (pump(), real_core.get('global.channel') == 5)[1], timeout=5000)
+    page.click('#mute-latch')
+    page.click('.strip[data-channel="5"] .chb')
+    page.qtbot.waitUntil(lambda: (pump(), real_core.get('ch5.mute') is True)[1], timeout=5000)
+    page.wait_js("document.querySelector('.strip[data-channel=\"5\"]').classList.contains('muted')",
+                 pump=pump)
+
+
+def test_the_strip_ctrl_mode_is_saved_as_a_preference(open_panel, real_core):
+    page = open_panel(real_core, owns_core=False)
+    page.click('#ctrl-mode')
+    page.wait_js("!!document.querySelector('.px-menu')")
+    page.run("[...document.querySelectorAll('.px-menu .it')].find((i) => i.textContent === 'reverb mix').click()")
+    page.qtbot.waitUntil(lambda: (real_core.get('pref.ui.ctrl_knob') or {}).get('mode') == 'reverb_mix')
+    assert real_core.preferences.get('ui_ctrl_knob')['mode'] == 'reverb_mix'
+    page.wait_js("document.querySelector('.strip[data-channel=\"1\"] .ctrl').dataset.address"
+                 " === 'ch1.fx.reverb_mix'")

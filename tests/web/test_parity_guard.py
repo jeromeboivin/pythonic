@@ -37,10 +37,17 @@ def test_every_address_is_bound_or_listed_absent(panel, core_table):
     assert not unused, f'absent patterns that match no address: {unused}'
 
 
-def test_the_shell_binds_the_tempo(panel):
-    assert panel.bound_addresses() == {'global.tempo'}
-    assert panel.js("[...document.querySelectorAll('[data-verb]')].map((e) => e.dataset.verb)") \
-        == ['transport.toggle']
+def test_the_face_binds_its_controls(panel):
+    bound = panel.bound_addresses()
+    for n in range(1, 9):
+        assert {f'ch{n}.osc.pitch', f'ch{n}.osc.decay', f'ch{n}.mix.level', f'ch{n}.mute',
+                f'ch{n}.name', f'ch{n}.mix.pan'} <= bound  # pan: the CTRL knobs' default mode
+    assert {'global.tempo', 'global.swing', 'global.step_rate', 'global.fill_rate',
+            'global.master', 'global.channel', 'morph.position', 'morph.learning',
+            'morph.differs', 'program.current', 'program.occupied', 'undo.can_undo',
+            'undo.can_redo', 'midi.connected'} <= bound
+    verbs = set(panel.js("[...document.querySelectorAll('[data-verb]')].map((e) => e.dataset.verb)"))
+    assert verbs == {'transport.toggle', 'undo', 'redo', 'program.select', 'morph.learn'}
 
 
 def test_every_absent_entry_has_a_reason():

@@ -8,8 +8,10 @@ Page-test helpers: drive the real app:// page in a PanelWindow from pytest-qt.
 - ``run(statements)``: run statements, no result
 - ``wait_js(expr, timeout, pump)``: wait until an expression is truthy;
   ``pump()`` runs before every check (pull audio blocks for a real core)
-- ``rect(selector)``, ``click(selector)``, ``wheel(selector, steps)``: real
-  pointer input through QTest on the view's focus proxy, at an element's centre
+- ``rect(selector)``, ``click(selector)``, ``wheel(selector, steps)``,
+  ``drag(selector, dy, modifiers)``, ``right_click``, ``double_click``,
+  ``press``, ``type_text(text)``: real pointer and key input through QTest
+  on the view's focus proxy, at an element's centre
 - ``pixel(x, y)``, ``color_at(selector)``: coarse ``grab()`` pixel checks;
   ``close_to(color, expected, tolerance)``; ``wait_pixels(check)`` (painting
   lags the DOM: wait for pixels, never sleep)
@@ -20,10 +22,11 @@ Page-test helpers: drive the real app:// page in a PanelWindow from pytest-qt.
 """
 
 import json
+import time
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, QPointF, Qt
-from PySide6.QtGui import QWheelEvent
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+from PySide6.QtGui import QMouseEvent, QWheelEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLineEdit
 
@@ -121,6 +124,59 @@ class Page:
         QTest.mousePress(target, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
         QTest.mouseRelease(target, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
                            point)
+
+    def press(self, selector, button=Qt.MouseButton.LeftButton, modifiers=Qt.KeyboardModifier.NoModifier,
+              fx=0.5, fy=0.5):
+        """Press a mouse button at a fraction of an element's box; returns the point."""
+        x, y, w, h = self.rect(selector)
+        point = QPoint(round(x + w * fx), round(y + h * fy))
+        target = self.view.focusProxy()
+        QTest.mouseMove(target, point)
+        QTest.mousePress(target, button, modifiers, point)
+        return point
+
+    def drag(self, selector, dy, modifiers=Qt.KeyboardModifier.NoModifier, steps=4, fx=0.5, fy=0.5):
+        """Press on an element, move `dy` view pixels down (negative: up) in steps, release."""
+        start = self.press(selector, modifiers=modifiers, fx=fx, fy=fy)
+        target = self.view.focusProxy()
+        point = start
+        for i in range(1, steps + 1):
+            point = QPoint(start.x(), round(start.y() + dy * i / steps))
+            # A move with the button held and the modifiers (QTest.mouseMove has neither)
+            event = QMouseEvent(QEvent.Type.MouseMove, QPointF(point),
+                                QPointF(target.mapToGlobal(point)), Qt.MouseButton.NoButton,
+                                Qt.MouseButton.LeftButton, modifiers)
+            QApplication.sendEvent(target, event)
+            self.qtbot.wait(5)
+        QTest.mouseRelease(target, Qt.MouseButton.LeftButton, modifiers, point)
+
+    def right_click(self, selector):
+        point = self.press(selector, Qt.MouseButton.RightButton)
+        QTest.mouseRelease(self.view.focusProxy(), Qt.MouseButton.RightButton,
+                           Qt.KeyboardModifier.NoModifier, point)
+
+    def double_click(self, selector):
+        """Two presses in quick succession, sent as raw events (QTest spaces its
+        clicks by the double-click interval so they never pair up)."""
+        point = self.center(selector)
+        target = self.view.focusProxy()
+        QTest.mouseMove(target, point)
+        left, none = Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier
+        local, screen = QPointF(point), QPointF(target.mapToGlobal(point))
+        stamp = int(time.monotonic() * 1000)
+        for i, (kind, buttons) in enumerate([
+                (QEvent.Type.MouseButtonPress, left), (QEvent.Type.MouseButtonRelease, Qt.MouseButton.NoButton),
+                (QEvent.Type.MouseButtonDblClick, left), (QEvent.Type.MouseButtonRelease, Qt.MouseButton.NoButton)]):
+            event = QMouseEvent(kind, local, screen, left, buttons, none)
+            event.setTimestamp(stamp + 20 * i)
+            QApplication.sendEvent(target, event)
+
+    def type_text(self, text, enter=True):
+        """Type into the focused element of the page (Enter at the end)."""
+        target = self.view.focusProxy()
+        QTest.keyClicks(target, text)
+        if enter:
+            QTest.keyClick(target, Qt.Key.Key_Return)
 
     def wheel(self, selector, steps=1):
         """Turn the wheel over an element: steps > 0 is away from the user (up)."""

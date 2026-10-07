@@ -4,7 +4,7 @@
 
 import { connectBridge, createFakeBridge } from './bridge.js';
 import { createCoreClient } from './core-client.js';
-import { mountPanel, PANEL_ADDRESSES } from './panel.js';
+import { mountPanel } from './panel.js';
 import { mountStage } from './stage.js';
 import { createStore } from './store.js';
 
@@ -13,7 +13,7 @@ export function demoBridge(scope = globalThis) {
   const fake = createFakeBridge({
     describe: { 'global.tempo': { address: 'global.tempo', kind: 'int', minimum: 1, maximum: 300, default: 120,
       unit: 'BPM', curve: 'linear', labels: [], readonly: false } },
-    values: { 'global.tempo': 120 },
+    values: { 'global.tempo': 120, 'global.channel': 1 },
     actions: {
       'transport.toggle': (_args, f) => { f.transport.playing = !f.transport.playing; f.transport.position = 0; },
     },
@@ -34,7 +34,7 @@ export async function boot({ bridge = null, stage = document.getElementById('sta
   const store = createStore();
   client.onFrame((frame) => store.apply(frame));
   mountStage(stage);
-  const meta = await client.describe(PANEL_ADDRESSES);
+  const meta = await client.describe(''); // every registered address
   const panel = mountPanel(stage, { store, client, meta });
   store.seed(await client.get(store.watched()));
   return { bridge, client, store, meta, panel };

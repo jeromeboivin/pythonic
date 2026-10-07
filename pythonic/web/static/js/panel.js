@@ -1,84 +1,400 @@
-// Placeholder panel of the first web slice: the stage with the wordmark,
-// the green display, the master tempo and START/STOP beside the 16 pads,
-// wired end to end through the store and the core client. Later slices
-// replace it with the real face.
+// The hardware face (map decisions #7, #12, #16): left column (undo / redo,
+// programs), the top row (master, step rate, fill rate, strip ctrl) over the
+// eight channel strips, the right column (display, MUTE latch, morph learn,
+// tempo, MIDI LED, sound morph) and START/STOP. Everything is address-driven:
+// controls are px-* elements (controls.js) bound by data-address, buttons
+// that start verbs carry data-verb.
 //
-// Controls carry data-address (the address they show and edit) or
-// data-verb (the verb they start); the parity guard reads them.
+// Extension slots for later slices (elements with data-slot):
+//   step-entry  left column: step-mode buttons, last step, all ch, follow, matrix
+//   patterns    left column: patterns A-L, chain, menu, copy, paste
+//   preset, rack-toggle, po32, setup   right column buttons (shown as placeholders)
+//   steps       bottom row: page bars, step numbers and the 16 pads (placeholder pads)
+//   rack        the edit rack drawer under the face
+// A slice fills a slot (replaceChildren) with px-* controls; they bind to the
+// panel's control context on insertion (panel.ctx).
+
+import { guessDrumType } from './drum-type.js';
+import { createControlContext, provideContext } from './controls.js';
+import { formatValue } from './values.js';
 
 const PATTERNS = 'ABCDEFGHIJKL';
-const TEMPO = 'global.tempo';
+const CHANNELS = [1, 2, 3, 4, 5, 6, 7, 8];
+export const CTRL_PREF = 'pref.ui.ctrl_knob';
 
-function el(tag, attrs = {}, children = []) {
-  const node = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs)) {
-    if (k === 'class') node.className = v; else if (k === 'text') node.textContent = v; else node.setAttribute(k, v);
-  }
-  for (const child of children) node.append(child);
-  return node;
+/** Strip CTRL modes: [mode, label in the selector, address suffix]. */
+export const CTRL_MODES = [
+  ['off', 'off', null],
+  ['pan', 'pan', 'mix.pan'],
+  ['reverb_mix', 'reverb mix', 'fx.reverb_mix'],
+  ['delay_mix', 'delay mix', 'fx.delay_mix'],
+  ['lfo1_depth', 'lfo 1 depth', 'lfo1.depth'],
+  ['user', 'user', null],
+];
+
+/** Short names of the sound parameters a user CTRL knob can pick, by section. */
+export const CTRL_USER_CHOICES = [
+  ['Oscillator', [['osc.freq', 'osc freq'], ['osc.mod_amount', 'pitch amt'], ['osc.mod_rate', 'pitch rate'],
+    ['osc.attack', 'osc attack']]],
+  ['Noise', [['noise.freq', 'noise freq'], ['noise.q', 'noise q'], ['noise.attack', 'noise atk'],
+    ['noise.decay', 'noise decay']]],
+  ['Mix', [['mix.osc_noise', 'osc/noise'], ['mix.pan', 'pan'], ['mix.distortion', 'distort'],
+    ['eq.freq', 'eq freq'], ['eq.gain', 'eq gain']]],
+  ['FX', [['fx.vintage', 'vintage'], ['fx.reverb_decay', 'rvb time'], ['fx.reverb_mix', 'rvb mix'],
+    ['fx.reverb_width', 'rvb wide'], ['fx.delay_feedback', 'dly fdbk'], ['fx.delay_mix', 'dly mix']]],
+  ['Velocity', [['vel.osc', 'osc vel'], ['vel.noise', 'noise vel'], ['vel.mod', 'mod vel']]],
+  ['Modulation', [['lfo1.rate', 'lfo 1 rate'], ['lfo1.depth', 'lfo 1 depth'], ['lfo2.rate', 'lfo 2 rate'],
+    ['lfo2.depth', 'lfo 2 depth'], ['pump.amount', 'pump amt']]],
+];
+const USER_NAMES = Object.fromEntries(CTRL_USER_CHOICES.flatMap(([, xs]) => xs));
+
+/** The CTRL setup of the preference (any stored value; defaults: pan, no user picks). */
+export function ctrlSetup(value) {
+  const v = value && typeof value === 'object' ? value : {};
+  const mode = CTRL_MODES.some(([m]) => m === v.mode) ? v.mode : 'pan';
+  const user = CHANNELS.map((_, i) => (Array.isArray(v.user) && typeof v.user[i] === 'string' ? v.user[i] : null));
+  return { mode, user };
 }
 
-/** The addresses the panel shows (main.js reads their values and metadata). */
-export const PANEL_ADDRESSES = [TEMPO];
+/** The address a strip's CTRL knob shows, or null (off, or no user pick). */
+export function ctrlAddress(setup, channel) {
+  if (setup.mode === 'user') {
+    const suffix = setup.user[channel - 1];
+    return suffix ? `ch${channel}.${suffix}` : null;
+  }
+  const mode = CTRL_MODES.find(([m]) => m === setup.mode);
+  return mode && mode[2] ? `ch${channel}.${mode[2]}` : null;
+}
 
-/** Build the panel in the stage; meta maps addresses to describe() metadata. */
+/** The addresses the face shows (main.js reads every registered address's metadata). */
+export const PANEL_ADDRESSES = [
+  'global.tempo', 'global.swing', 'global.step_rate', 'global.fill_rate', 'global.master',
+  'global.channel', 'global.edit_all', 'morph.position', 'morph.learning', 'morph.differs',
+  'program.current', 'program.occupied', 'undo.can_undo', 'undo.can_redo', 'preset.name',
+  'midi.connected', 'midi.cc_map', 'midi.learning', 'midi.pitchbend_target',
+  ...CHANNELS.flatMap((n) => [`ch${n}.name`, `ch${n}.mute`, `ch${n}.osc.pitch`, `ch${n}.osc.decay`,
+    `ch${n}.mix.level`]),
+];
+
+const html = (strings, ...values) => strings.reduce((out, s, i) => out + s + (i < values.length ? values[i] : ''), '');
+
+function stripHtml(n) {
+  return html`
+  <div class="strip" data-channel="${n}" style="--cc: var(--ch${n})">
+    <div class="tab" data-address="ch${n}.name"></div>
+    <px-knob data-address="ch${n}.osc.pitch" label="tune" name="ch${n} tune" size="40"></px-knob>
+    <px-knob data-address="ch${n}.osc.decay" label="decay" name="ch${n} decay" size="40"></px-knob>
+    <px-knob class="ctrl" label="ctrl" size="40"></px-knob>
+    <div class="grow"><px-fader data-address="ch${n}.mix.level" name="ch${n} level" length="118"></px-fader></div>
+    <div class="chsel" data-address="ch${n}.mute">
+      <button class="btn chb" type="button" data-address="global.channel" data-value="${n}">${n}</button>
+    </div>
+  </div>`;
+}
+
+function faceHtml() {
+  const programs = Array.from({ length: 16 }, (_, i) =>
+    `<button class="btn" type="button" data-verb="program.select" data-program="${i + 1}">${i + 1}</button>`).join('');
+  const pads = Array.from({ length: 16 }, (_, i) =>
+    `<div class="pad g${Math.floor(i / 4) + 1}" data-step="${i + 1}"></div>`).join('');
+  const numbers = Array.from({ length: 16 }, (_, i) => `<div>${i + 1}</div>`).join('');
+  return html`
+  <div class="panel-face">
+    <div class="col left">
+      <div class="wordmark">PYTHON<b>IC</b></div>
+      <div class="row undo-row">
+        <button class="btn rnd" type="button" id="undo" data-verb="undo" data-address="undo.can_undo">undo</button>
+        <button class="btn rnd" type="button" id="redo" data-verb="redo" data-address="undo.can_redo">redo</button>
+      </div>
+      <div class="slot-step-entry slot-mark" data-slot="step-entry"></div>
+      <div class="hl">pattern</div>
+      <div class="slot-patterns slot-mark" data-slot="patterns"></div>
+      <div class="hl">program</div>
+      <div class="programs" id="programs" data-address="program.occupied">
+        <div style="display:contents" data-address="program.current">${programs}</div>
+      </div>
+    </div>
+    <div class="col centre">
+      <div class="toprow">
+        <div class="sec"><span class="hl">master</span>
+          <px-knob data-address="global.master" label="level" name="master" size="40"></px-knob></div>
+        <div class="sec" style="flex:1.6"><span class="hl">step rate</span>
+          <px-switch data-address="global.step_rate" name="step rate"></px-switch></div>
+        <div class="sec"><span class="hl">fill rate</span>
+          <px-list data-address="global.fill_rate" name="fill rate"></px-list></div>
+        <div class="sec" style="flex:1.2"><span class="hl">strip ctrl</span>
+          <div class="lbox" id="ctrl-mode" style="--lw:110px"></div>
+          <span class="hint" id="ctrl-hint"></span></div>
+      </div>
+      <div class="strips">${CHANNELS.map(stripHtml).join('')}</div>
+    </div>
+    <div class="col right">
+      <px-display id="display"></px-display>
+      <div class="rgrid">
+        <button class="btn sq slot" type="button" data-slot="preset-prev" disabled>◀</button>
+        <button class="btn sq slot" type="button" data-slot="preset-next" disabled>▶</button>
+        <button class="btn sq slot w2" type="button" data-slot="preset" disabled>preset</button>
+        <button class="btn sq slot w2" type="button" data-slot="rack-toggle" disabled>edit rack</button>
+        <button class="btn sq slot" type="button" data-slot="po32" disabled>po-32</button>
+        <button class="btn sq slot" type="button" data-slot="setup" disabled>setup</button>
+        <button class="btn sq red w2" type="button" id="mute-latch">mute</button>
+        <button class="btn sq" type="button" id="learn-a" data-verb="morph.learn" data-endpoint="a" data-address="morph.learning">learn a</button>
+        <button class="btn sq" type="button" id="learn-b" data-verb="morph.learn" data-endpoint="b" data-address="morph.learning">learn b</button>
+      </div>
+      <div class="row tempo-row">
+        <div class="seg7" id="tempo-value" data-address="global.tempo">---</div>
+        <px-knob data-address="global.tempo" label="tempo" name="tempo" size="40" wheel-step="1"></px-knob>
+        <px-knob data-address="global.swing" label="swing" name="swing" size="32"></px-knob>
+      </div>
+      <div class="row midi-row">midi <span class="mled" id="midi-led" data-address="midi.connected"></span></div>
+      <div class="col morph-box" id="morph" data-address="morph.differs">
+        <px-knob data-address="morph.position" label="sound morph" name="sound morph" size="116"></px-knob>
+      </div>
+    </div>
+    <div class="transport">
+      <button class="ss" id="start-stop" type="button" data-verb="transport.toggle" title="start / stop"></button>
+      <span class="wtab">start / stop</span>
+    </div>
+    <div class="slot-steps" data-slot="steps">
+      <div class="pnums">${numbers}</div>
+      <div class="pads">${pads}</div>
+    </div>
+  </div>
+  <div class="slot-rack" data-slot="rack"></div>`;
+}
+
+/** Build the face in the stage; meta maps addresses to describe() metadata. */
 export function mountPanel(stage, { store, client, meta = {} }) {
-  const display1 = el('div', { class: 'line', id: 'display-line1' });
-  const display2 = el('div', { class: 'line', id: 'display-line2', text: 'PYTHONIC' });
-  const tempoValue = el('div', { class: 'seg7', id: 'tempo-value', text: '---' });
-  const tempoDown = el('button', { class: 'btn sq', id: 'tempo-down', title: 'tempo -1', text: '−' });
-  const tempoUp = el('button', { class: 'btn sq', id: 'tempo-up', title: 'tempo +1', text: '+' });
-  const tempo = el('div', { class: 'tempo', 'data-address': TEMPO }, [
-    tempoValue, el('div', { class: 'row' }, [tempoDown, el('span', { class: 'lbl', text: 'tempo' }), tempoUp]),
-  ]);
-  const startStop = el('button', { class: 'ss', id: 'start-stop', 'data-verb': 'transport.toggle', title: 'start / stop' });
-  const pads = [];
-  const numbers = [];
-  for (let i = 0; i < 16; i += 1) {
-    pads.push(el('div', { class: `pad g${Math.floor(i / 4) + 1}`, 'data-step': String(i + 1) }));
-    numbers.push(el('div', { text: String(i + 1) }));
+  const ctx = createControlContext({ store, client, meta, root: stage });
+  stage.innerHTML = faceHtml();
+  provideContext(stage, ctx);
+  const $ = (sel) => stage.querySelector(sel);
+  const $$ = (sel) => [...stage.querySelectorAll(sel)];
+  const display = $('#display');
+  const offs = [];
+  const watch = (address, fn) => offs.push(store.watch(address, fn));
+  let muteLatch = false;
+
+  // ------------------------------------------------------------ display
+  const baseDisplay = () => {
+    const t = store.readout('transport') || {};
+    const letter = PATTERNS[t.playing ? t.playing_pattern : t.selected_pattern] || 'A';
+    const step = t.playing ? `  STEP ${String((t.position || 0) + 1).padStart(2, '0')}` : '';
+    display.setBase(`PATTERN ${letter}${step}`, String(store.value('preset.name') || 'PYTHONIC').toUpperCase());
+  };
+  const onTouch = (e) => display.show(e.detail.name, e.detail.text);
+  stage.addEventListener('px-touch', onTouch);
+  watch('preset.name', baseDisplay);
+
+  /** Run a verb; its error (if any) shows on the display. */
+  const act = (verb, args = {}) => client.act(verb, args).then((event) => {
+    if (event.status === 'error') display.alert(verb.toUpperCase(), event.error);
+    return event;
+  });
+  // Errors not tied to an action: audio callback, stalled stream, MIDI
+  offs.push(store.onEvent((event) => {
+    if (event.status === 'error' && event.id == null) {
+      display.alert(`${String(event.source || 'core').toUpperCase()} ERROR`, event.error);
+    }
+  }));
+
+  // ------------------------------------------------------------ strips
+  const ctrlKnobs = CHANNELS.map((n) => $(`.strip[data-channel="${n}"] .ctrl`));
+  const strips = CHANNELS.map((n) => $(`.strip[data-channel="${n}"]`));
+  const chButtons = CHANNELS.map((n) => $(`.strip[data-channel="${n}"] .chb`));
+  const showStrips = () => {
+    const selected = store.value('global.channel') || 1;
+    const editAll = !!store.value('global.edit_all');
+    stage.classList.toggle('edit-all', editAll);
+    CHANNELS.forEach((n, i) => {
+      const muted = !!store.value(`ch${n}.mute`);
+      strips[i].classList.toggle('sel', n === selected);
+      strips[i].classList.toggle('muted', muted);
+      strips[i].classList.toggle('linked', editAll && !muted && n !== selected);
+      chButtons[i].classList.toggle('on', n === selected);
+      chButtons[i].classList.toggle('mut', muted);
+    });
+  };
+  watch('global.channel', showStrips);
+  watch('global.edit_all', showStrips);
+  CHANNELS.forEach((n, i) => {
+    watch(`ch${n}.mute`, showStrips);
+    watch(`ch${n}.name`, (name) => {
+      strips[i].querySelector('.tab').textContent = name || '';
+      chButtons[i].textContent = guessDrumType(name) || String(n);
+    });
+    chButtons[i].addEventListener('click', () => {
+      if (muteLatch) {
+        const muted = !store.value(`ch${n}.mute`);
+        ctx.set(`ch${n}.mute`, muted);
+        display.show(`CH${n} MUTE`, muted ? 'on' : 'off');
+      } else {
+        ctx.set('global.channel', n);
+        display.show(`CH${n}`, String(store.value(`ch${n}.name`) || '').toUpperCase());
+      }
+    });
+  });
+
+  // ------------------------------------------------------------ strip CTRL
+  const ctrlList = $('#ctrl-mode');
+  const setup = () => ctrlSetup(store.value(CTRL_PREF));
+  const saveSetup = (next) => ctx.set(CTRL_PREF, next);
+  const showCtrl = () => {
+    const s = setup();
+    const mode = CTRL_MODES.find(([m]) => m === s.mode);
+    ctrlList.textContent = mode[1];
+    ctrlList.dataset.mode = s.mode;
+    $('#ctrl-hint').textContent = s.mode === 'user' ? 'per channel: click a ctrl label' : 'same for all 8 channels';
+    ctrlKnobs.forEach((knob, i) => {
+      const address = ctrlAddress(s, i + 1);
+      if (address) {
+        if (knob.dataset.address !== address) knob.dataset.address = address;
+      } else if (knob.hasAttribute('data-address')) knob.removeAttribute('data-address');
+      const label = s.mode === 'user' ? (USER_NAMES[s.user[i]] || 'pick ▾') : 'ctrl';
+      knob.setAttribute('label', label);
+      knob.setAttribute('name', `ch${i + 1} ${s.mode === 'user' ? label : mode[1]}`);
+      knob.classList.toggle('user', s.mode === 'user');
+    });
+  };
+  watch(CTRL_PREF, showCtrl);
+  if (!store.has(CTRL_PREF)) showCtrl();
+  ctrlList.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const r = ctrlList.getBoundingClientRect();
+    const s = setup();
+    ctx.openMenu(CTRL_MODES.map(([m, label]) => [label, () => {
+      saveSetup({ ...s, mode: m });
+      display.show('STRIP CTRL', label);
+    }, { current: m === s.mode }]), r.left, r.bottom + 2, { className: 'list' });
+  });
+  ctrlKnobs.forEach((knob, i) => {
+    knob.addEventListener('pointerdown', (e) => {
+      if (setup().mode !== 'user' || !e.target.closest('.lbl')) return;
+      e.stopPropagation();
+      e.preventDefault();
+      const s = setup();
+      const items = [];
+      for (const [section, choices] of CTRL_USER_CHOICES) {
+        items.push([section, null]);
+        for (const [suffix, label] of choices) {
+          items.push([`  ${label}`, () => {
+            const user = [...s.user];
+            user[i] = suffix;
+            saveSetup({ ...s, user });
+          }, { current: s.user[i] === suffix }]);
+        }
+      }
+      ctx.openMenu(items, e.clientX, e.clientY);
+    }, true);
+  });
+
+  // ------------------------------------------------------------ left column
+  const undo = $('#undo');
+  const redo = $('#redo');
+  watch('undo.can_undo', (v) => { undo.disabled = !v; });
+  watch('undo.can_redo', (v) => { redo.disabled = !v; });
+  for (const button of [undo, redo]) {
+    button.addEventListener('click', () => act(button.dataset.verb).then((event) => {
+      const r = event.result || {};
+      display.show(button.dataset.verb.toUpperCase(), r.done ? String(r.label || '').toUpperCase() : 'nothing to ' + button.dataset.verb);
+    }));
+  }
+  const programButtons = $$('#programs .btn');
+  const showPrograms = () => {
+    const current = store.value('program.current');
+    const occupied = store.value('program.occupied') || [];
+    programButtons.forEach((b, i) => {
+      b.classList.toggle('on', i + 1 === current);
+      b.classList.toggle('empty', !occupied[i]);
+    });
+  };
+  watch('program.current', showPrograms);
+  watch('program.occupied', showPrograms);
+  for (const b of programButtons) {
+    b.addEventListener('click', () => {
+      const program = Number(b.dataset.program);
+      display.show('PROGRAM', String(program));
+      act('program.select', { program });
+    });
   }
 
-  stage.append(
-    el('div', { class: 'wordmark' }, ['PYTHON', el('b', { text: 'IC' })]),
-    el('div', { class: 'display', id: 'display' }, [display1, display2]),
-    tempo,
-    el('div', { class: 'transport' }, [startStop, el('span', { class: 'wtab', text: 'start / stop' })]),
-    el('div', { class: 'steps' }, [el('div', { class: 'pnums' }, numbers), el('div', { class: 'pads' }, pads)]),
-  );
+  // ------------------------------------------------------------ right column
+  const latch = $('#mute-latch');
+  latch.addEventListener('click', () => {
+    muteLatch = !muteLatch;
+    latch.classList.toggle('on', muteLatch);
+    stage.classList.toggle('mute-mode', muteLatch);
+    display.show('MUTE', muteLatch ? 'channel buttons mute' : 'channel buttons select');
+  });
 
-  // Display: pattern and step on line 1; the touched control replaces line 2 for 1.5 s
-  let touchTimer = null;
-  const touched = (text) => {
-    display2.textContent = text;
-    clearTimeout(touchTimer);
-    touchTimer = setTimeout(() => { display2.textContent = 'PYTHONIC'; }, 1500);
-  };
+  const learnButtons = [$('#learn-a'), $('#learn-b')];
+  watch('morph.learning', (learning) => {
+    for (const b of learnButtons) b.classList.toggle('on', learning === b.dataset.endpoint);
+  });
+  for (const b of learnButtons) {
+    const endpoint = b.dataset.endpoint;
+    b.addEventListener('click', () => {
+      const stop = store.value('morph.learning') === endpoint;
+      act('morph.learn', { endpoint: stop ? null : endpoint });
+      display.show('MORPH LEARN', stop ? 'off' : endpoint.toUpperCase());
+    });
+    b.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      ctx.openMenu([[`Capture the current sounds as ${endpoint.toUpperCase()}`, () => {
+        act('morph.capture', { endpoint });
+        display.show('MORPH CAPTURE', endpoint.toUpperCase());
+      }]], e.clientX, e.clientY);
+    });
+  }
+  watch('morph.differs', (v) => { $('#morph').classList.toggle('same', !v); });
 
-  const offs = [];
-  offs.push(store.watch(TEMPO, (bpm) => { tempoValue.textContent = String(bpm); }));
+  const tempoValue = $('#tempo-value');
+  watch('global.tempo', (bpm) => { tempoValue.textContent = String(bpm); });
+  tempoValue.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    if (!e.deltaY) return;
+    const m = meta['global.tempo'] || { minimum: 1, maximum: 300 };
+    const next = Math.min(m.maximum, Math.max(m.minimum, (store.value('global.tempo') ?? 120) + (e.deltaY < 0 ? 1 : -1)));
+    ctx.set('global.tempo', next, { burst: true });
+    display.show('TEMPO', formatValue(m, next));
+  }, { passive: false });
+
+  const led = $('#midi-led');
+  let lastActivity = null;
+  let ledTimer = null;
+  watch('midi.connected', (v) => led.classList.toggle('connected', !!v));
+  offs.push(store.watchReadout('midi', (midi) => {
+    const activity = midi ? midi.activity : null;
+    if (lastActivity !== null && activity !== lastActivity) {
+      led.classList.add('on');
+      clearTimeout(ledTimer);
+      ledTimer = setTimeout(() => led.classList.remove('on'), 80);
+    }
+    lastActivity = activity;
+  }));
+
+  // ------------------------------------------------------------ transport
+  const startStop = $('#start-stop');
+  const pads = $$('.pad');
   offs.push(store.watchReadout('transport', (t) => {
     startStop.classList.toggle('on', !!t.playing);
     const step = t.playing ? t.position % 16 : -1;
     pads.forEach((pad, i) => pad.classList.toggle('ph', i === step));
-    const letter = PATTERNS[t.playing ? t.playing_pattern : t.selected_pattern] || '?';
-    display1.textContent = `PATTERN ${letter}${t.playing ? `  STEP ${String(t.position + 1).padStart(2, '0')}` : ''}`;
+    baseDisplay();
   }));
+  startStop.addEventListener('click', () => { act(startStop.dataset.verb); });
+  baseDisplay();
 
-  const nudgeTempo = (delta, burst) => {
-    const desc = meta[TEMPO] || { minimum: 1, maximum: 300 };
-    const next = Math.min(desc.maximum, Math.max(desc.minimum, (store.value(TEMPO) ?? 120) + delta));
-    store.assume(TEMPO, next);
-    client.set(TEMPO, next, { burst });
-    touched(`TEMPO ${next} BPM`);
+  return {
+    ctx,
+    display,
+    /** The element of an extension slot (see the module comment). */
+    slot: (name) => stage.querySelector(`[data-slot="${name}"]`),
+    destroy() {
+      offs.forEach((off) => off());
+      ctx.destroy();
+      stage.removeEventListener('px-touch', onTouch);
+      stage.replaceChildren();
+    },
   };
-  tempoDown.addEventListener('click', () => nudgeTempo(-1, false));
-  tempoUp.addEventListener('click', () => nudgeTempo(1, false));
-  tempo.addEventListener('wheel', (e) => {
-    e.preventDefault();
-    if (e.deltaY) nudgeTempo(e.deltaY < 0 ? 1 : -1, true);
-  }, { passive: false });
-  startStop.addEventListener('click', () => { client.act(startStop.dataset.verb); });
-
-  return { destroy() { offs.forEach((off) => off()); stage.replaceChildren(); } };
 }

@@ -28,8 +28,8 @@ def test_a_wider_window_letterboxes_the_stage(panel, qtbot):
     assert panel.close_to(stage, (11, 11, 12), tolerance=3) and stage != (0, 0, 0)
 
 
-def test_tempo_plus_sets_the_core_and_the_display_follows(panel, qtbot):
-    panel.click('#tempo-up')
+def test_the_tempo_knob_sets_the_core_and_the_display_follows(panel, qtbot):
+    panel.wheel('px-knob[data-address="global.tempo"]', steps=1)
     qtbot.waitUntil(lambda: panel.core.sets() == [('global.tempo', 121)])
     panel.core.post_change('global.tempo', 140)  # e.g. a MIDI controller
     panel.wait_js("document.querySelector('#tempo-value').textContent === '140'")

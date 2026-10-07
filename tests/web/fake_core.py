@@ -17,6 +17,8 @@ from unittest import mock
 
 from pythonic.app.registry import Address
 
+PREF_UI = 'pref.ui.'
+
 
 def core_table():
     """describe() and get() of every registered address of a real core."""
@@ -57,7 +59,7 @@ class FakeCore:
         self.transport = {'playing': False, 'position': 0, 'playing_pattern': 0,
                           'selected_pattern': 0, 'queued_pattern': None, 'chain': []}
         self.readouts = {
-            'modulation': {'channel': 0, 'offsets': {}},
+            'modulation': {'channel': 0, 'offsets': {}, 'channels': [{} for _ in range(8)]},
             'audio': {'running': True, 'device': 'Fake Out', 'default_device': True,
                       'sample_rate': 44100, 'synth_rate': 44100, 'block_size': 1050,
                       'latency_ms': 23.8, 'mono': False, 'callbacks': 0, 'underruns': 0,
@@ -77,11 +79,17 @@ class FakeCore:
 
     # ---------------------------------------------------------------- interface
     def get(self, address):
+        if address.startswith(PREF_UI) and address not in self.values:
+            return None  # front-end state, None until set (as the real core)
         if address not in self.values:
             raise KeyError(f'unknown address: {address}')
         return self.values[address]
 
     def describe(self, address):
+        if address.startswith(PREF_UI) and address not in self.meta:
+            return {'address': address, 'kind': 'json', 'minimum': None, 'maximum': None,
+                    'default': None, 'unit': '', 'curve': 'linear', 'labels': [],
+                    'readonly': False}
         if address not in self.meta:
             raise KeyError(f'unknown address: {address}')
         return dict(self.meta[address])
@@ -154,6 +162,8 @@ class FakeCore:
 
     @staticmethod
     def _coerce(meta, value):
+        if meta['kind'] in ('json', 'map'):
+            return value
         """The real core's coercion (clamping, enum names) for this metadata."""
         entry = Address(meta['address'], get=lambda: None, kind=meta['kind'],
                         minimum=meta['minimum'], maximum=meta['maximum'],
