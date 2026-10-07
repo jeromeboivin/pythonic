@@ -1999,8 +1999,7 @@ class PythonicGUI:
         try:
             raw_patches = self._get_raw_patches_from_synth()
             pm = self.pattern_manager
-            temp = self.preferences_manager.get(
-                'drum_generator_pattern_temperature', 0.7)
+            temp = self.core.get('pref.ai.pattern_temperature')
             patterns = gen.generate(
                 raw_patches,
                 tempo=pm.bpm,
@@ -2025,8 +2024,7 @@ class PythonicGUI:
         try:
             raw_patches = self._get_raw_patches_from_synth()
             pm = self.pattern_manager
-            temp = self.preferences_manager.get(
-                'drum_generator_pattern_temperature', 0.7)
+            temp = self.core.get('pref.ai.pattern_temperature')
             patterns = gen.generate(
                 raw_patches,
                 tempo=pm.bpm,
@@ -3004,7 +3002,7 @@ class PythonicGUI:
         device_names = self.core.get('audio.output_devices')
         
         # Get current setting
-        current_device = self.preferences_manager.get('audio_output_device')
+        current_device = self.core.get('pref.audio.device')
         if current_device is None:
             current_display = "(System Default)"
         else:
@@ -3044,7 +3042,7 @@ class PythonicGUI:
         
         input_device_names = self.core.get('audio.input_devices')
         
-        current_input_device = self.preferences_manager.get('audio_input_device')
+        current_input_device = self.core.get('pref.audio.input_device')
         if current_input_device is None:
             current_input_display = "(System Default)"
         else:
@@ -3056,11 +3054,9 @@ class PythonicGUI:
                                           values=input_device_options, width=50, state='readonly')
         input_device_combo.pack(fill='x', pady=(2, 0))
         
-        try:
-            default_input = sd.query_devices(kind='input')
-            input_info_text = f"Default input: {default_input['name']}"
-        except Exception:
-            input_info_text = "No default input device detected"
+        default_input = self.core.get('audio.default_input')
+        input_info_text = (f"Default input: {default_input}" if default_input
+                           else "No default input device detected")
         
         tk.Label(input_frame, text=input_info_text,
                 font=('Segoe UI', 8),
@@ -3087,7 +3083,7 @@ class PythonicGUI:
             ("75 ms  (3307 samples) — very safe", 75.0),
             ("100 ms  (4410 samples) — maximum", 100.0),
         ]
-        current_buffer_ms = self.preferences_manager.get('audio_buffer_ms', 23.8)
+        current_buffer_ms = self.core.get('pref.audio.buffer_ms')
         # Find closest match
         closest_label = buffer_options[4][0]  # default (23.8 ms)
         for label, val in buffer_options:
@@ -3127,31 +3123,38 @@ class PythonicGUI:
             ("8000 Hz — telephone", 8000),
         ]
         
+        supported_rates = {}  # device name -> rates it accepts (the core probes them)
+        
         def _get_supported_rates(device_name):
-            """Query which sample rates the selected device supports."""
-            dev_idx = None
-            if device_name and device_name != "(System Default)":
-                try:
-                    for i, dev in enumerate(sd.query_devices()):
-                        if dev['max_output_channels'] > 0 and dev['name'] == device_name:
-                            dev_idx = i
-                            break
-                except Exception:
-                    pass
-            supported = []
-            for label, rate in sr_options:
-                try:
-                    sd.check_output_settings(device=dev_idx, channels=2, samplerate=rate)
-                    supported.append((label, rate))
-                except Exception:
-                    pass
-            return supported if supported else sr_options  # fallback to all if query fails
+            """The sample rate options the selected device supports (all of
+            them until the core has answered)."""
+            rates = supported_rates.get(device_name)
+            if rates is None:
+                return sr_options
+            return [(label, rate) for label, rate in sr_options if rate in rates] or sr_options
+        
+        probing = set()
+        
+        def _probe_rates(device_name):
+            if device_name in probing:
+                return
+            probing.add(device_name)
+            
+            def show(event):
+                probing.discard(device_name)
+                if event['status'] == 'done' and dialog.winfo_exists():
+                    supported_rates[device_name] = event['result']['rates']
+                    _update_sr_combo()
+                    _refresh_sr_status()
+            self._when_action_done(self.core.act('audio.rates', device=device_name), show)
         
         def _update_sr_combo(*_args):
             """Update sample rate combo to show only device-supported rates."""
             dev_name = device_var.get()
             if dev_name == "(System Default)":
                 dev_name = None
+            if dev_name not in supported_rates:
+                _probe_rates(dev_name)
             supported = _get_supported_rates(dev_name)
             sr_combo['values'] = [label for label, _ in supported]
             # If current selection is not supported, pick closest supported
@@ -3165,7 +3168,7 @@ class PythonicGUI:
                         return
                 sr_var.set(supported_labels[0])
         
-        current_sr = self.preferences_manager.get('audio_sample_rate', 44100)
+        current_sr = self.core.get('pref.audio.sample_rate')
         current_sr_label = sr_options[2][0]  # default 44100
         for label, val in sr_options:
             if val == current_sr:
@@ -3220,7 +3223,7 @@ class PythonicGUI:
             ("8000 Hz — telephone / 8-bit", 8000),
         ]
         
-        current_synth_sr = self.preferences_manager.get('synth_sample_rate', 44100)
+        current_synth_sr = self.core.get('pref.audio.synth_rate')  # 0: same as output
         current_synth_sr_label = synth_sr_options[0][0]  # default "Same as output"
         for label, val in synth_sr_options:
             if val == current_synth_sr:
@@ -3251,7 +3254,7 @@ class PythonicGUI:
         mono_frame = tk.Frame(dialog, bg=self.COLORS['bg_dark'])
         mono_frame.pack(fill='x', padx=20, pady=(15, 0))
         
-        current_mono = self.preferences_manager.get('audio_mono', False)
+        current_mono = self.core.get('pref.audio.mono')
         mono_var = tk.BooleanVar(value=current_mono)
         mono_check = tk.Checkbutton(mono_frame, text="Mono output",
                                     variable=mono_var,
@@ -3274,12 +3277,17 @@ class PythonicGUI:
         button_frame.pack(fill='x', padx=20, pady=20)
         
         def refresh_devices():
-            device_names = self.core.get('audio.output_devices')
-            device_combo['values'] = ["(System Default)"] + device_names
-            input_names = self.core.get('audio.input_devices')
-            input_device_combo['values'] = ["(System Default)"] + input_names
-            _update_sr_combo()
-            _refresh_sr_status()
+            def show(event):
+                if event['status'] != 'done' or not dialog.winfo_exists():
+                    return
+                device_combo['values'] = ["(System Default)"] + event['result']['output_devices']
+                input_device_combo['values'] = (["(System Default)"]
+                                                + event['result']['input_devices'])
+                supported_rates.clear()
+                probing.clear()
+                _update_sr_combo()
+                _refresh_sr_status()
+            self._when_action_done(self.core.act('audio.rescan'), show)
         
         def _get_selected_buffer_ms():
             """Extract buffer ms value from combo selection."""
@@ -3297,48 +3305,32 @@ class PythonicGUI:
                     return val
             return 44100
         
-        def save_and_close():
+        def save_settings():
+            """The core saves the settings; mono applies at once, the stream
+            settings wait for Apply Now (or the next launch)."""
             selected = device_var.get()
-            if selected == "(System Default)":
-                self.preferences_manager.set('audio_output_device', None)
-            else:
-                self.preferences_manager.set('audio_output_device', selected)
             selected_input = input_device_var.get()
-            if selected_input == "(System Default)":
-                self.preferences_manager.set('audio_input_device', None)
-            else:
-                self.preferences_manager.set('audio_input_device', selected_input)
-            self.preferences_manager.set('audio_buffer_ms', _get_selected_buffer_ms())
-            self.preferences_manager.set('audio_sample_rate', _get_selected_sample_rate())
-            synth_sr = _get_selected_synth_rate()
-            self.preferences_manager.set('synth_sample_rate', synth_sr if synth_sr > 0 else _get_selected_sample_rate())
-            self.preferences_manager.set('audio_mono', mono_var.get())
-            print(f"Audio output device preference saved: {selected}", flush=True)
-            print(f"Audio input device preference saved: {selected_input}", flush=True)
-            print(f"Audio buffer size preference saved: {_get_selected_buffer_ms()} ms", flush=True)
-            print(f"Audio sample rate preference saved: {_get_selected_sample_rate()} Hz", flush=True)
-            print(f"Synth rate preference saved: {'same as output' if synth_sr == 0 else str(synth_sr) + ' Hz'}", flush=True)
-            print(f"Mono mode preference saved: {mono_var.get()}", flush=True)
+            core = self.core
+            core.set('pref.audio.device', None if selected == "(System Default)" else selected)
+            core.set('pref.audio.input_device',
+                     None if selected_input == "(System Default)" else selected_input)
+            core.set('pref.audio.buffer_ms', _get_selected_buffer_ms())
+            core.set('pref.audio.sample_rate', _get_selected_sample_rate())
+            core.set('pref.audio.synth_rate', _get_selected_synth_rate())
+            core.set('pref.audio.mono', mono_var.get())
+            return selected, selected_input
+        
+        def save_and_close():
+            selected, selected_input = save_settings()
+            print(f"Audio settings saved: output {selected}, input {selected_input}, "
+                  f"{_get_selected_buffer_ms()} ms, {_get_selected_sample_rate()} Hz", flush=True)
             dialog.destroy()
         
         def apply_now():
             """Apply changes: the core saves the audio preferences, rebuilds the
             synth if its rate changed and restarts the stream."""
-            selected = device_var.get()
-            selected_input = input_device_var.get()
-            # The input device is only a preference (read by the PO-32 dialogs)
-            if selected_input == "(System Default)":
-                self.preferences_manager.set('audio_input_device', None)
-            else:
-                self.preferences_manager.set('audio_input_device', selected_input)
-            
-            action_id = self.core.act(
-                'audio.apply',
-                device=None if selected == "(System Default)" else selected,
-                sample_rate=_get_selected_sample_rate(),
-                synth_rate=_get_selected_synth_rate(),
-                buffer_ms=_get_selected_buffer_ms(),
-                mono=mono_var.get())
+            selected, selected_input = save_settings()
+            action_id = self.core.act('audio.apply')
             
             def on_applied(event):
                 # Update info label
@@ -3402,7 +3394,7 @@ class PythonicGUI:
                 bg=self.COLORS['bg_dark']).pack(anchor='w')
         
         # Current smoothing value
-        current_smoothing = self.preferences_manager.get('param_smoothing_ms', 30.0)
+        current_smoothing = self.core.get('pref.smoothing_ms')
         smoothing_var = tk.DoubleVar(value=current_smoothing)
         
         # Slider for smoothing time (5-100ms)
@@ -3440,22 +3432,15 @@ class PythonicGUI:
         button_frame = tk.Frame(dialog, bg=self.COLORS['bg_dark'])
         button_frame.pack(fill='x', padx=20, pady=20)
         
-        def apply_and_close():
-            smoothing_ms = smoothing_var.get()
-            self.preferences_manager.set('param_smoothing_ms', smoothing_ms)
-            # Apply to all channels
-            for channel in self.synth.channels:
-                channel.set_smoothing_time(smoothing_ms)
-            print(f"Parameter smoothing set to {smoothing_ms}ms", flush=True)
-            dialog.destroy()
-        
         def apply_now():
+            # The core saves it and applies it to every channel
             smoothing_ms = smoothing_var.get()
-            self.preferences_manager.set('param_smoothing_ms', smoothing_ms)
-            # Apply to all channels
-            for channel in self.synth.channels:
-                channel.set_smoothing_time(smoothing_ms)
+            self.core.set('pref.smoothing_ms', smoothing_ms)
             print(f"Parameter smoothing set to {smoothing_ms}ms", flush=True)
+        
+        def apply_and_close():
+            apply_now()
+            dialog.destroy()
         
         tk.Button(button_frame, text="Apply", 
                  command=apply_now,
@@ -3504,8 +3489,7 @@ class PythonicGUI:
                  fg=self.COLORS['text'],
                  bg=self.COLORS['bg_dark']).pack(anchor='w')
 
-        saved_path = self.preferences_manager.get(
-            'drum_generator_pattern_model_path', None) or ''
+        saved_path = self.core.get('pref.ai.pattern_model') or ''
         path_var = tk.StringVar(value=saved_path)
         entry_row = tk.Frame(path_frame, bg=self.COLORS['bg_dark'])
         entry_row.pack(fill='x', pady=(2, 0))
@@ -3565,8 +3549,7 @@ class PythonicGUI:
                  fg=self.COLORS['text'],
                  bg=self.COLORS['bg_dark']).pack(side='left')
 
-        saved_temp = self.preferences_manager.get(
-            'drum_generator_pattern_temperature', 0.7)
+        saved_temp = self.core.get('pref.ai.pattern_temperature')
         temp_var = tk.DoubleVar(value=saved_temp)
         tk.Spinbox(temp_frame, from_=0.1, to=3.0, increment=0.1,
                    textvariable=temp_var, width=5,
@@ -3582,11 +3565,9 @@ class PythonicGUI:
         btn_frame.pack(fill='x', padx=20, pady=15)
 
         def apply_and_close():
-            new_path = path_var.get().strip() or None
-            self.preferences_manager.set(
-                'drum_generator_pattern_model_path', new_path)
-            self.preferences_manager.set(
-                'drum_generator_pattern_temperature', temp_var.get())
+            # The core saves both; the AI generator reads them when loading
+            self.core.set('pref.ai.pattern_model', path_var.get().strip() or None)
+            self.core.set('pref.ai.pattern_temperature', temp_var.get())
             # Invalidate cached generator so next use picks up new path
             if hasattr(self, '_pattern_gen'):
                 del self._pattern_gen

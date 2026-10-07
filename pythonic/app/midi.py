@@ -217,7 +217,7 @@ class MidiInput:
         if target.startswith(SELECTED_PREFIX):
             return target[len(SELECTED_PREFIX):] in SOUND_SUFFIXES
         registry = self._core.registry
-        if target.startswith(('midi.', 'audio.')) or target not in registry:
+        if target.startswith(('midi.', 'audio.', 'pref.')) or target not in registry:
             return False
         entry = registry[target]
         return not entry.readonly and entry.positional

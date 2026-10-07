@@ -441,6 +441,30 @@ class AudioEngine:
     def output_devices(self):
         return self._device_names('max_output_channels')
 
+    def default_input_name(self):
+        """Name of the system default input device, None if there is none."""
+        if self.backend is None:
+            return None
+        try:
+            return self.backend.query_devices(kind='input')['name']
+        except Exception:
+            return None
+
+    def supported_rates(self, device_name, rates):
+        """The rates of ``rates`` an output device (None: the system default)
+        accepts for a stereo stream."""
+        if self.backend is None:
+            return []
+        device = self._find_output_device(device_name)
+        supported = []
+        for rate in rates:
+            try:
+                self.backend.check_output_settings(device=device, channels=2, samplerate=rate)
+            except Exception:
+                continue
+            supported.append(rate)
+        return supported
+
     def input_devices(self):
         return self._device_names('max_input_channels')
 

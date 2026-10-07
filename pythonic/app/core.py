@@ -48,7 +48,7 @@ from .audio import AudioEngine
 from .midi import MidiInput, import_mido
 from .morph import Morph
 from .patterns import Patterns
-from .prefs import Prefs
+from .prefs import STREAM_SETTINGS, Prefs
 from .presets import Presets
 from .programs import Programs
 from .registry import Address, Registry
@@ -150,6 +150,7 @@ class AppCore:
             **self.patterns.verbs(),
             **self.midi.verbs(),
             **self.presets.verbs(),
+            **self.prefs.verbs(),
         }
         self._running_action = None  # id of the verb running on the action thread
 
@@ -389,6 +390,14 @@ class AppCore:
             self._version += 1
             for name, value in values.items():
                 self._changes[name] = (self._version, value)
+
+    def submit(self, fn, value=None, names=()):
+        """Queue fn(value) for the next block start without waiting; poll
+        reports ``names`` with ``value`` once it has been applied."""
+        seq = self.audio.submit_call(fn, value)
+        if names:
+            with self._cond:
+                self._pending.append((seq, list(names), value, ()))
 
     def at_block_start(self, fn, timeout=None):
         """Run fn() on the audio thread at the next block start (at once when
@@ -642,17 +651,32 @@ class AppCore:
             self._report_error(error)
         return {'running': False}
 
-    def _verb_audio_apply(self, device=None, sample_rate=44100, synth_rate=0,
-                          buffer_ms=23.8, mono=False):
-        """Save the audio preferences, rebuild the synth if its rate changed,
-        and restart the stream on the chosen device."""
+    def _verb_audio_apply(self, **settings):
+        """Apply the saved stream settings (``pref.audio.*``): rebuild the
+        synth if its rate changed and restart the stream on the chosen device.
+        Settings given here (device, sample_rate, synth_rate with 0 = same
+        as output, buffer_ms, mono) are saved first; any left out keep their
+        saved value."""
+        unknown = set(settings) - {'device', 'sample_rate', 'synth_rate', 'buffer_ms', 'mono'}
+        if unknown:
+            raise TypeError(f'audio.apply: unknown settings {sorted(unknown)}')
         prefs = self.preferences
-        effective_synth = min(synth_rate if synth_rate > 0 else sample_rate, sample_rate)
-        prefs.set('audio_output_device', device)
-        prefs.set('audio_buffer_ms', buffer_ms)
-        prefs.set('audio_sample_rate', sample_rate)
-        prefs.set('synth_sample_rate', effective_synth)
-        prefs.set('audio_mono', bool(mono))
+        if set(settings) - {'mono'}:
+            saved = self.prefs.stream_settings()
+            sample_rate = settings.get('sample_rate', saved['pref.audio.sample_rate'])
+            self.prefs.set_stream_settings(
+                settings.get('device', saved['pref.audio.device']), sample_rate,
+                settings.get('synth_rate', self.get('pref.audio.synth_rate')),
+                settings.get('buffer_ms', saved['pref.audio.buffer_ms']))
+        if 'mono' in settings:
+            prefs.set('audio_mono', bool(settings['mono']))
+        stream = self.prefs.stream_settings()
+        self.prefs.applied = stream
+        device = stream['pref.audio.device']
+        sample_rate = stream['pref.audio.sample_rate']
+        effective_synth = stream['pref.audio.synth_rate']
+        buffer_ms = stream['pref.audio.buffer_ms']
+        mono = bool(prefs.get('audio_mono', False))
 
         old = self.synth
         if effective_synth != old.sr:
@@ -675,6 +699,7 @@ class AppCore:
             return self.audio.start(device)
         finally:
             self._note_audio_changes()
+            self.note_changes(['pref.audio.pending', 'pref.audio.mono', *STREAM_SETTINGS])
 
     def _rebuild_synth(self, old, rate):
         """Build a synth at a new rate with the old one's whole state (off the audio thread)."""

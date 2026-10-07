@@ -77,7 +77,8 @@ def test_the_old_preset_paths_are_gone():
     source = MAIN_WINDOW.read_text()
     for old in ('_read_preset_file', 'load_mtpreset', 'json.dump', '_preset_clipboard',
                 'load_programs_data', '_init_endpoints', '_after_preset_replaced',
-                'get_preset_folder', 'add_recent_file'):
+                'get_preset_folder', 'add_recent_file', 'preferences_manager.set(',
+                'preferences_manager.get(', 'sd.', 'set_smoothing_time'):
         assert old not in source, old
 
 
@@ -146,3 +147,76 @@ def test_the_preset_menu_clipboard_follows_the_core(app):
     app._copy_preset()
     wait_for(app, 'preset.copy')
     assert app.core.get('preset.clipboard') is True
+
+
+# ---------------------------------------------------------------------------
+# settings dialogs
+# ---------------------------------------------------------------------------
+
+def dialog_of(gui):
+    import tkinter as tk
+    dialogs = [w for w in gui.root.winfo_children() if isinstance(w, tk.Toplevel)]
+    assert dialogs
+    return dialogs[-1]
+
+
+def widgets(widget, kind):
+    found = []
+    for child in widget.winfo_children():
+        if isinstance(child, kind):
+            found.append(child)
+        found += widgets(child, kind)
+    return found
+
+
+def button(dialog, text):
+    import tkinter as tk
+    return next(b for b in widgets(dialog, tk.Button) if b.cget('text') == text)
+
+
+def test_the_audio_dialog_saves_through_the_core(app, prefs):
+    from tkinter import ttk
+    app._show_audio_preferences()
+    dialog = dialog_of(app)
+    device, input_device, buffer, rate, synth = widgets(dialog, ttk.Combobox)
+    end = time.monotonic() + 5.0
+    while not list(rate['values'])[0].startswith('48000') and time.monotonic() < end:
+        app._ui_update_tick()  # until the core's probe of the device's rates is shown
+        time.sleep(0.002)
+    assert list(rate['values'])[0].startswith('48000')  # 96000 is not supported
+    buffer.set(next(v for v in buffer['values'] if v.startswith('10 ms')))
+    input_device.set('Fake In')
+    button(dialog, 'OK').invoke()
+    assert prefs.get('audio_buffer_ms') == 10.0
+    assert prefs.get('audio_input_device') == 'Fake In'
+    assert app.core.get('pref.audio.pending') == ['pref.audio.buffer_ms']
+    assert app.core.get('audio.block_size') == 1050  # saved for later
+
+    app._show_audio_preferences()
+    dialog = dialog_of(app)
+    button(dialog, 'Apply Now').invoke()
+    event = wait_for(app, 'audio.apply')
+    assert event['status'] == 'done'
+    assert app.core.get('audio.block_size') == 441
+    assert app.core.get('pref.audio.pending') == []
+    dialog.destroy()
+
+
+def test_the_synthesis_and_ai_dialogs_save_through_the_core(app, prefs):
+    import tkinter as tk
+    app._show_synthesis_preferences()
+    dialog = dialog_of(app)
+    widgets(dialog, tk.Scale)[0].set(12)
+    button(dialog, 'OK').invoke()
+    assert prefs.get('param_smoothing_ms') == 12.0
+    app.backend.stream.pull()
+    assert app.core.synth.channels[5].get_smoothing_time() == 12.0
+
+    app._show_ai_preferences()
+    dialog = dialog_of(app)
+    entry = widgets(dialog, tk.Entry)[0]
+    entry.delete(0, 'end')
+    entry.insert(0, '/models/p.pt')
+    button(dialog, 'OK').invoke()
+    assert prefs.get('drum_generator_pattern_model_path') == '/models/p.pt'
+    assert app.core.get('pref.ai.pattern_model') == '/models/p.pt'
