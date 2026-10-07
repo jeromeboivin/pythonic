@@ -58,6 +58,10 @@ pythonic/web/
     js/drawer.js       createDrawer(slot): the edit rack drawer's pages (the rack as base, the matrix, ...)
     js/rack-layout.js  RACK_SECTIONS (the rack's sections and controls as data), FACE_ONLY, stageHeightFor
     js/rack.js         mountRack(...): the edit rack, click to assign, drum patch menu, open / closed
+    js/sheet.js        createSheets(stage, {onShow}): overlay sheets and the alert sheet
+    js/files.js        createFileFlows(...): file verbs with progress, failures and the replace question
+    js/presets.js      mountPresets(...): PRESET ◀ ▶ and the preset menu; neighbourFile, canSaveInPlace
+    js/exports.js      mountExports(...): the pattern menu's export to MIDI / audio (tail popover)
     js/main.js         boot({bridge, stage}), demoBridge(); sets window.pythonic
     test/              runner.html, shim/, *.test.js (pure), *.engine-spec.js (DOM)
 ```
@@ -80,6 +84,7 @@ Published on the QWebChannel as `bridge`. JS -> Python slots take and return
 | `resync` | `null` | none: the next frame carries every readout |
 | `fileDialog` | `{"mode": "open"\|"save"\|"folder", "title", "filters": ["Presets (*.mtpreset)"], "folder", "name", "suffix"}` | `{"id": n}`; then the `dialog` signal |
 | `resizeWindow` | `{"from": 1000, "to": 700}` (stage design heights) | `{"size": [w, h]}`: the window grows or shrinks by the difference at the panel's scale, its minimum follows (1280x560 closed); a maximized window keeps its size; `{"size": null}` without a window |
+| `trigger` | `{"channel": 1..8, "velocity": 1..127}` (default 127) | `{}`: hits the channel now (`core.trigger`, 0-based there), as a pad or a MIDI note |
 
 Signals (JSON text): `frame` = one `core.poll(since)` result per tick of a
 60 Hz main-thread QTimer, sent when it has changes or events or a readout
@@ -98,20 +103,24 @@ onFrame(fn) -> off, onDialog(fn) -> off }` with parsed values (JSON stays in
 this module). `connectBridge()` resolves the QWebChannel bridge, or `null`
 outside Qt. `createFakeBridge({describe, values, actions})` has the same
 interface plus `calls` (`[slot, payload]`), `values`, `transport`,
-`dialogAnswers` (paths the next dialogs return) and `pushFrame(extra)` (emit
-the changes and events since the last frame); `actions[verb](args, fake)`
-returns a verb's result.
+`dialogAnswers` (paths the next dialogs return), `post(event)` (queue any
+event: progress, errors without an action) and `pushFrame(extra)` (emit
+the changes and events since the last frame); `actions[verb](args, fake,
+id)` returns a verb's result.
 
 **core-client.js** - `createCoreClient(bridge, {schedule})`:
 `get(addresses) -> Promise<{addr: value}>`; `set(addr, value, {burst,
 editAll})` (coalesced per animation frame, latest value per address, one
-`set` call); `flush() -> Promise<errors>`; `act(verb, args) -> Promise<event>`
-(`{status: 'done', result}` or `{status: 'error', error}`);
+`set` call); `flush() -> Promise<errors>`; `act(verb, args, {onProgress}) -> Promise<event>`
+(`{status: 'done', result}` or `{status: 'error', error}`; `onProgress(fraction,
+event)` gets the verb's `progress` events);
 `describe(prefix | list) -> Promise<{addr: meta}>`; `beginGesture()`,
 `endGesture()`; `openFile(opts)`, `saveFile(opts)`, `chooseFolder(opts) ->
-Promise<path | null>`; `resizeWindow(from, to)`; `onFrame(fn) -> off`. It
-sends `resync` on creation. `act` resolves with the done or error event
-(`progress` events of exports are skipped).
+Promise<path | null>`; `resizeWindow(from, to)`; `trigger(channel,
+velocity)`; `onUnclaimedError(fn) -> off` (error events nobody waits for:
+those without an action id, and errors of an action still unclaimed two
+frames later while no `act` waits for its id); `onFrame(fn) -> off`. It
+sends `resync` on creation. `act` resolves with the done or error event.
 
 **store.js** - `createStore()` (pure, no DOM): `seed({addr: value})`,
 `apply(frame)`, `assume(addr, value)` (local echo), `value(addr)`, `has(addr)`,
@@ -174,12 +183,15 @@ Strips, top row, left and right columns and START/STOP as decided in #7 and
 suffixes or null]}`; the CTRL knob's `data-address` follows it. Slots for
 the later slices are elements with `data-slot` (`panel.slot(name)`):
 `step-entry` and `patterns` (left column), `preset-prev`, `preset-next`,
-`preset`, `po32`, `setup` (right column placeholders), `rack-toggle` (the
+`preset` (presets.js), `po32`, `setup` (open their pages), `rack-toggle` (the
 edit rack button, wired by `rack.js`),
 `steps` (bottom row), `rack` (the edit rack drawer, 1568x294 at y = 690).
 A slice fills its slot with `px-*` elements and buttons with `data-verb`.
 The display's first line is the selected pattern and the page on the pads
-(`PATTERN A  17-32`), the second the preset name.
+(`PATTERN A  17-32`), the second the preset name. A click on the selected
+channel's button hits it (bridge `trigger`, velocity 64, Ctrl+click 127, as
+tkinter); a channel button flashes when a MIDI note (`poll().midi.notes`)
+or a click hits its channel.
 
 ## Step row and patterns (`steps.js`, `patterns.js`)
 
@@ -274,8 +286,96 @@ address is reachable: LFO **phase**, pump **sync**.
   (open until set), applied at start-up. `drawer.setOpener` is plugged in: a
   page (the matrix) opens a closed drawer while it shows, without touching
   the preference.
-- `panel.rack`: `open`, `setOpen(open, {save})`, `arm(source)`, `disarm()`,
+- `panel.rack`: `open`, `setOpen(open, {save})`, `arm(source)`, `disarm()`, `patchItems()`,
   `assigning`, `element`.
+
+## Sheets, pages and errors (`sheet.js`, `panel.js`)
+
+Decisions #13 (where secondary features open) and #22 (the alert sheet).
+
+- **Overlay sheets**: `panel.sheets.show(name, element, {width, dismissable,
+  onHide, className}) -> card` puts the element on a sheet over a layer that
+  dims the whole stage: frames keep arriving and the panel keeps playing and
+  animating, but it takes no input (pointer, wheel, context menu stop at the
+  layer); showing a sheet closes open menus and ends click to assign.
+  `hide(name?)` (the top one without a name), `current`, `isOpen(name)`.
+  Sheets stack (an alert over the setup sheet); `dismissable` sheets close
+  with a click outside (the setup sheet, #13), others by their own buttons.
+  Menus (`.px-menu`, z 60) open above sheets (z 40+), so lists inside a
+  sheet work.
+- **Alert sheet**: `panel.sheets.alert({title, text, tone: 'error' | 'ok',
+  buttons: [{label, value, primary}]}) -> Promise<value>`: 460 wide, a red
+  top edge for errors, green for questions and success, the primary button
+  lit on the right, closed only by its buttons; alerts show one at a time
+  in order, and an error alert equal to one showing or waiting resolves at
+  once with null. `panel.sheets.ask(title, text, {yes, no, tone}) ->
+  Promise<boolean>` is a yes / no question (overwrite, discard, ...).
+- **Errors**: `panel.act(verb, args)` shows a verb's error on the display.
+  File verbs (`panel.files`, files.js) also put it on a red alert (it needs
+  reading). Error events nobody waits for (`client.onUnclaimedError`: audio
+  callback, stalled stream, AI worker, core jobs, MIDI, PO-32) go through
+  `panel.reportError(event)`: the display (`AUDIO ERROR`), plus a red alert
+  except for `midi` and `po32` sources (frequent, or shown by their page).
+- **File flows** (`panel.files`): `run(verb, args, {label, failTitle}) ->
+  result | null` (progress `42 %` on the display under `label`, a failure on
+  the display and a red alert titled `failTitle`); `save(verb, args, {label,
+  failTitle, done})`: when the core refuses because the file exists
+  (`{saved: false, exists: true, path}` or `paths` for `export.drum_wavs`) it
+  asks `Replace “name”?` on the alert sheet and saves again with
+  `overwrite: true`; `done` (text or `fn(result)`) shows on success.
+- **Pages** (the registration API for W6-W8): `panel.registerPage(name,
+  open) -> unregister` and `panel.openPage(name, options) -> open(options)`.
+  The panel opens pages from: PO-32 button `openPage('po32')`, SETUP button
+  `openPage('setup')`, MIDI LED `openPage('setup', {tab: 'midi'})`, a
+  control's right-click ▸ CC mappings… `openPage('setup', {tab: 'midi'})`,
+  PRESET menu transfer to / import from PO-32 `openPage('po32', {tab:
+  'transfer' | 'import'})`, AI drum generator `openPage('ai')`, setup…
+  `openPage('setup')`. `open` decides the container: a drawer page
+  (`panel.drawer.show(name, element, {onHide})`, PO-32 and AI) or a sheet
+  (`panel.sheets.show('setup', element, {dismissable: true})`). Without a
+  registration the alert sheet says the page is coming soon. `panel.pages`
+  lists the registered names.
+
+## PRESET menu (`presets.js`)
+
+Decisions #12, #13, #14. The right column's ◀ ▶ load the previous / next
+file of `preset.files` around `preset.path` (no wrap, as tkinter; with the
+current preset outside the folder ▶ loads the first file; disabled at the
+ends). PRESET (`#preset-button`) toggles the preset menu (`#preset-menu`):
+
+- left: the preset folder's name (↻ refreshes) over its presets as an
+  in-panel list (`.pm-files`, the current one lit, a click loads it by name
+  relative to the folder), then the recent files (`.pm-recent`,
+  `pref.recent_files`, a click loads the path);
+- right: open preset… (native open dialog in the preset folder), save
+  “name.json” (over the open JSON preset, no question; a .mtpreset falls
+  back to save as), save preset as… (native save dialog, suffix `.json`,
+  the replace question), reload last preset (`preset.load_last`), copy /
+  cut / paste preset (paste off while `preset.clipboard` is false),
+  initialize preset, randomize all; the selected channel's drum patch
+  entries (`panel.rack.patchItems()`, the rack header's menu, so they work
+  with the rack closed), export every drum as WAV… (folder dialog,
+  `export.drum_wavs`); preset folder… (folder dialog, sets
+  `pref.preset_folder`, `preset.files` follows), refresh list; transfer to
+  PO-32…, import from PO-32…, AI drum generator…, setup… (pages, above).
+
+A load or save failure shows on a red alert; the display shows the loaded
+preset (`PRESET` / name) or `saved`. The menu follows the folder, recent
+files and clipboard while open. Bound addresses: `preset.name`, `.path`,
+`.files`, `.clipboard`, `pref.preset_folder`, `pref.recent_files`.
+
+## Pattern exports (`exports.js`)
+
+Decision #13. Two pattern menu entries (`panel.patterns.addMenuItems`):
+**export to MIDI…** goes straight to the native save dialog
+(`pythonic_pattern_<X>.mid`) and `export.midi`; **export to audio…** opens
+the tail popover (`#tail-pop`) on the pattern MENU button: cut / add 2 s /
+loop +1 pass (`[data-tail]`, the last choice kept for the session) and
+save wav… (`#tail-save`), then the save dialog (`pythonic_pattern_<X>.wav`)
+and `export.wav` with the tail; the render's progress shows on the display
+(`PATTERN B WAV` / `40 %`), then `saved b.wav`. Both ask before replacing a
+file. `panel.exports`: `exportMidi(letter)`, `exportAudio(letter, tail)`,
+`openTailPopover(letter)`, `tail`.
 
 ## Tests
 
@@ -326,13 +426,19 @@ before pytest-qt makes the QApplication. CI also sets
   handler), `closed`; `patterns` (`FakePatterns`: step and lane addresses
   with the core's rules, lanes reported on every step set, `set(parsed,
   value)` for core-side edits); `pattern.select` moves the transport's
-  selected pattern.
+  selected pattern; `trigger` is recorded (`('trigger', channel0, velocity)`);
+  a verb handler returning `FakeCore.DEFERRED` leaves its action open
+  (`core.running` is its id) for `progress(id, fraction)` and `finish(id,
+  result | error=)`.
 - **Real-core end-to-end tests** (`test_real_core.py`): play and the playhead,
   a tempo edit through a preset file round trip, the frame budget, a tune
   drag and its undo, select and mute, the CTRL preference, a paint stroke
   and its one-step undo, follow over a 32-step pattern, lane copy / paste,
   a rack fader on the selected channel and its undo, click to assign an LFO
-  destination, bands moving while an LFO runs, the rack-open preference.
+  destination, bands moving while an LFO runs, the rack-open preference, a
+  preset saved from the PRESET menu and loaded back from the folder list
+  (after choosing the folder), export to MIDI from the pattern menu (and the
+  replace question on the second export).
 - **Parity guard** (`test_parity_guard.py`): every address the core's
   `describe()` lists is bound by a `data-address` control or listed in
   `tests/web/parity_absent.json`: `{"absent": {"<fnmatch glob>": "<reason>"}}`
