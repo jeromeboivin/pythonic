@@ -43,3 +43,5 @@ include = ["pythonic*", "gui*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Dump every thread's stack when a test hangs (CI diagnosis)
+faulthandler_timeout = 120
