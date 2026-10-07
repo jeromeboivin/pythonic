@@ -260,7 +260,8 @@ class MidiInput:
         self._prefs.set('midi_pitchbend_target', target)
 
     # Saved preferences named controls by their old parameter names
-    # ('osc_freq'); they are read as targets and saved back in that form.
+    # ('osc_freq'); they are read as targets, and the reader that found one
+    # saves the migrated map (or pitch bend target) back in address form.
     def _migrate(self, name):
         if name in CHANNEL_CC_PARAMETERS or name in GLOBAL_CC_PARAMETERS:
             return cc_parameter_target(name)
