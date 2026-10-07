@@ -43,8 +43,22 @@ def bound_in_setup(panel):
     return bound
 
 
+def bound_in_pages(panel):
+    """The addresses bound by each other registered page (PO-32, AI), opened in turn."""
+    bound = set()
+    for name in panel.js('pythonic.panel.pages'):
+        if name == 'setup':
+            continue  # tab by tab: bound_in_setup
+        panel.run(f'pythonic.panel.openPage({name!r})')
+        panel.wait_js(f'pythonic.panel.drawer.current === {name!r} || pythonic.panel.sheets.current === {name!r}')
+        bound |= panel.bound_addresses()
+        panel.run(f'if (pythonic.panel.drawer.current === {name!r}) pythonic.panel.drawer.hide({name!r});'
+                  f' pythonic.panel.sheets.hide({name!r});')
+    return bound
+
+
 def test_every_address_is_bound_or_listed_absent(panel, core_table):
-    bound = bound_on_every_channel(panel) | bound_in_setup(panel)
+    bound = bound_on_every_channel(panel) | bound_in_setup(panel) | bound_in_pages(panel)
     patterns = absent_patterns()
     names = set(core_table['describe'])
 
