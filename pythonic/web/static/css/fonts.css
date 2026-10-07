@@ -1,5 +1,7 @@
-/* Bundled fonts, all SIL OFL 1.1 (licences and sources in ../fonts/SOURCES.txt).
-   Nothing depends on system fonts, so every OS draws the same panel. */
+/* Bundled fonts, all SIL OFL 1.1 (licences and sources in ../fonts/SOURCES.txt),
+   fetched by tools/fetch_fonts.py. With them every OS draws the same panel;
+   the app:// handler (scheme.py) leaves out the rules of fonts not fetched,
+   and the stacks in tokens.css fall back to system fonts. */
 @font-face {
   font-family: "Barlow Condensed";
   font-weight: 500;

@@ -7,7 +7,8 @@ types, so ES modules load with no build step and the page has a real origin.
 a scheme, and the profile does not own it, so the module keeps it alive).
 """
 
-from pathlib import PurePosixPath
+import re
+from pathlib import Path, PurePosixPath
 
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice
 from PySide6.QtWebEngineCore import (QWebEngineProfile, QWebEngineUrlRequestJob,
@@ -36,6 +37,9 @@ MIME_TYPES = {
     '.txt': b'text/plain',
 }
 
+# An @font-face rule and the file its first url() names
+_FONT_FACE = re.compile(r'@font-face\s*\{[^}]*?url\(\s*["\']?([^"\')]+)["\']?\s*\)[^}]*\}\s*')
+
 _registered = False
 _handlers = {}  # id(profile) -> (profile, handler), kept for the process lifetime
 
@@ -54,12 +58,27 @@ def register_scheme():
     _registered = True
 
 
+def available_fonts_css(css, fonts_dir):
+    """The style sheet without the @font-face rules whose font file is not in
+    `fonts_dir`: the bundled fonts are optional (``tools/fetch_fonts.py``), and
+    a rule for a missing file makes Chromium report a failed load."""
+    fonts_dir = Path(fonts_dir)
+
+    def keep(match):
+        name = PurePosixPath(match.group(1)).name
+        return match.group(0) if (fonts_dir / name).is_file() else ''
+    return _FONT_FACE.sub(keep, css)
+
+
 class StaticHandler(QWebEngineUrlSchemeHandler):
-    """Serves ``app://ui/<path>`` from a folder."""
+    """Serves ``app://ui/<path>`` from a folder; ``css/fonts.css`` keeps only
+    the fonts that are there. ``missing`` lists the paths asked for and not
+    found."""
 
     def __init__(self, root=STATIC_DIR, parent=None):
         super().__init__(parent)
         self.root = root.resolve()
+        self.missing = []
 
     def resolve(self, url_path):
         """The file for a URL path, or None (unknown, a folder, or outside)."""
@@ -73,10 +92,14 @@ class StaticHandler(QWebEngineUrlSchemeHandler):
         url = job.requestUrl()
         path = self.resolve(url.path()) if url.host() == HOST else None
         if path is None:
+            self.missing.append(url.toString())
             job.fail(QWebEngineUrlRequestJob.Error.UrlNotFound)
             return
+        data = path.read_bytes()
+        if path == self.root / 'css' / 'fonts.css':
+            data = available_fonts_css(data.decode('utf-8'), self.root / 'fonts').encode('utf-8')
         buffer = QBuffer(parent=job)
-        buffer.setData(QByteArray(path.read_bytes()))
+        buffer.setData(QByteArray(data))
         buffer.open(QIODevice.OpenModeFlag.ReadOnly)
         job.reply(MIME_TYPES.get(path.suffix.lower(), b'application/octet-stream'), buffer)
 

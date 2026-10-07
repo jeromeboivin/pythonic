@@ -87,3 +87,23 @@ def test_readouts_from_before_the_page_connected_are_shown(open_panel, fake_core
     page = open_panel(fake_core)
     page.wait_js("document.querySelector('#start-stop').classList.contains('on')")
     assert page.js("document.querySelector('.pad.ph').dataset.step") == '3'
+
+
+def test_fonts_css_leaves_out_the_fonts_that_are_not_there(tmp_path):
+    from pythonic.web.scheme import available_fonts_css
+    (tmp_path / 'fonts').mkdir()
+    (tmp_path / 'fonts' / 'Here.woff2').write_bytes(b'x')
+    css = ('/* bundled */\n'
+           '@font-face {\n  font-family: "Here";\n  src: url("../fonts/Here.woff2") format("woff2");\n}\n'
+           '@font-face {\n  font-family: "Gone";\n  src: url("../fonts/Gone.woff2") format("woff2");\n}\n')
+    out = available_fonts_css(css, tmp_path / 'fonts')
+    assert 'Here.woff2' in out and '/* bundled */' in out
+    assert 'Gone' not in out
+
+
+def test_the_page_asks_for_no_file_that_is_not_there(panel):
+    # The bundled fonts are optional (tools/fetch_fonts.py): a missing one is
+    # not asked for (DevTools would list each failed load as a console error)
+    from pythonic.web.scheme import install_handler
+    handler = install_handler(panel.page.profile())
+    assert handler.missing == []
