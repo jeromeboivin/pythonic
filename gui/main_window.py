@@ -1443,34 +1443,14 @@ class PythonicGUI:
     # ============== Event Handlers ==============
     
     def _on_program_select(self, event=None):
-        """Handle program selection (1-16 slots)
-        
-        Stores the current synth state into the previously selected slot,
-        then recalls the newly selected slot. If the new slot is empty,
-        the current state is copied into it so every first visit
-        captures a snapshot.
-        """
+        """Switch program (1-16): the core stores the sounds into the current
+        program and recalls the new one (an empty one gets a copy). The
+        combobox and the knobs follow poll."""
         try:
-            program_num = int(self.program_var.get())
-            new_slot = program_num - 1  # 0-indexed internally
-            old_slot = self.synth.get_current_program()
-            
-            if new_slot == old_slot:
-                return  # No change
-            
-            # Save current state into the old slot before switching
-            self.synth.store_program(old_slot)
-            
-            # Try to recall the new slot
-            if self.synth.recall_program(new_slot):
-                # Slot had data – UI needs to reflect the loaded state
-                self._update_ui_from_channel()
-            else:
-                # Empty slot – capture current state into it
-                self.synth.store_program(new_slot)
-                self.synth._current_program = new_slot
+            program = int(self.program_var.get())
         except ValueError:
-            pass
+            return
+        self._act_or_warn('program.select', "Program change failed", program=program)
     
     def _on_morph_change(self, value):
         """Handle sound morph slider change
@@ -1486,49 +1466,22 @@ class PythonicGUI:
         self.core.set('morph.position', float(value) / 100.0)
     
     def _on_morph_learn_a(self):
-        """Toggle learn mode for morph endpoint A."""
-        current = self.morph_manager.get_learn_mode()
-        if current == 'a':
-            # Stop learning A - capture current state
-            self.morph_manager.stop_learn()
-            # Re-apply the actual slider position now that learn is off
-            self.morph_manager.apply_effective_position()
-            self._update_ui_from_channel()
-            self._update_morph_ui()
-        else:
-            # Start learning A (stop B if active)
-            if current == 'b':
-                self.morph_manager.stop_learn()
-            self.morph_manager.start_learn_a()
-            # Apply effective position (0.0) so user hears endpoint A
-            self.morph_manager.apply_effective_position()
-            self._update_ui_from_channel()
-            self._update_morph_ui()
+        """Toggle learn mode for morph endpoint A (B stops; poll shows it)."""
+        self._toggle_morph_learn('a')
     
     def _on_morph_learn_b(self):
         """Toggle learn mode for morph endpoint B."""
-        current = self.morph_manager.get_learn_mode()
-        if current == 'b':
-            # Stop learning B - capture current state
-            self.morph_manager.stop_learn()
-            # Re-apply the actual slider position now that learn is off
-            self.morph_manager.apply_effective_position()
-            self._update_ui_from_channel()
-            self._update_morph_ui()
-        else:
-            # Start learning B (stop A if active)
-            if current == 'a':
-                self.morph_manager.stop_learn()
-            self.morph_manager.start_learn_b()
-            # Apply effective position (1.0) so user hears endpoint B
-            self.morph_manager.apply_effective_position()
-            self._update_ui_from_channel()
-            self._update_morph_ui()
+        self._toggle_morph_learn('b')
+
+    def _toggle_morph_learn(self, endpoint):
+        learning = self.core.get('morph.learning')
+        self._act_or_warn('morph.learn', "Morph learn failed",
+                          endpoint=None if learning == endpoint else endpoint)
     
     def _update_morph_ui(self):
         """Update morph learn button colors and slider enabled state."""
-        mode = self.morph_manager.get_learn_mode()
-        has_morph = self.morph_manager.has_different_endpoints()
+        mode = self.core.get('morph.learning')
+        has_morph = self.core.get('morph.differs')
         
         # A button: green when learning A, dark gray otherwise
         if mode == 'a':
@@ -1551,7 +1504,7 @@ class PythonicGUI:
                 activebackground='#555566')
         
         # Slider: enabled only when endpoints differ or learn is active
-        if has_morph or mode is not None:
+        if has_morph or mode != 'off':
             self.morph_slider.config(
                 state='normal',
                 fg=self.COLORS['text'],
@@ -2554,6 +2507,9 @@ class PythonicGUI:
             'global.master': self.master_knob.set_value,
             'global.edit_all': self.edit_all_btn.set_value,
             'morph.position': self._show_morph_position,
+            'morph.learning': self._show_morph_learning,
+            'morph.differs': lambda _v: self._update_morph_ui(),
+            'program.current': lambda v: self.program_var.set(str(v)),
             'undo.can_undo': self._show_undo_state,
             'undo.can_redo': self._show_undo_state,
         }
@@ -2561,6 +2517,11 @@ class PythonicGUI:
     def _show_morph_position(self, position):
         """A new morph position (from poll): the knobs show the blended sound."""
         self._show_scale(self.morph_slider, position * 100)
+        self._update_ui_from_channel()
+
+    def _show_morph_learning(self, _mode):
+        """Learn started or stopped: the sound jumped to an endpoint or back."""
+        self._update_morph_ui()
         self._update_ui_from_channel()
 
     def _show_scale(self, scale, value):
@@ -2858,15 +2819,12 @@ class PythonicGUI:
                 self._update_morph_ui()
                 
                 # Load program bank if available
-                if 'programs' in data:
+                if 'programs' in data:  # the combobox follows poll
                     self.synth.load_programs_data(data['programs'])
-                    current = self.synth.get_current_program()
-                    self.program_var.set(str(current + 1))
                 else:
                     # No program data — reset bank
                     self.synth._programs = [None] * self.synth.NUM_PROGRAMS
                     self.synth._current_program = 0
-                    self.program_var.set("1")
                 
                 self._update_ui_from_channel()
                 self.preferences_manager.add_recent_file(filename)

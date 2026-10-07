@@ -179,3 +179,58 @@ def test_the_swing_slider_is_undone(app):
     app._on_global_swing_change('0')  # the slider's echo of the value shown
     tick(app)
     assert app.core.get('undo.can_redo') is True  # the echo wrote nothing
+
+
+def wait_for(gui, verb):
+    """Pull blocks until the core reports an action of `verb`, then tick."""
+    version = gui.core.poll()['version']
+    end = time.monotonic() + 5.0
+    while time.monotonic() < end:
+        gui.backend.stream.pull()
+        if any(e.get('verb') == verb for e in gui.core.poll(version)['events']):
+            tick(gui)
+            return
+        time.sleep(0.002)
+    raise AssertionError(f'{verb} did not finish')
+
+
+def test_program_switch_goes_through_the_core(app):
+    app.osc_decay_knob.set_value(500.0)
+    tick(app)
+    app.program_var.set('2')
+    app._on_program_select()
+    wait_for(app, 'program.select')
+    app.osc_decay_knob.set_value(900.0)
+    tick(app)
+    app.program_var.set('1')
+    app._on_program_select()
+    wait_for(app, 'program.select')
+    assert app.core.get('program.current') == 1
+    assert app.osc_decay_knob.get_value() == 500.0
+
+    press(app, app.undo_btn)
+    assert app.program_var.get() == '2'
+    assert app.osc_decay_knob.get_value() == 900.0
+
+
+def test_morph_learn_buttons_go_through_the_core(app):
+    green = '#22cc55'
+    app.morph_learn_a_btn.invoke()
+    wait_for(app, 'morph.learn')
+    assert app.core.get('morph.learning') == 'a'
+    assert app.morph_learn_a_btn.cget('bg') == green
+    assert app.morph_slider.cget('state') == 'normal'  # enabled while learning
+
+    app.osc_decay_knob.set_value(80.0)
+    tick(app)
+    app.morph_learn_b_btn.invoke()  # A is captured, B is learned
+    wait_for(app, 'morph.learn')
+    assert app.core.get('morph.learning') == 'b'
+    assert app.morph_learn_a_btn.cget('bg') != green
+    assert app.morph_learn_b_btn.cget('bg') == green
+    app.morph_learn_b_btn.invoke()
+    wait_for(app, 'morph.learn')
+    assert app.core.get('morph.learning') == 'off'
+    assert app.core.get('morph.differs') is True
+    assert app.morph_slider.cget('state') == 'normal'
+    assert app.osc_decay_knob.get_value() == app.core.get('ch1.osc.decay') == 80.0

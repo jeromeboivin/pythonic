@@ -16,6 +16,8 @@ the audio stream, driven through an address-based interface (ADR 0001).
   the core's MIDI thread (see ``midi.py``).
 - Pattern steps, lanes, pattern ops, selection, the queue and chains
   (``pattern.*``) are in ``patterns.py``.
+- Programs (``program.*``) are in ``programs.py``, the sound morph
+  (``morph.*``) in ``morph.py``.
 - Undo and redo (``undo`` / ``redo`` verbs, ``undo.*`` addresses): every set
   is journaled (``undo.py``); a front-end brackets a drag with
   ``begin_gesture()`` / ``end_gesture()``, a wheel or controller passes
@@ -42,7 +44,9 @@ from pythonic.synthesizer import PythonicSynthesizer
 
 from .audio import AudioEngine
 from .midi import MidiInput, import_mido
+from .morph import Morph
 from .patterns import Patterns
+from .programs import Programs
 from .registry import Address, Registry
 from .sound import SOUND_PARAMS, SOUND_SUFFIXES
 from .undo import PRESET, Undo
@@ -120,6 +124,10 @@ class AppCore:
         self._register_addresses()
         self.undo = Undo(self, clock)
         self.undo.register(self.registry)
+        self.programs = Programs(self)
+        self.programs.register(self.registry)
+        self.morph = Morph(self)
+        self.morph.register(self.registry)
         self.patterns = Patterns(self)
         self.patterns.register(self.registry)
         self.midi = MidiInput(self, midi_backend, clock, prefs)
@@ -129,6 +137,8 @@ class AppCore:
             'audio.stop': self._verb_audio_stop,
             'audio.apply': self._verb_audio_apply,
             **self.undo.verbs(),
+            **self.programs.verbs(),
+            **self.morph.verbs(),
             **self.patterns.verbs(),
             **self.midi.verbs(),
         }
@@ -581,20 +591,13 @@ class AppCore:
             reg(Address(f'{prefix}.name', get=lambda c=channel: c().name, kind='str'))
 
     def _register_global_addresses(self):
-        """Tempo, swing, step rate, fill rate, master, selection, Edit all, morph."""
+        """Tempo, swing, step rate, fill rate, master, selection, Edit all."""
         reg = self.registry.register
         pm = self.pattern_manager
 
         def set_tempo(bpm):
             pm.set_bpm(bpm)
             self.synth.set_bpm(bpm)
-
-        def set_morph_position(position):
-            morph = self.morph_manager
-            if morph.is_learning():
-                morph._position = position  # the synth stays on the learned endpoint
-            else:
-                morph.set_position(position)
 
         reg(Address('global.tempo', get=lambda: int(pm.bpm), set=set_tempo, kind='int',
                     minimum=1, maximum=300, default=120, unit='BPM'))
@@ -614,9 +617,6 @@ class AppCore:
         reg(Address('global.edit_all', get=lambda: self._edit_all,
                     set=lambda v: setattr(self, '_edit_all', v), kind='bool',
                     default=False, queued=False, undoable=False))
-        reg(Address('morph.position', get=lambda: float(self.morph_manager.position),
-                    set=set_morph_position, minimum=0.0, maximum=1.0, default=0.0,
-                    unit='ratio'))
 
     # ================================================================== verbs
     def _verb_audio_start(self):
