@@ -9,15 +9,30 @@ get/set/describe/act/poll from it: sets apply at once (coerced as the real
 core does) and show in the next poll; verbs are recorded and answered from
 ``verbs`` (transport verbs flip ``transport``); ``calls`` records every set,
 verb and gesture.
+
+Pattern steps and lanes (resolved lazily by the real core, so not in the
+table) are kept by ``FakePatterns``: step sets apply the real rules (turning
+a trigger off clears accent and fill, steps past the length are ignored) and
+report the lanes, as the real core's poll does; ``pattern.<P>.length`` resizes
+the lanes. ``pattern.select`` moves ``transport['selected_pattern']``.
 """
 
 import itertools
+import re
 import tempfile
 from unittest import mock
 
 from pythonic.app.registry import Address
 
 PREF_UI = 'pref.ui.'
+PATTERN_NAMES = 'ABCDEFGHIJKL'
+STEP_ADDRESS = re.compile(
+    r'pattern\.([A-L])\.ch([1-8])\.(?:step([1-9][0-9]?)\.)?(trig|acc|vel|fill|prob|sub)$')
+STEP_FIELDS = {  # field: (kind, default, minimum, maximum, unit)
+    'trig': ('bool', False, None, None, ''), 'acc': ('bool', False, None, None, ''),
+    'vel': ('int', 64, 1, 127, ''), 'fill': ('bool', False, None, None, ''),
+    'prob': ('int', 100, 0, 100, '%'), 'sub': ('str', '', None, None, ''),
+}
 
 
 def core_table():
@@ -50,6 +65,75 @@ class _Names:
         return sorted(name for name in self._meta if name.startswith(prefix))
 
 
+class FakePatterns:
+    """The step lanes of the 12 patterns, with the real core's step rules."""
+
+    def __init__(self, core):
+        self.core = core
+        self.lanes = {}  # (letter, channel, field) -> list
+
+    def length(self, letter):
+        return self.core.values[f'pattern.{letter}.length']
+
+    def lane(self, letter, channel, field):
+        key = (letter, channel, field)
+        n = self.length(letter)
+        lane = self.lanes.setdefault(key, [STEP_FIELDS[field][1]] * n)
+        if len(lane) != n:  # the length changed
+            lane[:] = (lane + [STEP_FIELDS[field][1]] * n)[:n]
+        return lane
+
+    @staticmethod
+    def match(address):
+        m = STEP_ADDRESS.match(address)
+        if m is None:
+            return None
+        letter, channel, step, field = m.groups()
+        if step is not None and not 1 <= int(step) <= 64:
+            return None
+        return letter, int(channel), None if step is None else int(step), field
+
+    def describe(self, address, parsed):
+        _, _, step, field = parsed
+        kind, default, lo, hi, unit = STEP_FIELDS[field]
+        if step is None:
+            kind, default, lo, hi, unit = 'list', None, None, None, ''
+        return {'address': address, 'kind': kind, 'minimum': lo, 'maximum': hi, 'default': default,
+                'unit': unit, 'curve': 'linear', 'labels': [], 'readonly': False}
+
+    def get(self, parsed):
+        letter, channel, step, field = parsed
+        lane = self.lane(letter, channel, field)
+        if step is None:
+            return list(lane)
+        return lane[step - 1] if step <= len(lane) else STEP_FIELDS[field][1]
+
+    def set(self, parsed, value):
+        letter, channel, step, field = parsed
+        if step is None:
+            for i, v in enumerate(list(value)[:len(self.lane(letter, channel, field))]):
+                self._write(letter, channel, i, field, v)
+        elif step <= self.length(letter):
+            self._write(letter, channel, step - 1, field, value)
+            self.core.post_change(f'pattern.{letter}.ch{channel}.step{step}.{field}', value)
+        self.report(letter, [channel])
+
+    def _write(self, letter, channel, index, field, value):
+        self.lane(letter, channel, field)[index] = value
+        if field == 'trig' and not value:
+            self.lane(letter, channel, 'acc')[index] = False
+            self.lane(letter, channel, 'fill')[index] = False
+
+    def report(self, letter, channels=range(1, 9)):
+        """Post the lanes and empty flag of a pattern (as the real core's poll)."""
+        for channel in channels:
+            for field in STEP_FIELDS:
+                self.core.post_change(f'pattern.{letter}.ch{channel}.{field}',
+                                      list(self.lane(letter, channel, field)))
+        empty = not any(any(self.lane(letter, c, 'trig')) for c in range(1, 9))
+        self.core.post_change(f'pattern.{letter}.empty', empty)
+
+
 class FakeCore:
     def __init__(self, table):
         self.meta = {name: dict(meta) for name, meta in table['describe'].items()}
@@ -66,10 +150,12 @@ class FakeCore:
                       'dropped': 0},
             'midi': {'activity': 0, 'notes': [0] * 8, 'pickup': {}},
         }
+        self.patterns = FakePatterns(self)
         self.verbs = {
             'transport.play': lambda pattern=None: self._play(True),
             'transport.stop': lambda: self._play(False),
             'transport.toggle': lambda: self._play(not self.transport['playing']),
+            'pattern.select': self._select,
         }
         self.closed = False
         self._version = 0
@@ -79,6 +165,9 @@ class FakeCore:
 
     # ---------------------------------------------------------------- interface
     def get(self, address):
+        parsed = FakePatterns.match(address)
+        if parsed is not None:
+            return self.patterns.get(parsed)
         if address.startswith(PREF_UI) and address not in self.values:
             return None  # front-end state, None until set (as the real core)
         if address not in self.values:
@@ -86,6 +175,9 @@ class FakeCore:
         return self.values[address]
 
     def describe(self, address):
+        parsed = FakePatterns.match(address)
+        if parsed is not None:
+            return self.patterns.describe(address, parsed)
         if address.startswith(PREF_UI) and address not in self.meta:
             return {'address': address, 'kind': 'json', 'minimum': None, 'maximum': None,
                     'default': None, 'unit': '', 'curve': 'linear', 'labels': [],
@@ -101,7 +193,13 @@ class FakeCore:
         value = self._coerce(meta, value)
         self.calls.append(('set', address, value,
                            {'edit_all': edit_all, 'burst': burst, 'record': record}))
+        parsed = FakePatterns.match(address)
+        if parsed is not None:
+            self.patterns.set(parsed, value)
+            return
         self.post_change(address, value)
+        if address.startswith('pattern.') and address.endswith('.length'):
+            self.patterns.report(address.split('.')[1])
 
     def act(self, verb, **args):
         action_id = next(self._ids)
@@ -144,7 +242,7 @@ class FakeCore:
         self._changes[address] = (self._version, value)
 
     def sets(self):
-        return [(address, value) for kind, address, value, *_ in self.calls if kind == 'set']
+        return [(call[1], call[2]) for call in self.calls if call[0] == 'set']
 
     def verbs_called(self):
         return [call[1] for call in self.calls if call[0] == 'act']
@@ -155,6 +253,12 @@ class FakeCore:
         event['version'] = self._version
         self._events.append(event)
 
+    def _select(self, pattern):
+        index = PATTERN_NAMES.index(pattern) if isinstance(pattern, str) else pattern
+        self.transport['selected_pattern'] = index
+        self.post_change('pattern.selected', PATTERN_NAMES[index])
+        return {'selected': PATTERN_NAMES[index]}
+
     def _play(self, playing):
         self.transport['playing'] = playing
         self.transport['position'] = 0
@@ -162,9 +266,11 @@ class FakeCore:
 
     @staticmethod
     def _coerce(meta, value):
-        if meta['kind'] in ('json', 'map'):
-            return value
         """The real core's coercion (clamping, enum names) for this metadata."""
+        if meta['kind'] in ('json', 'map', 'list'):
+            return value
+        if meta['kind'] == 'str':
+            return str(value)
         entry = Address(meta['address'], get=lambda: None, kind=meta['kind'],
                         minimum=meta['minimum'], maximum=meta['maximum'],
                         labels=tuple(meta['labels']))

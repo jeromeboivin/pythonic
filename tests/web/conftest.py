@@ -21,6 +21,16 @@ import pytest
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
+
+def pytest_collection_modifyitems(items):
+    """The start-up test runs the application's event loop to its end, and
+    QtWebEngine shuts down with the application (aboutToQuit): no page loads
+    after it in this process, so it runs last."""
+    def last(item):
+        return item.path.name == 'test_startup.py' and item.path.parent.name == 'web'
+    items[:] = [i for i in items if not last(i)] + [i for i in items if last(i)]
+
+
 try:
     import PySide6.QtWebEngineWidgets  # noqa: F401  (before the QApplication exists)
     import pytestqt  # noqa: F401

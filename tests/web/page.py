@@ -9,7 +9,7 @@ Page-test helpers: drive the real app:// page in a PanelWindow from pytest-qt.
 - ``wait_js(expr, timeout, pump)``: wait until an expression is truthy;
   ``pump()`` runs before every check (pull audio blocks for a real core)
 - ``rect(selector)``, ``click(selector)``, ``wheel(selector, steps)``,
-  ``drag(selector, dy, modifiers)``, ``right_click``, ``double_click``,
+  ``drag(selector, dy, modifiers, dx=0)``, ``right_click``, ``double_click``,
   ``press``, ``type_text(text)``: real pointer and key input through QTest
   on the view's focus proxy, at an element's centre
 - ``pixel(x, y)``, ``color_at(selector)``: coarse ``grab()`` pixel checks;
@@ -135,13 +135,15 @@ class Page:
         QTest.mousePress(target, button, modifiers, point)
         return point
 
-    def drag(self, selector, dy, modifiers=Qt.KeyboardModifier.NoModifier, steps=4, fx=0.5, fy=0.5):
-        """Press on an element, move `dy` view pixels down (negative: up) in steps, release."""
+    def drag(self, selector, dy, modifiers=Qt.KeyboardModifier.NoModifier, steps=4, fx=0.5, fy=0.5,
+             dx=0):
+        """Press on an element, move `dy` view pixels down (negative: up) and `dx`
+        right in steps, release."""
         start = self.press(selector, modifiers=modifiers, fx=fx, fy=fy)
         target = self.view.focusProxy()
         point = start
         for i in range(1, steps + 1):
-            point = QPoint(start.x(), round(start.y() + dy * i / steps))
+            point = QPoint(round(start.x() + dx * i / steps), round(start.y() + dy * i / steps))
             # A move with the button held and the modifiers (QTest.mouseMove has neither)
             event = QMouseEvent(QEvent.Type.MouseMove, QPointF(point),
                                 QPointF(target.mapToGlobal(point)), Qt.MouseButton.NoButton,
