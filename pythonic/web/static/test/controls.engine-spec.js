@@ -253,3 +253,110 @@ test('a control bound to an address the store lacks reads it', async () => {
   assert.deepEqual(bridge.calls.filter(([s]) => s === 'get').map(([, p]) => p), [['ch1.fx.reverb_mix']]);
   assert.equal(store.value('ch1.fx.reverb_mix'), 0.25);
 });
+
+// ---------------------------------------------------------------- edit rack additions (W4)
+
+const MIXM = { address: 'ch1.mix.osc_noise', kind: 'float', minimum: 0, maximum: 1, default: 0.5, unit: 'ratio',
+  curve: 'linear', labels: [], readonly: false };
+const DELAY = { address: 'ch1.fx.delay_time', kind: 'enum', minimum: null, maximum: null, default: 'eighth', unit: '',
+  curve: 'linear', readonly: false, labels: ['whole', 'half', 'quarter', 'eighth', 'sixteenth', 'thirtysecond',
+    'half_t', 'quarter_t', 'eighth_t', 'sixteenth_t', 'half_d', 'quarter_d', 'eighth_d', 'sixteenth_d'] };
+const TARGET = { address: 'ch1.lfo1.target', kind: 'enum', minimum: null, maximum: null, default: 'none', unit: '',
+  curve: 'linear', readonly: false, labels: ['none', 'osc_frequency', 'osc_attack', 'osc_decay'] };
+Object.assign(META, { [MIXM.address]: MIXM, [DELAY.address]: DELAY, [TARGET.address]: TARGET });
+const DELAY_NAMES = '1/1,1/2,1/4,1/8,1/16,1/32,1/2T,1/4T,1/8T,1/16T,1/2.,1/4.,1/8.,1/16.';
+
+test('a reversed horizontal fader puts the high end on the left and drags sideways', async () => {
+  const { root, store, flush, gestures } = setup(
+    '<px-fader data-address="ch1.mix.osc_noise" orient="h" reverse ends="osc,noise" length="100"></px-fader>',
+    { 'ch1.mix.osc_noise': 0.75 });
+  const fader = root.querySelector('px-fader');
+  assert.ok(fader.classList.contains('h'));
+  assert.deepEqual([...fader.querySelectorAll('.ends span')].map((s) => s.textContent), ['osc', 'noise']);
+  assert.equal(fader.querySelector('.cap').style.left, '25%');
+  assert.equal(fader.querySelector('.val').textContent, '75 %');
+  const cap = fader.querySelector('.cap').getBoundingClientRect();
+  pointer(fader.querySelector('.cap'), 'pointerdown', { x: cap.left, y: cap.top });
+  pointer(fader, 'pointermove', { x: cap.left + 20, y: cap.top }); // 20 % of 100 px, towards noise
+  pointer(fader, 'pointerup', {});
+  await flush();
+  assert.equal(store.value('ch1.mix.osc_noise').toFixed(2), '0.55');
+  assert.deepEqual(gestures(), ['begin', 'end']);
+  const track = fader.querySelector('.track').getBoundingClientRect();
+  pointer(fader.querySelector('.track'), 'pointerdown', { x: track.left + track.width * 0.9, y: track.top });
+  pointer(fader, 'pointerup', {});
+  assert.equal(store.value('ch1.mix.osc_noise').toFixed(2), '0.10');
+});
+
+test('a switch offers a subset of the labels and shows a value outside it', async () => {
+  const { root, store, flush, sets } = setup(`<px-switch data-address="ch1.fx.delay_time"
+    options="${DELAY_NAMES}" values="quarter,eighth,sixteenth,eighth_t,quarter_d"></px-switch>`,
+  { 'ch1.fx.delay_time': 'eighth' });
+  const sw = root.querySelector('px-switch');
+  const buttons = () => [...sw.querySelectorAll('.btn')];
+  assert.deepEqual(buttons().map((b) => b.textContent), ['1/4', '1/8', '1/16', '1/8T', '1/4.']);
+  assert.equal(sw.querySelector('.btn.on').textContent, '1/8');
+  assert.equal(sw.querySelector('.other').style.display, 'none');
+  wheel(sw, -120); // up: the next offered one
+  assert.equal(store.value('ch1.fx.delay_time'), 'sixteenth');
+  await flush();
+  store.assume('ch1.fx.delay_time', 'thirtysecond'); // from a preset
+  assert.equal(sw.querySelector('.btn.on'), null);
+  assert.equal(sw.querySelector('.other').textContent, '1/32');
+  assert.notEqual(sw.querySelector('.other').style.display, 'none');
+  buttons()[3].click();
+  await flush();
+  assert.deepEqual(sets().map((c) => c.value), ['sixteenth', 'eighth_t']);
+});
+
+test('a destination button names its target, steps with the wheel and asks to assign', async () => {
+  const { root, store, flush, sets } = setup(
+    '<px-target data-address="ch1.lfo1.target" name="lfo 1 destination"></px-target>',
+    { 'ch1.lfo1.target': 'osc_decay' });
+  const dest = root.querySelector('px-target');
+  assert.equal(dest.querySelector('button').textContent, '→ osc decay');
+  const asked = [];
+  root.addEventListener('px-assign', (e) => asked.push(e.detail.address));
+  dest.querySelector('button').click();
+  assert.deepEqual(asked, ['ch1.lfo1.target']);
+  wheel(dest, 120); // down: the previous target in engine order
+  assert.equal(store.value('ch1.lfo1.target'), 'osc_attack');
+  await flush();
+  dest.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+  const items = [...root.querySelectorAll('.px-menu .it')];
+  assert.deepEqual(items.map((i) => i.textContent), ['Assign: click a control', 'Clear destination']);
+  items[1].click();
+  assert.equal(dest.querySelector('button').textContent, '→ off');
+  assert.ok(dest.classList.contains('none'));
+  await flush();
+  assert.deepEqual(sets().map((c) => c.value), ['osc_attack', 'none']);
+});
+
+test('controls bound in one go read their values in one get', async () => {
+  const { root, bridge, store } = setup('<px-knob></px-knob><px-knob></px-knob>');
+  const [a, b] = root.querySelectorAll('px-knob');
+  bridge.values['ch1.mix.osc_noise'] = 0.3;
+  bridge.values['ch1.lfo1.target'] = 'osc_decay';
+  a.dataset.address = 'ch1.mix.osc_noise';
+  b.dataset.address = 'ch1.lfo1.target';
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(bridge.calls.filter(([s]) => s === 'get').map(([, p]) => p),
+    [['ch1.mix.osc_noise', 'ch1.lfo1.target']]);
+  assert.equal(store.value('ch1.mix.osc_noise'), 0.3);
+});
+
+test('a modulation band ends at the modulated position', () => {
+  const { root, bridge } = setup('<px-knob data-address="ch1.osc.decay"></px-knob>'
+    + '<px-fader data-address="ch1.mix.osc_noise" orient="h" reverse length="100"></px-fader>',
+  { 'ch1.lfo1.on': true, 'ch1.lfo1.target': 'osc_decay', 'ch1.lfo2.on': true, 'ch1.lfo2.target': 'osc_noise_mix',
+    'ch1.mix.osc_noise': 0.5 });
+  const channels = Array(8).fill(null).map(() => ({}));
+  channels[0] = { osc_decay: 900, osc_noise_mix: 0.25 };
+  bridge.pushFrame({ modulation: { channel: 0, offsets: channels[0], channels } });
+  const knob = root.querySelector('px-knob');
+  assert.equal(knob.dataset.modTo, (Math.log(100) / Math.log(1000)).toFixed(4)); // 100 + 900 ms
+  const fader = root.querySelector('px-fader');
+  assert.equal(fader.dataset.mod, 'lfo2');
+  assert.equal(fader.dataset.modTo, '0.7500');
+  assert.equal(fader.querySelector('.mod').style.left, '25%');
+});

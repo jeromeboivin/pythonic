@@ -3,9 +3,11 @@
 //
 //   <px-knob data-address="ch3.osc.decay" label="decay" name="CH3 DECAY" size="34">
 //   <px-fader data-address="ch3.mix.level" length="128">
+//   <px-fader data-address="ch3.mix.osc_noise" orient="h" reverse ends="osc,noise">
 //   <px-toggle data-address="ch3.mute" label="mute">          (a lit button)
 //   <px-switch data-address="global.step_rate">               (segmented, up to 5 options)
 //   <px-list data-address="global.fill_rate">                 (a list for more options)
+//   <px-target data-address="ch3.lfo1.target">                (a source's → destination button)
 //   <px-display>                                              (the green two-line display)
 //
 // Controls bind themselves when they are inside a root that carries a control
@@ -18,7 +20,7 @@
 // drawn from the context, which reads them from the store and poll.
 
 import { ccsFor, ghostPosition, isBendTarget, withoutAddress } from './midi-cues.js';
-import { modulatedAddresses, sourceAddresses } from './modulation.js';
+import { modulatedAddresses, modulationBand, sourceAddresses, targetName } from './modulation.js';
 import {
   coerce, DRAG_RANGE_PX, dragPosition, editText, formatValue, fromPosition, isNumeric, parseValue,
   toPosition, WHEEL_FADER, WHEEL_KNOB, wheelValue,
@@ -70,6 +72,7 @@ export function createControlContext({ store, client, meta = {}, root }) {
   let modulated = {};
   let lastCounts = {};
   const fetching = new Set();
+  const queued = [];
 
   const ctx = {
     store, client, meta, root,
@@ -92,14 +95,22 @@ export function createControlContext({ store, client, meta = {}, root }) {
       store.assume(address, value);
       client.set(address, value, { burst });
     },
-    /** Read an address the store has not seen yet (a control bound after boot). */
+    /** Read an address the store has not seen yet (a control bound after boot);
+     * the addresses asked for in one task go in one get. */
     ensure(address) {
       if (store.has(address) || fetching.has(address)) return;
       fetching.add(address);
-      client.get([address]).then((values) => {
-        fetching.delete(address);
-        if (values && address in values && !store.has(address)) store.seed({ [address]: values[address] });
-      }, () => fetching.delete(address));
+      queued.push(address);
+      if (queued.length > 1) return;
+      Promise.resolve().then(() => {
+        const batch = queued.splice(0);
+        const done = () => batch.forEach((a) => fetching.delete(a));
+        client.get(batch).then((values) => {
+          done();
+          const fresh = Object.fromEntries(Object.entries(values || {}).filter(([a]) => !store.has(a)));
+          store.seed(fresh);
+        }, done);
+      });
     },
     selectedChannel: () => store.value('global.channel') || 1,
     ccs: (address) => ccsFor(address, store.value('midi.cc_map'), ctx.selectedChannel()),
@@ -413,11 +424,14 @@ class PxContinuous extends PxControl {
 
   startPosition() { return this.position; }
 
+  /** Screen pixels of a drag towards higher values (up). */
+  dragPixels(d, e) { return d.y - e.clientY; }
+
   onPointerDown(e) {
     if (e.button !== 0 || !this.enabled || !isNumeric(this.meta)) return;
     e.preventDefault();
     try { this.setPointerCapture(e.pointerId); } catch (_) { /* synthetic events */ }
-    this.drag = { start: this.position, y: e.clientY, fine: e.shiftKey, gesture: false };
+    this.drag = { start: this.position, x: e.clientX, y: e.clientY, fine: e.shiftKey, gesture: false };
     const jump = this.startPosition(e);
     if (jump !== this.drag.start) {
       this.beginGesture();
@@ -437,11 +451,12 @@ class PxContinuous extends PxControl {
     if (!d) return;
     if (e.shiftKey !== d.fine) { // re-base so switching to fine does not jump
       d.start = this.position;
+      d.x = e.clientX;
       d.y = e.clientY;
       d.fine = e.shiftKey;
       return;
     }
-    const pixels = (d.y - e.clientY) / this.ctx.scale();
+    const pixels = this.dragPixels(d, e) / this.ctx.scale();
     const value = fromPosition(this.meta, dragPosition(d.start, pixels, { length: this.dragLength, fine: d.fine }));
     if (value !== this.value) {
       this.beginGesture();
@@ -502,16 +517,17 @@ class PxKnob extends PxContinuous {
 
   renderModulation() {
     const mod = this.ctx && this.address && this.meta ? this.ctx.modulation(this.address) : null;
-    if (!mod || !isNumeric(this.meta)) {
+    const band = mod ? modulationBand(this.meta, this.value, mod.offset) : null;
+    if (!band) {
       this.modArc.setAttribute('d', '');
       delete this.dataset.mod;
+      delete this.dataset.modTo;
       return;
     }
-    const n = this.position;
-    const m = toPosition(this.meta, Number(this.value) + mod.offset);
-    this.modArc.setAttribute('d', ringArc(n, m));
+    this.modArc.setAttribute('d', ringArc(band[0], band[1]));
     this.modArc.style.stroke = `var(--${mod.source})`;
     this.dataset.mod = mod.source;
+    this.dataset.modTo = band[1].toFixed(4);
   }
 
   renderGhost() {
@@ -529,15 +545,26 @@ class PxKnob extends PxContinuous {
   }
 }
 
-/** A vertical fader: the track height is the drag range; clicking the track jumps. */
+/**
+ * A fader: the track length is the drag range; clicking the track jumps.
+ * Vertical by default; orient="h" lays it on its side (drag right), with
+ * `reverse` the high end on the left, and `ends="left,right"` names the ends.
+ */
 class PxFader extends PxContinuous {
   get dragLength() { return Number(this.getAttribute('length') || 128); }
   get wheelFraction() { return WHEEL_FADER; }
+  get horizontal() { return this.getAttribute('orient') === 'h'; }
+  get reversed() { return this.hasAttribute('reverse'); }
+
+  /** The place along the track (0 bottom / left, 1 top / right) of a position. */
+  place(n) { return this.horizontal && this.reversed ? 1 - n : n; }
 
   build() {
     this.style.setProperty('--length', `${this.dragLength}px`);
+    this.classList.toggle('h', this.horizontal);
     this.track = el('div', 'track');
-    this.track.style.height = `${this.dragLength}px`; // the drag range, whatever the styles
+    // The drag range, whatever the styles
+    this.track.style[this.horizontal ? 'width' : 'height'] = `${this.dragLength}px`;
     this.track.style.position = 'relative';
     this.capEl = el('i', 'cap');
     this.modLine = el('b', 'mod');
@@ -546,18 +573,36 @@ class PxFader extends PxContinuous {
     const wrap = el('div', 'fwrap');
     wrap.append(this.track, el('i', 'cc-led'));
     this.append(wrap);
+    if (this.horizontal && this.getAttribute('ends')) {
+      const ends = el('div', 'ends');
+      ends.style.width = `${this.dragLength}px`;
+      ends.append(...this.getAttribute('ends').split(',').map((t) => el('span', '', t.trim())));
+      this.append(ends);
+    }
     this.buildFoot();
+  }
+
+  dragPixels(d, e) {
+    if (!this.horizontal) return d.y - e.clientY;
+    return (e.clientX - d.x) * (this.reversed ? -1 : 1);
   }
 
   startPosition(e) {
     if (e.target === this.capEl || !this.track.contains(e.target)) return this.position;
     const r = this.track.getBoundingClientRect();
-    return Math.min(1, Math.max(0, 1 - (e.clientY - r.top) / r.height));
+    const along = this.horizontal ? (e.clientX - r.left) / r.width : 1 - (e.clientY - r.top) / r.height;
+    return this.place(Math.min(1, Math.max(0, along)));
+  }
+
+  /** Put a marker (cap, modulation or ghost line) at a position. */
+  put(node, n) {
+    const p = this.place(n) * 100;
+    if (this.horizontal) node.style.left = `${p}%`; else node.style.top = `${100 - p}%`;
   }
 
   render(value) {
     const n = this.meta && value !== undefined ? toPosition(this.meta, value) : 0;
-    this.capEl.style.top = `${(1 - n) * 100}%`;
+    this.put(this.capEl, n);
     this.dataset.position = n.toFixed(4);
     this.val.textContent = this.address ? formatValue(this.meta, value) : 'off';
     this.renderModulation();
@@ -566,17 +611,19 @@ class PxFader extends PxContinuous {
 
   renderModulation() {
     const mod = this.ctx && this.address && this.meta ? this.ctx.modulation(this.address) : null;
-    if (!mod || !isNumeric(this.meta)) {
+    const band = mod ? modulationBand(this.meta, this.value, mod.offset) : null;
+    if (!band) {
       this.modLine.style.display = 'none';
       delete this.dataset.mod;
+      delete this.dataset.modTo;
       return;
     }
-    const m = toPosition(this.meta, Number(this.value) + mod.offset);
     this.modLine.style.display = 'block';
-    this.modLine.style.top = `${(1 - m) * 100}%`;
+    this.put(this.modLine, band[1]);
     this.modLine.style.background = `var(--${mod.source})`;
     this.modLine.style.color = `var(--${mod.source})`;
     this.dataset.mod = mod.source;
+    this.dataset.modTo = band[1].toFixed(4);
   }
 
   renderGhost() {
@@ -584,7 +631,7 @@ class PxFader extends PxContinuous {
       ? ghostPosition(this.ctx.pickup(this.address), this.position) : null;
     this.ghostLine.style.display = g === null ? 'none' : 'block';
     if (g !== null) {
-      this.ghostLine.style.top = `${(1 - g) * 100}%`;
+      this.put(this.ghostLine, g);
       this.dataset.ghost = g.toFixed(4);
     } else {
       delete this.dataset.ghost;
@@ -602,12 +649,22 @@ class PxStepped extends PxControl {
       if (!this.enabled) return;
       e.preventDefault();
       if (!e.deltaY) return;
-      this.commit(wheelValue(this.meta, this.value, -Math.sign(e.deltaY)), { burst: true });
+      this.commit(this.stepValue(-Math.sign(e.deltaY)), { burst: true });
     }, { passive: false });
   }
 
-  /** The options: [value, text] from the enum labels or an int range. */
-  options() {
+  /** The value `notches` options away (a `values` subset steps within itself). */
+  stepValue(notches) {
+    if (!this.hasAttribute('values')) return wheelValue(this.meta, this.value, notches);
+    const values = this.options().map(([v]) => v);
+    const i = values.indexOf(this.value);
+    if (i < 0) return values[notches > 0 ? 0 : values.length - 1];
+    return values[Math.min(values.length - 1, Math.max(0, i + notches))];
+  }
+
+  /** Every value of the address with its display name: the enum labels
+   * (named by `options`), an int range or on / off. */
+  allOptions() {
     const m = this.meta;
     if (!m) return [];
     const names = (this.getAttribute('options') || '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -617,6 +674,20 @@ class PxStepped extends PxControl {
       for (let v = m.minimum; v <= m.maximum; v += 1) values.push(v);
     } else if (m.kind === 'bool') values = [false, true];
     return values.map((v, i) => [v, names[i] || formatValue(m, v)]);
+  }
+
+  /** The options offered: [value, text], all or the `values` subset (enum labels). */
+  options() {
+    const all = this.allOptions();
+    if (!this.hasAttribute('values')) return all;
+    const keep = this.getAttribute('values').split(',').map((s) => s.trim());
+    return keep.map((v) => all.find(([value]) => String(value) === v)).filter(Boolean);
+  }
+
+  /** The display name of a value, offered or not. */
+  optionText(value) {
+    const hit = this.allOptions().find(([v]) => v === value);
+    return hit ? hit[1] : formatValue(this.meta, value);
   }
 }
 
@@ -645,7 +716,10 @@ class PxToggle extends PxControl {
   }
 }
 
-/** Segmented buttons, one per option (up to 5). */
+/**
+ * Segmented buttons, one per option (up to 5). `values` offers a subset of
+ * the enum labels; a value outside it (from a preset) shows lit beside them.
+ */
 class PxSwitch extends PxStepped {
   build() {
     this.opts = el('div', 'opts');
@@ -656,19 +730,31 @@ class PxSwitch extends PxStepped {
 
   attach(ctx, force) {
     super.attach(ctx, force);
-    this.opts.replaceChildren(...this.options().map(([v, text]) => {
+    const buttons = this.options().map(([v, text]) => {
       const b = el('button', 'btn', text);
       b.type = 'button';
       b.dataset.value = String(v);
       b.addEventListener('click', () => this.commit(v));
       return b;
-    }));
+    });
+    this.other = el('span', 'other', '');
+    this.opts.replaceChildren(...buttons, this.other);
     this.render(this.value);
   }
 
   render(value) {
     if (!this.opts) return;
-    for (const b of this.opts.children) b.classList.toggle('on', b.dataset.value === String(value));
+    let lit = false;
+    for (const b of this.opts.children) {
+      if (b === this.other) continue;
+      b.classList.toggle('on', b.dataset.value === String(value));
+      lit = lit || b.dataset.value === String(value);
+    }
+    if (this.other) {
+      const shown = !lit && value !== undefined && value !== null && !!this.address;
+      this.other.style.display = shown ? '' : 'none';
+      this.other.textContent = shown ? this.optionText(value) : '';
+    }
   }
 }
 
@@ -693,8 +779,55 @@ class PxList extends PxStepped {
   }
 
   render(value) {
-    const hit = this.options().find(([v]) => v === value);
-    this.box.textContent = hit ? hit[1] : formatValue(this.meta, value);
+    this.box.textContent = this.address ? this.optionText(value) : 'off';
+  }
+}
+
+/**
+ * The → destination button of a modulation source (bound to a
+ * ch<N>.<source>.target address): shows the target's short name; a click
+ * dispatches a bubbling `px-assign` event ({address}) for click to assign
+ * (the edit rack arms it); the wheel steps through the targets in engine
+ * order; the right-click menu assigns or clears.
+ */
+class PxTarget extends PxStepped {
+  build() {
+    this.button = el('button', 'btn dest', '');
+    this.button.type = 'button';
+    this.append(this.button);
+    this.buildFoot();
+    this.val.remove();
+  }
+
+  listen() {
+    this.addEventListener('wheel', (e) => {
+      if (!this.enabled) return;
+      e.preventDefault();
+      if (!e.deltaY) return;
+      this.commit(wheelValue(this.meta, this.value, -Math.sign(e.deltaY)), { burst: true });
+    }, { passive: false });
+    this.button.addEventListener('click', () => this.assign());
+    this.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      if (!this.enabled) return;
+      this.ctx.openMenu([
+        ['Assign: click a control', () => this.assign()],
+        ['Clear destination', () => this.commit('none'), { current: this.value === 'none' }],
+      ], e.clientX, e.clientY);
+    });
+  }
+
+  assign() {
+    if (!this.enabled) return;
+    this.dispatchEvent(new CustomEvent('px-assign', { bubbles: true, detail: { address: this.address } }));
+  }
+
+  get text() { return targetName(this.value); }
+
+  render(value) {
+    this.button.textContent = this.address ? `→ ${targetName(value)}` : '→';
+    this.button.disabled = !this.address;
+    this.classList.toggle('none', !value || value === 'none');
   }
 }
 
@@ -743,11 +876,11 @@ class PxDisplay extends HTMLElement {
 
 const ELEMENTS = {
   'px-knob': PxKnob, 'px-fader': PxFader, 'px-toggle': PxToggle,
-  'px-switch': PxSwitch, 'px-list': PxList, 'px-display': PxDisplay,
+  'px-switch': PxSwitch, 'px-list': PxList, 'px-target': PxTarget, 'px-display': PxDisplay,
 };
 
 /** Tag names of the address-bound controls. */
-export const CONTROL_TAGS = ['px-knob', 'px-fader', 'px-toggle', 'px-switch', 'px-list'];
+export const CONTROL_TAGS = ['px-knob', 'px-fader', 'px-toggle', 'px-switch', 'px-list', 'px-target'];
 
 /** Define the custom elements (once per page). */
 export function defineControls(registry = globalThis.customElements) {
