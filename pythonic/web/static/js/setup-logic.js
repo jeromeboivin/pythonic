@@ -187,6 +187,20 @@ export function rateText(rate, { synth = false } = {}) {
 /** A buffer size in a menu: "23.8 ms". */
 export const bufferText = (ms) => `${+Number(ms).toFixed(1)} ms`;
 
+/** The smallest buffer the frame-budget measurements found safe (issue #10). */
+export const SAFE_BUFFER_FRAMES = 512;
+
+/** The frames a buffer in ms makes at a rate (as the core rounds it). */
+export const bufferFrames = (ms, rate) => Math.max(64, Math.round((Number(ms) / 1000) * Number(rate)));
+
+/** The warning under the buffer when it is below the safe size, else ''. */
+export function bufferWarning(ms, rate) {
+  if (!(Number(ms) > 0) || !(Number(rate) > 0)) return '';
+  const frames = bufferFrames(ms, rate);
+  if (frames >= SAFE_BUFFER_FRAMES) return '';
+  return `${frames} frames at ${Number(rate)} Hz is under the safe ${SAFE_BUFFER_FRAMES}: expect dropouts`;
+}
+
 /** The note under the sample rate: how many of the menu's rates the device takes. */
 export function ratesNote(rates, all) {
   const n = Array.isArray(rates) ? rates.length : 0;

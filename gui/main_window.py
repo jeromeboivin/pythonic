@@ -2874,7 +2874,9 @@ class PythonicGUI:
         buffer_combo.pack(fill='x', pady=(2, 0))
         
         buffer_info = tk.Label(buffer_frame, 
-                              text="Lower = less latency but more CPU. Higher = more stable.",
+                              text="Lower = less latency but more CPU. Higher = more stable.\n"
+                                   "Under 512 samples (11.6 ms at 44100 Hz) audio may drop out.",
+                              justify='left',
                               font=('Segoe UI', 8),
                               fg=self.COLORS['text_dim'],
                               bg=self.COLORS['bg_dark'])

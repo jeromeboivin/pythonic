@@ -23,7 +23,7 @@
 // {open(options), close(), tab, element, destroy()}.
 
 import {
-  BASE_NOTE_CHOICES, baseNoteRange, bufferText, ccActivity, ccRows, deviceChoices, deviceText, followsChannel,
+  BASE_NOTE_CHOICES, baseNoteRange, bufferText, bufferWarning, ccActivity, ccRows, deviceChoices, deviceText, followsChannel,
   freeCc, modelText, noteName, parseCc, pendingFields, rateChoices, ratesNote, rateText, SETUP_TABS, streamText,
   TAB_WIDTHS, tabOf, targetGroups, targetLabel, withoutCc, withRow,
 } from './setup-logic.js';
@@ -180,6 +180,13 @@ export function mountSetup({ panel, store, client, meta = {} }) {
     const buffer = choice('pref.audio.buffer_ms', {
       options: () => buffers.map((ms) => [ms, bufferText(ms)]), text: (v) => (v === undefined ? '—' : bufferText(v)),
       pick: (v) => ctx.set('pref.audio.buffer_ms', v), width: 90 });
+    // Small buffers stay selectable; below the safe frame count a line warns.
+    const bufferLine = note('', 'su-buffer-warning');
+    const bufferRow = field('', bufferLine);
+    watchAll(['pref.audio.buffer_ms', 'pref.audio.sample_rate'], () => {
+      bufferLine.textContent = bufferWarning(value('pref.audio.buffer_ms'), value('pref.audio.sample_rate'));
+      bufferRow.hidden = !bufferLine.textContent;
+    });
     const rate = choice('pref.audio.sample_rate', {
       options: () => rateChoices(all, deviceRates, value('pref.audio.sample_rate')).map((r) => [r, rateText(r)]),
       text: (v) => (v === undefined ? '—' : rateText(v)), pick: (v) => ctx.set('pref.audio.sample_rate', v),
@@ -221,6 +228,7 @@ export function mountSetup({ panel, store, client, meta = {} }) {
     const output = section('audio output',
       field('device', devices, rescan, dot('pref.audio.device')),
       field('buffer', buffer, dot('pref.audio.buffer_ms')),
+      bufferRow,
       field('sample rate', rate, dot('pref.audio.sample_rate')),
       field('', ratesLine),
       field('synth rate', synth, dot('pref.audio.synth_rate')),

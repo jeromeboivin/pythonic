@@ -18,6 +18,8 @@
 .setup .su-field { display: flex; align-items: center; gap: 6px; min-height: 26px; }
 .setup .su-lbl { width: 88px; flex: none; font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--dim); }
 .setup .su-row { display: flex; align-items: center; gap: 10px; }
+.setup .su-field[hidden] { display: none; }
+.setup .su-note.su-buffer-warning { color: var(--midi); }
 .setup .su-wrap { display: contents; }
 .setup .su-note { font-size: 12px; color: #8a8a8d; line-height: 1.3; white-space: normal; }
 .setup .lbox { font-size: 12px; overflow: hidden; text-overflow: ellipsis; max-width: 240px; }

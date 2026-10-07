@@ -131,6 +131,39 @@ def test_output_devices_rescan_and_the_rates_of_a_device(panel):
     assert wait_set(panel, 'pref.audio.device', 2)[-1] is None
 
 
+BUFFER_WARNING = '.su-buffer-warning'
+
+
+def buffer_warning(panel):
+    """The buffer warning's text, or None while its row is hidden."""
+    return panel.js(f"(() => {{ const n = document.querySelector('{BUFFER_WARNING}');"
+                    " return n.closest('.su-field').hidden ? null : n.textContent; })()")
+
+
+def test_a_buffer_under_512_frames_warns_but_stays_selectable(panel):
+    core = panel.core
+    core.post_change('pref.audio.sample_rate', 44100)
+    core.post_change('pref.audio.buffer_ms', 23.8)
+    open_setup(panel)
+    panel.wait_js(f"!!document.querySelector('{BUFFER_WARNING}')")
+    assert buffer_warning(panel) is None
+    panel.click('.su-choice[data-address="pref.audio.buffer_ms"]')
+    items = menu_items(panel)
+    assert items[:3] == ['2 ms', '5 ms', '10 ms']
+    click_item(panel, '10 ms')
+    assert wait_set(panel, 'pref.audio.buffer_ms') == [10.0]
+    panel.qtbot.waitUntil(lambda: buffer_warning(panel) is not None)
+    assert buffer_warning(panel) == '441 frames at 44100 Hz is under the safe 512: expect dropouts'
+    # the same 10 ms at 96 kHz is 960 frames: no warning
+    core.post_change('pref.audio.sample_rate', 96000)
+    panel.qtbot.waitUntil(lambda: buffer_warning(panel) is None)
+    core.post_change('pref.audio.sample_rate', 44100)
+    panel.qtbot.waitUntil(lambda: buffer_warning(panel) is not None)
+    panel.click('.su-choice[data-address="pref.audio.buffer_ms"]')
+    click_item(panel, '23.8 ms')
+    panel.qtbot.waitUntil(lambda: buffer_warning(panel) is None)
+
+
 def test_stream_fields_light_their_dot_and_restart_audio(panel):
     core = panel.core
     open_setup(panel)

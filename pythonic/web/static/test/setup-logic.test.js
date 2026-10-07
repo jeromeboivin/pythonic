@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   baseNoteRange, BASE_NOTE_CHOICES, ccActivity, ccRows, deviceChoices, deviceText, freeCc, modelText,
-  noteName, parseCc, pendingFields, rateChoices, ratesNote, rateText, bufferText, streamText, tabOf,
+  noteName, parseCc, pendingFields, rateChoices, ratesNote, rateText, bufferFrames, bufferText, bufferWarning,
+  SAFE_BUFFER_FRAMES, streamText, tabOf,
   targetGroups, targetLabel, withoutCc, withRow,
 } from '../js/setup-logic.js';
 
@@ -106,6 +107,22 @@ test('rates, buffers and devices in the menus', () => {
   assert.equal(deviceText(null, ['A']), '(system default)');
   assert.equal(deviceText('Gone', ['A']), 'Gone (not found)');
   assert.equal(deviceText('A', ['A']), 'A');
+});
+
+test('a buffer under 512 frames at the output rate warns, the sizes stay selectable', () => {
+  assert.equal(SAFE_BUFFER_FRAMES, 512);
+  assert.equal(bufferFrames(23.8, 44100), 1050);
+  assert.equal(bufferFrames(1, 8000), 64);
+  assert.equal(bufferWarning(23.8, 44100), '');
+  assert.equal(bufferWarning(15, 44100), '');
+  assert.equal(bufferWarning(10, 44100), '441 frames at 44100 Hz is under the safe 512: expect dropouts');
+  assert.equal(bufferWarning(2, 44100), '88 frames at 44100 Hz is under the safe 512: expect dropouts');
+  // the rate decides: 10 ms is fine at 96 kHz, 23.8 ms is not at 8 kHz
+  assert.equal(bufferWarning(10, 96000), '');
+  assert.match(bufferWarning(23.8, 8000), /^190 frames at 8000 Hz/);
+  // nothing known yet: no warning
+  assert.equal(bufferWarning(undefined, 44100), '');
+  assert.equal(bufferWarning(10, null), '');
 });
 
 test('the stream line and the model line', () => {
