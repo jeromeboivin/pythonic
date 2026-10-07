@@ -33,6 +33,8 @@
     "pref.ai.*": "AI drum generator page and setup sheet AI tab (AI slice)",
     "pref.smoothing_ms": "setup sheet synthesis tab (setup slice)",
     "pref.preset_folder": "preset menu: choose folder (preset slice)",
-    "pref.recent_files": "preset menu: recent files (preset slice)"
+    "pref.recent_files": "preset menu: recent files (preset slice)",
+    "po32.*": "PO-32 rack page, transfer and import tabs (PO-32 slice)",
+    "pref.po32.*": "PO-32 rack page import tab: keep recordings (PO-32 slice)"
   }
 }
