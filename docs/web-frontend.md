@@ -41,6 +41,7 @@ pythonic/web/
     css/fonts.css  @font-face of the bundled fonts
     css/panel.css  stage and panel styles
     css/setup.css  the setup sheet
+    css/ai.css     the AI drum generator page
     fonts/         bundled fonts + licences (SOURCES.txt)
     js/bridge.js       transport: connectBridge(), webChannelBridge(remote), createFakeBridge(opts)
     js/core-client.js  createCoreClient(bridge, {schedule})
@@ -65,6 +66,8 @@ pythonic/web/
     js/exports.js      mountExports(...): the pattern menu's export to MIDI / audio (tail popover)
     js/setup-logic.js  pure setup sheet logic: tabs, note names, CC map rows and edits, target names / menu groups, rates
     js/setup.js        mountSetup({panel, store, client, meta}): the setup sheet (registers the 'setup' page)
+    js/ai-logic.js     pure AI page logic: laneView, modelView, bankText, previewArgs, leaveQuestion, parseSeed, ...
+    js/ai-page.js      mountAiPage({panel, store, client, stage}): the AI drum generator drawer page
     js/main.js         boot({bridge, stage}), demoBridge(); sets window.pythonic
     test/              runner.html, shim/, *.test.js (pure), *.engine-spec.js (DOM)
 ```
@@ -337,7 +340,13 @@ Decisions #13 (where secondary features open) and #22 (the alert sheet).
   (`panel.drawer.show(name, element, {onHide})`, PO-32 and AI) or a sheet
   (`panel.sheets.show('setup', element, {dismissable: true})`). Without a
   registration the alert sheet says the page is coming soon. `panel.pages`
-  lists the registered names.
+  lists the registered names. Pages are mounted in `main.js` after
+  `mountPanel` (before the store is seeded, so their watched addresses are
+  read at boot).
+- **Preset load guards**: `panel.guardPresetLoad(fn) -> off`; a preset load
+  from the PRESET menu, ◀ ▶ or reload last waits for every `fn()` (a boolean
+  or a promise of one) and is cancelled when one answers false (the AI page
+  asks keep or revert first).
 
 ## PRESET menu (`presets.js`)
 
@@ -424,6 +433,52 @@ Right-click menus leave out MIDI learn and pitch bend for settings
 (`midi.*`, `audio.*`, `pref.*`: the core refuses them as targets) and CC
 mappings… for controls on the setup sheet.
 
+## AI drum generator page (`ai-page.js`, `ai-logic.js`)
+
+Decisions #13, #21 (settings shared with the setup sheet's ai tab: #22). A
+drawer page (`panel.openPage('ai')`, from the PRESET menu) whose three
+columns line up with the face's, so each lane sits under its strip:
+
+- **left**: patch and pattern model lines (`ai.models`: file ✓ (sampling),
+  loading…, error, no model; `load…` opens the native dialog and runs
+  `ai.load_model` with the path, which the core saves as `pref.ai.<kind>_model`
+  once loaded), the patch temperature knob (`pref.ai.patch_temperature`),
+  candidates ‹ n › (1..32, default 8, wheel too), seed (blank = random, ⟳
+  reseeds), **generate all 8** (`ai.generate` with candidates and seed; in
+  generate-new mode it then runs `ai.generate_patterns` with the seed). The
+  saved or bundled models still `unloaded` load when the page opens.
+- **lanes** (`.ai-lane[data-channel]`): drum type (`px-list` on
+  `ai.ch<N>.type`, any of 18), gen (`ai.generate` with channel and type), ‹
+  `i/n` › (`ai.try` with `step` ±1), the candidate name, try / trying ✓
+  (`ai.try` / `ai.untry`), and a note (generating…, error: …). A lane that
+  generates, steps or tries is hit at 127 while the transport is stopped
+  (tkinter's preview). The strip tab of a channel trying a candidate gets
+  `aitry` (its name, now the channel's, in italics with a dashed outline).
+  Generating a lane or stepping it drops the AI pattern bank
+  (`ai.clear_patterns`, as tkinter).
+- **right**: keep current / generate new patterns (page state, as the
+  tkinter dialog), the pattern temperature knob
+  (`pref.ai.pattern_temperature`), the bank note (`ai.bank`) with ↻ (a new
+  bank), ▶ loop / ▶ bank A→L (`ai.pattern_try`, a second click stops; `bank`
+  only in generate-new mode), keep tried (`ai.keep`, one undo step; off
+  while `ai.tried` is empty), replace patterns (`ai.replace_patterns`, only
+  with a bank ready in generate-new mode), revert all (`ai.revert`).
+- **Without the ML extras** (`ai.available` false) the lanes give way to
+  the `ai.install_command` with copy (clipboard) and install now (asks, then
+  `ai.install`; `ai.installing` greys it; success says so and loads the
+  models: the worker needs no restart).
+- **Header**: `◀ ch n edit`, the state (`ai.state`: generating…, loading a
+  model…, installing…, ML extras missing), the channels trying, ✕.
+- **Leaving with tried sounds** asks keep or revert on the alert sheet: ✕
+  and `◀ ch n edit` ask first (cancel stays); another drawer page or closing
+  the rack ask once the page is gone (keep / revert); a preset load asks
+  first (a guard). Keep also stops a pattern preview; leaving without tried
+  sounds just stops it. Verb errors show on the display; generation, model
+  and install failures also on a red alert.
+
+`panel.ai` = `{element, open, leave, settle(cancellable), patternMode,
+candidates, destroy}`.
+
 ## Tests
 
 All from pytest, offscreen, no Node and no display needed:
@@ -487,8 +542,12 @@ before pytest-qt makes the QApplication. CI also sets
   (after choosing the folder), export to MIDI from the pattern menu (and the
   replace question on the second export). `test_setup_real_core.py`: a base
   note step, an added CC mapping and a buffer change with restart audio.
+- **AI page**: `test_ai_page.py` (fake core: layout under the strips, every
+  state, the leave question on every way out) and `test_ai_real_core.py`
+  (the real core with `tests/fake_ai_worker.py`: generate, try on the face,
+  a knob edit, keep tried, one undo step; leave and revert).
 - **Parity guard** (`test_parity_guard.py`): every address the core's
-  `describe()` lists is bound by a `data-address` control or listed in
+  `describe()` lists (with each registered page opened in turn) is bound by a `data-address` control or listed in
   `tests/web/parity_absent.json`: `{"absent": {"<fnmatch glob>": "<reason>"}}`
   (the guard selects each channel in turn, since the rack binds the selected one's).
   The guard also opens each setup sheet tab. It fails on a bound address
