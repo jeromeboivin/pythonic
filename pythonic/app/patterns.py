@@ -420,6 +420,9 @@ class Patterns:
 
     def _apply_stop(self, _=None):
         self.pm.stop_playback()
+        ai = self._core.ai
+        if ai is not None:
+            ai.on_stop()  # an AI pattern preview puts the preset's patterns back
         return {'playing': False}
 
     def _apply_resume(self, _=None):

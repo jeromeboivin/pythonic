@@ -22,6 +22,8 @@ the audio stream, driven through an address-based interface (ADR 0001).
   ``presets.py``, the preferences (``pref.*``) in ``prefs.py``.
 - MIDI and WAV export (``export.*``) is in ``export.py``; WAV renders run on
   the export thread with an offline synth and report progress through poll.
+- The AI generators (``ai.*``) are in ``ai.py``; the models run in a
+  subprocess (``ai_worker.py``), so the core never imports torch.
 - Undo and redo (``undo`` / ``redo`` verbs, ``undo.*`` addresses): every set
   is journaled (``undo.py``); a front-end brackets a drag with
   ``begin_gesture()`` / ``end_gesture()``, a wheel or controller passes
@@ -46,6 +48,7 @@ from pythonic.preset_manager import PresetManager
 from pythonic.sequencer import StepSequencer
 from pythonic.synthesizer import PythonicSynthesizer
 
+from .ai import Ai
 from .audio import AudioEngine
 from .export import Export
 from .midi import MidiInput, import_mido
@@ -80,7 +83,11 @@ class AppCore:
     DEFERRED = object()
 
     def __init__(self, preferences=None, audio_backend=_DEFAULT, *, midi_backend=_DEFAULT,
-                 clock=time.perf_counter, stream_timeout=2.0, stall_timeout=2.0):
+                 clock=time.perf_counter, stream_timeout=2.0, stall_timeout=2.0,
+                 ai_worker=_DEFAULT, ai_install=_DEFAULT):
+        """``ai_worker``: the command (argv) of the AI worker process (default:
+        ``ai_worker.py`` with this Python when torch is installed); None turns
+        the AI off. ``ai_install``: the command ``ai.install`` runs."""
         self.preferences = preferences if preferences is not None else PreferencesManager()
         if audio_backend is _DEFAULT:
             audio_backend = _import_sounddevice()
@@ -127,6 +134,7 @@ class AppCore:
         self._stall_since = time.monotonic()
         self._stall_reported = False
 
+        self.ai = None  # set below; AppCore.set reads its overlay prefixes
         self.registry = Registry()
         self._register_addresses()
         self.undo = Undo(self, clock)
@@ -144,6 +152,9 @@ class AppCore:
         self.prefs = Prefs(self)
         self.prefs.register(self.registry)
         self.export = Export(self)
+        self.ai = Ai(self, **{k: v for k, v in (('worker', ai_worker), ('install', ai_install))
+                              if v is not _DEFAULT})
+        self.ai.register(self.registry)
         self._verbs = {
             'audio.start': self._verb_audio_start,
             'audio.stop': self._verb_audio_stop,
@@ -156,6 +167,7 @@ class AppCore:
             **self.presets.verbs(),
             **self.prefs.verbs(),
             **self.export.verbs(),
+            **self.ai.verbs(),
         }
         self._running_action = None  # id of the verb running on the action thread
 
@@ -209,6 +221,8 @@ class AppCore:
             raise ValueError(f'address is read-only: {address}')
         value = entry.coerce(value)
         journal = record and entry.undoable and self.undo.journal.recording
+        if journal and self.ai is not None and address.startswith(self.ai.unjournaled):
+            journal = False  # a tried AI candidate or pattern preview: kept or dropped whole
         if journal:
             # Old values, read before the change is queued (it may apply at once)
             companions = [(name, self._latest(name)) for name in entry.companions]
@@ -282,6 +296,12 @@ class AppCore:
         self._jobs.put((action_id, verb, args))
         return action_id
 
+    def call_soon(self, fn):
+        """Run fn() on the action thread, after the actions queued before it
+        (modules finish deferred actions there: AI replies). It posts no event;
+        an exception is reported as an error event."""
+        self._jobs.put((None, fn, None))
+
     def trigger(self, channel, velocity=127, at=None):
         """Queue a hit; it plays at the sample offset of its arrival time."""
         if at is None:
@@ -313,6 +333,7 @@ class AppCore:
         """
         self.undo.journal.close_idle()
         self._collect_audio_reports()
+        self.ai.collect()
         with self._cond:
             self._promote_applied()
             version = self._version
@@ -371,6 +392,7 @@ class AppCore:
         self._jobs.put(None)
         self._worker.join(timeout=self.audio.stream_timeout + 5.0)
         self.export.close()
+        self.ai.close()
         self.audio.stop()
         self.synth.cleanup()
 
@@ -508,6 +530,7 @@ class AppCore:
         """Periodic work on the action thread: reports, perf print, stall check."""
         self.undo.journal.close_idle()
         self._collect_audio_reports()
+        self.ai.collect()
         audio = self.audio
         now = time.monotonic()
         count = audio.callback_count
@@ -552,6 +575,13 @@ class AppCore:
             if job is None:
                 return
             action_id, verb, args = job
+            if callable(verb):  # call_soon
+                try:
+                    verb()
+                except Exception as exc:
+                    self._report_error(f'{type(exc).__name__}: {exc}', source='core')
+                self._monitor()
+                continue
             handler = self._verbs.get(verb)
             event = {'id': action_id, 'verb': verb}
             if handler is None:

@@ -22,6 +22,10 @@ restores the morph position and the values follow.
 
 Verbs ``undo`` and ``redo`` return ``{'done': bool, 'label': str}``; they apply
 at block start. ``undo.can_undo`` / ``undo.can_redo`` are reported by poll.
+
+Tried AI candidates and AI pattern previews are an overlay outside the
+journal (``ai.py``): before a snapshot or a replay overwrites what they hold,
+the AI module ends them (``Ai.release``).
 """
 
 import collections
@@ -320,6 +324,7 @@ class Undo:
         The state before is captured on the calling thread; sets made inside
         are part of the step, not steps of their own."""
         parts = tuple(parts)
+        self._release(parts=parts)
         before = self.capture(parts)
         try:
             with self.journal.suppressed():
@@ -335,6 +340,7 @@ class Undo:
         many values: pattern ops, program switch, morph capture). Returns
         op's result."""
         parts = tuple(parts)
+        self._release(parts=parts)
         box = {}
 
         def apply():
@@ -366,9 +372,15 @@ class Undo:
             raise
         return {'done': True, 'label': step.label}
 
+    def _release(self, parts=(), names=()):
+        ai = getattr(self._core, 'ai', None)
+        if ai is not None:
+            ai.release(parts, names)
+
     def _replay_changes(self, step, undo):
         core = self._core
         entries = step.entries
+        self._release(names=[name for entry in entries for name in entry.names])
         # The sets of the step have been applied (and Edit all has filled in
         # the channels it reached) once their queue items are drained
         last = max(e.seq for e in entries)
@@ -401,6 +413,7 @@ class Undo:
         core = self._core
         parts = step.parts
         target = step.state
+        self._release(parts=parts)
         if PATTERNS in parts:
             # Copying every pattern is too heavy for block start: let the
             # queued sets land, then capture the current state off the audio thread
