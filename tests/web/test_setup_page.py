@@ -368,6 +368,8 @@ def test_ai_models_browse_clear_and_temperatures(panel, tmp_path):
     core = panel.core
     model = tmp_path / 'mine.pt'
     model.write_bytes(b'x')
+    core.post_change('ai.available', True)  # the real core's value says whether torch is here
+    panel.wait_js("pythonic.store.value('ai.available') === true")
     open_setup(panel, 'ai')
     assert panel.js("document.querySelector('.su-ml').hidden")
     assert panel.js("!!document.querySelector('px-knob[data-address=\"pref.ai.pattern_temperature\"]')")
