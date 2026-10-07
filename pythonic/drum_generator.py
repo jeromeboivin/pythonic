@@ -330,40 +330,6 @@ def is_torch_available() -> bool:
         return False
 
 
-def install_ml_dependencies(on_output=None) -> bool:
-    """Run pip to install requirements-ml.txt in the current environment.
-
-    Args:
-        on_output: Optional callback(line: str) for streaming progress.
-
-    Returns True on success, False on failure.
-    """
-    import subprocess
-    import sys
-    import os
-
-    req_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "requirements-ml.txt")
-    if not os.path.isfile(req_file):
-        if on_output:
-            on_output(f"requirements-ml.txt not found at {req_file}")
-        return False
-
-    cmd = [sys.executable, "-m", "pip", "install", "-r", req_file]
-    try:
-        proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
-        )
-        for line in proc.stdout:
-            if on_output:
-                on_output(line.rstrip())
-        proc.wait()
-        return proc.returncode == 0
-    except Exception as exc:
-        if on_output:
-            on_output(f"Install failed: {exc}")
-        return False
-
-
 class PatchGenerator:
     """
     High-level service that loads a CVAE checkpoint and generates drum patches.

@@ -23,9 +23,6 @@ from gui.po32_transfer import PO32TransferDialog
 from gui.po32_import_dialog import PO32ImportDialog
 from gui.drum_generator_dialog import DrumGeneratorDialog
 from pythonic.drum_generator import infer_drum_type
-from pythonic.pattern_generator import PatternGenerator
-from pythonic.preset_manager import channel_to_raw_patch
-from pythonic.app.undo import pattern_part
 
 from pythonic.app import AppCore
 from pythonic.app.midi import cc_name
@@ -1933,9 +1930,12 @@ class PythonicGUI:
             return
         try:
             if action == 'ai_randomize_pattern':
-                self._ai_randomize_pattern(pattern_idx)
+                # The pattern model runs in the core's AI worker: one undo step
+                self._act_or_warn('ai.randomize_pattern', "AI pattern generation failed",
+                                  pattern=pattern_idx)
             elif action == 'ai_randomize_channel':
-                self._ai_randomize_channel(pattern_idx, self.selected_channel)
+                self._act_or_warn('ai.randomize_pattern', "AI channel generation failed",
+                                  pattern=pattern_idx, channel=self.selected_channel + 1)
             elif action == 'export_midi':
                 self._export_pattern_to_midi(pattern_idx)
             elif action == 'export_audio':
@@ -1952,78 +1952,6 @@ class PythonicGUI:
                 on_done(event.get('result'))
         self._when_action_done(self.core.act(verb, **args), done)
     
-    # ── AI pattern randomization ─────────────────────────────────────
-
-    def _get_ai_pattern_generator(self) -> 'PatternGenerator | None':
-        """Return a loaded PatternGenerator or None with user feedback."""
-        if not hasattr(self, '_pattern_gen'):
-            self._pattern_gen = PatternGenerator()
-        gen = self._pattern_gen
-        if gen.ensure_loaded(self.preferences_manager):
-            return gen
-        messagebox.showwarning(
-            "No Pattern Model",
-            "No AI pattern model is available.\n\n"
-            "Set one via the preset menu → AI Settings,\n"
-            "or place 'pattern_cvae_best.pt' in the\n"
-            "drum_patterns/ folder.",
-        )
-        return None
-
-    def _get_raw_patches_from_synth(self) -> list:
-        """Build 8 raw patch dicts from the current live synth channels."""
-        return [channel_to_raw_patch(ch) for ch in self.synth.channels[:8]]
-
-    def _ai_randomize_pattern(self, pattern_idx: int):
-        """Replace the selected pattern with an AI-generated one."""
-        gen = self._get_ai_pattern_generator()
-        if gen is None:
-            return
-        try:
-            raw_patches = self._get_raw_patches_from_synth()
-            pm = self.pattern_manager
-            temp = self.core.get('pref.ai.pattern_temperature')
-            patterns = gen.generate(
-                raw_patches,
-                tempo=pm.bpm,
-                swing=pm.swing,
-                fill_rate=pm.fill_rate,
-                step_rate=pm.step_rate,
-                n=1,
-                temperature=temp,
-            )
-            with self.core.bulk_change('AI pattern', parts=(pattern_part(pattern_idx),)):
-                pm.apply_single_pattern(pattern_idx, patterns[0])
-            self._update_pattern_editors()
-        except Exception as e:
-            messagebox.showerror("Error",
-                                 f"AI pattern generation failed: {e}")
-
-    def _ai_randomize_channel(self, pattern_idx: int, channel_id: int):
-        """Replace the selected channel with AI-generated data."""
-        gen = self._get_ai_pattern_generator()
-        if gen is None:
-            return
-        try:
-            raw_patches = self._get_raw_patches_from_synth()
-            pm = self.pattern_manager
-            temp = self.core.get('pref.ai.pattern_temperature')
-            patterns = gen.generate(
-                raw_patches,
-                tempo=pm.bpm,
-                swing=pm.swing,
-                fill_rate=pm.fill_rate,
-                step_rate=pm.step_rate,
-                n=1,
-                temperature=temp,
-            )
-            with self.core.bulk_change('AI channel', parts=(pattern_part(pattern_idx),)):
-                pm.apply_single_channel(pattern_idx, channel_id, patterns[0])
-            self._update_pattern_editors()
-        except Exception as e:
-            messagebox.showerror("Error",
-                                 f"AI channel generation failed: {e}")
-
     def _export_pattern_to_midi(self, pattern_idx):
         """Export a pattern to a MIDI file through the core"""
         pattern_name = PatternManager.PATTERN_NAMES[pattern_idx]
@@ -2815,50 +2743,25 @@ class PythonicGUI:
         self._update_morph_ui()
     
     def _show_drum_generator(self):
-        """Open the AI Drum Generator dialog (modal).
+        """Open the AI Drum Generator dialog (modal) on the core's AI module.
 
-        Stops the main transport while the dialog is open and restores
-        playback state on close.  The dialog reuses the live synth and
-        transport so all previews sound identical to main-window playback.
+        Stops the main transport while the dialog is open and restarts the
+        pattern that was playing on close. Candidates are tried on the live
+        channels; the knobs follow from poll.
         """
-        # Save and stop transport
         state = self.core.poll()['transport']
         was_playing = state['playing']
         saved_pattern_idx = state['playing_pattern']
         if was_playing:
             self.core.act('transport.stop')
 
-        def on_apply(mode='patches'):
-            # The dialog applied inside core.bulk_change: one undo step
-            self._update_ui_from_channel()
-            if mode == 'patches_and_patterns':
-                self._update_pattern_editors()
-            self._update_morph_ui()
-
-        def start_transport():
-            self.core.act('transport.play')
-
-        def stop_transport():
-            self.core.act('transport.stop')
-
-        dialog = DrumGeneratorDialog(
-            parent=self.root,
-            synth=self.synth,
-            pattern_manager=self.pattern_manager,
-            preferences_manager=self.preferences_manager,
-            on_apply_callback=on_apply,
-            start_transport=start_transport,
-            stop_transport=stop_transport,
-            apply_change=self.core.bulk_change,
-        )
+        dialog = DrumGeneratorDialog(parent=self.root, core=self.core,
+                                     when_done=self._when_action_done)
         self.root.wait_window(dialog.dialog)
 
-        # Restore transport state (the buttons follow from poll)
+        # Queued after the dialog's ai.clear (the buttons follow from poll)
         if was_playing:
             self.core.act('transport.play', pattern=saved_pattern_idx)
-
-        self._update_ui_from_channel()
-        self._update_pattern_editors()
     
     def _current_audio_device_text(self):
         """'Currently using: ...' line of the audio settings dialog."""
@@ -3361,8 +3264,6 @@ class PythonicGUI:
     
     def _show_ai_preferences(self):
         """Show AI settings dialog (pattern model path, temperature)."""
-        from pythonic.pattern_generator import PatternGenerator, _BUNDLED_CHECKPOINT
-
         dialog = tk.Toplevel(self.root)
         dialog.title("AI Settings")
         dialog.geometry("500x260")
@@ -3427,7 +3328,7 @@ class PythonicGUI:
                   padx=4).pack(side='left', padx=(2, 0))
 
         # Fallback info
-        fallback_exists = os.path.isfile(_BUNDLED_CHECKPOINT)
+        fallback_exists = self.core.get('ai.models')['pattern']['bundled']
         fallback_text = ("Bundled checkpoint will be used as fallback."
                          if fallback_exists
                          else "No bundled checkpoint found.")
@@ -3461,12 +3362,9 @@ class PythonicGUI:
         btn_frame.pack(fill='x', padx=20, pady=15)
 
         def apply_and_close():
-            # The core saves both; the AI generator reads them when loading
+            # The core saves both; the AI module uses them on its next request
             self.core.set('pref.ai.pattern_model', path_var.get().strip() or None)
             self.core.set('pref.ai.pattern_temperature', temp_var.get())
-            # Invalidate cached generator so next use picks up new path
-            if hasattr(self, '_pattern_gen'):
-                del self._pattern_gen
             dialog.destroy()
 
         tk.Button(btn_frame, text="OK", command=apply_and_close,

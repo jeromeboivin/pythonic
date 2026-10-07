@@ -1,25 +1,17 @@
 """
 AI Drum Generator Dialog
 
-TR-8-inspired 8-lane interface for generating drum patches using a CVAE model.
-Supports per-slot generation, one-shot preview, pattern-loop preview, and
-selective apply back to the live kit.
+TR-8-inspired 8-lane interface for the app core's AI generators (``ai.*``):
+per-slot generation, candidates tried on the live channels, one-shot,
+pattern-loop and bank previews, and selective keep back into the kit. The
+models run in the core's AI worker process; this dialog only reads the
+``ai.*`` addresses on its own timer and starts ``ai.*`` verbs.
 """
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-import contextlib
-import threading
-import numpy as np
 
-from pythonic.drum_generator import (
-    PatchGenerator, SLOT_MAP, DRUM_TYPES,
-    is_torch_available, install_ml_dependencies,
-)
-from pythonic.pattern_generator import PatternGenerator, PATTERN_NAMES
-from pythonic.preset_manager import (
-    convert_drum_patch_data, apply_drum_patch_to_channel, channel_to_raw_patch,
-)
+from pythonic.drum_generator import SLOT_MAP
 
 COLORS = {
     'bg_dark': '#2a2a3a',
@@ -43,46 +35,23 @@ COLORS = {
 class DrumGeneratorDialog:
     """TR-8-inspired 8-lane AI drum generator dialog."""
 
-    def __init__(self, parent, synth, pattern_manager, preferences_manager,
-                 on_apply_callback=None, start_transport=None,
-                 stop_transport=None, apply_change=None):
+    def __init__(self, parent, core, when_done=None, on_close=None):
+        """``when_done(action_id, callback(event))`` runs a callback once the
+        core reports an action (the main window's poll tick); ``on_close()``
+        runs after the dialog has been closed."""
         self.parent = parent
-        self.synth = synth
-        self.pattern_manager = pattern_manager
-        self.preferences_manager = preferences_manager
-        self.on_apply_callback = on_apply_callback
-        self.start_transport = start_transport
-        self.stop_transport = stop_transport
-        # apply_change(label): context manager around an Apply (the app
-        # core's bulk_change: one undo step); previews write directly
-        self.apply_change = apply_change or (lambda label: contextlib.nullcontext())
-
-        self.generator = PatchGenerator()
-        self.pattern_gen = PatternGenerator()
-
-        # Per-slot state: list of 8 dicts
-        # Each: {candidates: [raw_patch_dict, ...], selected_idx: int, type_override: str|None}
-        self.slot_state = [
-            {"candidates": [], "selected_idx": 0, "type_override": None}
-            for _ in range(8)
-        ]
+        self.core = core
+        self.when_done = when_done or (lambda action_id, callback: None)
+        self.on_close = on_close
 
         # Pattern handling mode: 'keep' or 'generate'
         self._pattern_mode = 'keep'
-        # Cached generated pattern bank {name: pattern_data}
-        self._cached_pattern_bank = None
-
-        # Preview state
-        self.preview_playing = False
-
-        # Save original state for restore on close
-        self._saved_channel_states = [ch.get_parameters() for ch in synth.channels]
-        self._applied_slots = set()
-        self._saved_patterns = None
-        self._patterns_applied = False
+        self._refresh_job = None
+        self._closed = False
 
         self._build_dialog()
-        self._update_model_status()
+        self._load_models()
+        self._refresh()
 
     # ================================================================
     # Dialog Layout
@@ -168,7 +137,7 @@ class DrumGeneratorDialog:
         # Patch temperature
         tk.Label(ctrl, text="Patch Temp:", font=('Segoe UI', 9),
                  fg=COLORS['text'], bg=COLORS['bg_dark']).pack(side='left')
-        saved_patch_temp = self.preferences_manager.get('drum_generator_patch_temperature', 1.0)
+        saved_patch_temp = self.core.get('pref.ai.patch_temperature')
         self.temp_var = tk.DoubleVar(value=saved_patch_temp)
         temp_spin = tk.Spinbox(ctrl, from_=0.1, to=3.0, increment=0.1,
                                textvariable=self.temp_var, width=5,
@@ -235,7 +204,7 @@ class DrumGeneratorDialog:
         self._pat_temp_frame.pack(side='left')
         tk.Label(self._pat_temp_frame, text="Pattern Temp:", font=('Segoe UI', 9),
                  fg=COLORS['text'], bg=COLORS['bg_dark']).pack(side='left')
-        saved_pat_temp = self.preferences_manager.get('drum_generator_pattern_temperature', 0.7)
+        saved_pat_temp = self.core.get('pref.ai.pattern_temperature')
         self.pattern_temp_var = tk.DoubleVar(value=saved_pat_temp)
         tk.Spinbox(self._pat_temp_frame, from_=0.1, to=3.0, increment=0.1,
                    textvariable=self.pattern_temp_var, width=5,
@@ -388,133 +357,106 @@ class DrumGeneratorDialog:
                   padx=8).pack(side='right')
 
     # ================================================================
+    # Core helpers
+    # ================================================================
+
+    def _act(self, verb, message=None, on_done=None, **args):
+        """Start a core verb; show its error, or call on_done(result)."""
+        def done(event):
+            if event['status'] != 'done':
+                if message:
+                    messagebox.showerror(message, str(event.get('error')),
+                                         parent=self._parent_window())
+            elif on_done is not None:
+                on_done(event.get('result'))
+        action_id = self.core.act(verb, **args)
+        self.when_done(action_id, done)
+        return action_id
+
+    def _parent_window(self):
+        return self.parent if self._closed else self.dialog
+
+    def _lane(self, slot_idx, field):
+        return self.core.get(f'ai.ch{slot_idx + 1}.{field}')
+
+    # ================================================================
     # Model loading
     # ================================================================
 
-    def _update_model_status(self):
-        if not is_torch_available():
-            self.model_status_label.config(text="PyTorch not installed",
-                                           fg='#ff8888')
-            self.pattern_model_status_label.config(text="PyTorch not installed",
-                                                   fg='#ff8888')
-            self.install_btn.config(state='normal')
+    def _load_models(self):
+        """Load the saved (or bundled) models in the AI worker at once, so
+        the status shows them; they load in the background."""
+        if not self.core.get('ai.available'):
             return
+        for kind, models in self.core.get('ai.models').items():
+            if models['status'] == 'unloaded':
+                self._act('ai.load_model', kind=kind)
 
-        self.install_btn.config(state='disabled')
-
-        if self.generator.is_loaded:
-            self.model_status_label.config(
-                text=f"loaded ({self.generator.sampling_summary})",
-                fg=COLORS['led_on']
-            )
+    def _update_model_status(self):
+        if self.core.get('ai.installing'):
+            self.install_btn.config(state='disabled', text="Installing...")
+        elif not self.core.get('ai.available'):
+            self.install_btn.config(state='normal', text="Install ML Support")
         else:
-            saved_path = self.preferences_manager.get('drum_generator_model_path', None)
-            if saved_path and self._try_load_model(saved_path):
-                pass
+            self.install_btn.config(state='disabled')
+        if not self.core.get('ai.available'):
+            for label in (self.model_status_label, self.pattern_model_status_label):
+                label.config(text="PyTorch not installed", fg='#ff8888')
+            return
+        models = self.core.get('ai.models')
+        for kind, label in (('patch', self.model_status_label),
+                            ('pattern', self.pattern_model_status_label)):
+            model = models[kind]
+            status = model['status']
+            if status == 'loaded':
+                text = f"loaded ({model['sampling']})" if model['sampling'] else "loaded"
+                label.config(text=text, fg=COLORS['led_on'])
+            elif status == 'loading':
+                label.config(text="loading...", fg=COLORS['orange'])
+            elif status == 'error':
+                label.config(text=f"error: {model['error']}", fg='#ff8888')
             else:
-                self.model_status_label.config(text="not loaded",
-                                               fg=COLORS['text_dim'])
+                label.config(text="not loaded", fg=COLORS['text_dim'])
 
-        if self.pattern_gen.is_loaded:
-            self.pattern_model_status_label.config(text="loaded",
-                                                   fg=COLORS['led_on'])
-        else:
-            resolved = PatternGenerator.resolve_model_path(self.preferences_manager)
-            if resolved and self._try_load_pattern_model(resolved):
-                pass
-            else:
-                self.pattern_model_status_label.config(text="not loaded",
-                                                       fg=COLORS['text_dim'])
-
-        self._update_pattern_controls()
-
-    def _try_load_model(self, path: str) -> bool:
-        try:
-            self.generator.load_model(path)
-            self.preferences_manager.set('drum_generator_model_path', path)
-            self.model_status_label.config(
-                text=f"loaded ({self.generator.sampling_summary})",
-                fg=COLORS['led_on']
-            )
-            return True
-        except Exception as e:
-            self.model_status_label.config(text=f"error: {e}",
-                                           fg='#ff8888')
-            return False
-
-    def _try_load_pattern_model(self, path: str) -> bool:
-        try:
-            self.pattern_gen.load_model(path)
-            self.preferences_manager.set('drum_generator_pattern_model_path', path)
-            self.pattern_model_status_label.config(text="loaded",
-                                                   fg=COLORS['led_on'])
-            self._update_pattern_controls()
-            return True
-        except Exception as e:
-            self.pattern_model_status_label.config(text=f"error: {e}",
-                                                   fg='#ff8888')
-            return False
+    def _choose_model(self, kind, title):
+        if not self.core.get('ai.available'):
+            messagebox.showerror("PyTorch Required",
+                                 "PyTorch is not installed.\n"
+                                 "Click 'Install ML Support' to install it.",
+                                 parent=self.dialog)
+            return
+        import os
+        current = self.core.get('ai.models')[kind]['path']
+        path = filedialog.askopenfilename(
+            parent=self.dialog,
+            title=title,
+            filetypes=[("PyTorch Checkpoint", "*.pt"), ("All Files", "*.*")],
+            initialdir=os.path.dirname(current) if current else None,
+        )
+        if path:
+            # The core saves the path once the model has loaded
+            self._act('ai.load_model', None, kind=kind, path=path)
 
     def _on_load_model(self):
-        if not is_torch_available():
-            messagebox.showerror("PyTorch Required",
-                                 "PyTorch is not installed.\n"
-                                 "Click 'Install ML Support' to install it.",
-                                 parent=self.dialog)
-            return
-
-        initial_dir = None
-        saved_path = self.preferences_manager.get('drum_generator_model_path', None)
-        if saved_path:
-            import os
-            initial_dir = os.path.dirname(saved_path)
-
-        path = filedialog.askopenfilename(
-            parent=self.dialog,
-            title="Select CVAE Checkpoint",
-            filetypes=[("PyTorch Checkpoint", "*.pt"), ("All Files", "*.*")],
-            initialdir=initial_dir,
-        )
-        if path:
-            self._try_load_model(path)
+        self._choose_model('patch', "Select CVAE Checkpoint")
 
     def _on_load_pattern_model(self):
-        if not is_torch_available():
-            messagebox.showerror("PyTorch Required",
-                                 "PyTorch is not installed.\n"
-                                 "Click 'Install ML Support' to install it.",
-                                 parent=self.dialog)
-            return
-
-        initial_dir = None
-        saved_path = self.preferences_manager.get(
-            'drum_generator_pattern_model_path', None)
-        if saved_path:
-            import os
-            initial_dir = os.path.dirname(saved_path)
-
-        path = filedialog.askopenfilename(
-            parent=self.dialog,
-            title="Select Pattern CVAE Checkpoint",
-            filetypes=[("PyTorch Checkpoint", "*.pt"), ("All Files", "*.*")],
-            initialdir=initial_dir,
-        )
-        if path:
-            self._try_load_pattern_model(path)
+        self._choose_model('pattern', "Select Pattern CVAE Checkpoint")
 
     def _on_pattern_mode_changed(self, *_args):
         self._pattern_mode = self._pattern_mode_var.get()
-        self._cached_pattern_bank = None
-        self._update_pattern_controls()
+        self._invalidate_pattern_bank()
 
     def _update_pattern_controls(self):
-        """Show/hide pattern controls based on mode and model availability."""
+        """Show/hide pattern controls based on mode and the core's bank."""
+        bank = self.core.get('ai.bank')
         if self._pattern_mode == 'generate':
             self._pat_temp_frame.pack(side='left')
-            if self._cached_pattern_bank:
-                self._pat_bank_label.config(
-                    text="Bank ready (12 patterns)",
-                    fg=COLORS['led_on'])
+            if bank == 'ready':
+                self._pat_bank_label.config(text="Bank ready (12 patterns)",
+                                            fg=COLORS['led_on'])
+            elif bank == 'generating':
+                self._pat_bank_label.config(text="generating...", fg=COLORS['orange'])
             else:
                 self._pat_bank_label.config(text="(generate patches first)",
                                             fg=COLORS['text_dim'])
@@ -522,19 +464,16 @@ class DrumGeneratorDialog:
             self._pat_temp_frame.pack_forget()
             self._pat_bank_label.config(text="")
 
-        # Enable/disable replace button
-        can_replace = (self._pattern_mode == 'generate'
-                       and self._cached_pattern_bank is not None)
-        self.replace_patterns_btn.config(
-            state='normal' if can_replace else 'disabled')
+        can_replace = self._pattern_mode == 'generate' and bank == 'ready'
+        self.replace_patterns_btn.config(state='normal' if can_replace else 'disabled')
 
     def _invalidate_pattern_bank(self):
-        """Invalidate the cached pattern bank when parameters change."""
-        self._cached_pattern_bank = None
-        self._update_pattern_controls()
+        """Drop the AI pattern bank when the kit or the mode changes."""
+        if self.core.get('ai.bank') != 'none':
+            self._act('ai.clear_patterns')
 
     def _on_install_ml(self):
-        if is_torch_available():
+        if self.core.get('ai.available'):
             messagebox.showinfo("Already Installed",
                                 "PyTorch is already available.",
                                 parent=self.dialog)
@@ -542,41 +481,20 @@ class DrumGeneratorDialog:
 
         if not messagebox.askyesno(
             "Install ML Dependencies",
-            "This will run:\n  pip install -r requirements-ml.txt\n\n"
+            f"This will run:\n  {self.core.get('ai.install_command')}\n\n"
             "in the current Python environment. Proceed?",
             parent=self.dialog
         ):
             return
 
-        self.install_btn.config(state='disabled', text="Installing...")
-        self.dialog.update_idletasks()
-
-        def _do_install():
-            lines = []
-
-            def on_output(line):
-                lines.append(line)
-
-            success = install_ml_dependencies(on_output=on_output)
-
-            def _finish():
-                if success:
-                    self.install_btn.config(text="Installed", state='disabled')
-                    self._update_model_status()
-                    messagebox.showinfo("Success",
-                                        "ML dependencies installed successfully.\n"
-                                        "You can now load a model.",
-                                        parent=self.dialog)
-                else:
-                    self.install_btn.config(text="Install ML Support", state='normal')
-                    messagebox.showerror("Install Failed",
-                                         "Installation failed.\n\n" +
-                                         "\n".join(lines[-10:]),
-                                         parent=self.dialog)
-
-            self.dialog.after(0, _finish)
-
-        threading.Thread(target=_do_install, daemon=True).start()
+        def done(result):
+            messagebox.showinfo("Success",
+                                "ML dependencies installed successfully.\n"
+                                "You can now load a model.",
+                                parent=self._parent_window())
+            if not self._closed:
+                self._load_models()
+        self._act('ai.install', "Install Failed", on_done=done)
 
     # ================================================================
     # Generation
@@ -596,300 +514,123 @@ class DrumGeneratorDialog:
         import random
         self.seed_var.set(str(random.randint(0, 2**31 - 1)))
 
+    def _generation_args(self):
+        return {'temperature': self.temp_var.get(), 'candidates': self.candidates_var.get(),
+                'seed': self._get_seed()}
+
     def _on_generate_slot(self, slot_idx):
-        if not self.generator.is_loaded:
-            messagebox.showwarning("No Model", "Load a patch model first.",
-                                   parent=self.dialog)
-            return
-
         w = self.slot_widgets[slot_idx]
-        drum_type = w['type_var'].get()
-        n = self.candidates_var.get()
-        temp = self.temp_var.get()
-        seed = self._get_seed()
-
-        try:
-            candidates = self.generator.generate(drum_type, n=n,
-                                                  temperature=temp, seed=seed)
-        except Exception as e:
-            messagebox.showerror("Generation Error", str(e), parent=self.dialog)
-            return
-
-        self.slot_state[slot_idx]['candidates'] = candidates
-        self.slot_state[slot_idx]['selected_idx'] = 0
+        # The core tries candidate 1 on the live channel once it arrives
+        self._act('ai.generate', "Generation Error", channel=slot_idx + 1,
+                  type=w['type_var'].get(), **self._generation_args())
         w['apply_var'].set(True)
-        self._update_slot_display(slot_idx)
         self._invalidate_pattern_bank()
 
     def _on_generate_all(self):
-        if not self.generator.is_loaded:
-            messagebox.showwarning("No Model", "Load a patch model first.",
-                                   parent=self.dialog)
-            return
-
-        n = self.candidates_var.get()
-        temp = self.temp_var.get()
-        seed = self._get_seed()
-
         for i in range(8):
             w = self.slot_widgets[i]
-            drum_type = w['type_var'].get()
-            try:
-                candidates = self.generator.generate(drum_type, n=n,
-                                                      temperature=temp, seed=seed)
-            except Exception as e:
-                print(f"Slot {i} generation error: {e}", flush=True)
-                candidates = []
-
-            self.slot_state[i]['candidates'] = candidates
-            self.slot_state[i]['selected_idx'] = 0
+            self.core.set(f'ai.ch{i + 1}.type', w['type_var'].get())
             w['apply_var'].set(True)
-            self._update_slot_display(i)
-
-        # Auto-generate pattern bank when in generate mode
-        self._maybe_generate_pattern_bank()
+        self._act('ai.generate', "Generation Error",
+                  on_done=lambda result: self._maybe_generate_pattern_bank(),
+                  **self._generation_args())
 
     def _on_prev_candidate(self, slot_idx):
-        st = self.slot_state[slot_idx]
-        if st['candidates']:
-            st['selected_idx'] = (st['selected_idx'] - 1) % len(st['candidates'])
-            self._update_slot_display(slot_idx)
+        if self._lane(slot_idx, 'candidates'):
+            self._act('ai.try', None, channel=slot_idx + 1, step=-1)
             self._invalidate_pattern_bank()
 
     def _on_next_candidate(self, slot_idx):
-        st = self.slot_state[slot_idx]
-        if st['candidates']:
-            st['selected_idx'] = (st['selected_idx'] + 1) % len(st['candidates'])
-            self._update_slot_display(slot_idx)
+        if self._lane(slot_idx, 'candidates'):
+            self._act('ai.try', None, channel=slot_idx + 1, step=1)
             self._invalidate_pattern_bank()
 
     def _update_slot_display(self, slot_idx):
         w = self.slot_widgets[slot_idx]
-        st = self.slot_state[slot_idx]
-        if st['candidates']:
-            total = len(st['candidates'])
-            idx = st['selected_idx']
-            w['idx_label'].config(text=f"{idx + 1} / {total}")
-            patch = st['candidates'][idx]
-            w['name_label'].config(text=patch.get('Name', ''))
+        total = self._lane(slot_idx, 'candidates')
+        if self._lane(slot_idx, 'generating'):
+            w['idx_label'].config(text="generating...")
+        elif total:
+            w['idx_label'].config(text=f"{self._lane(slot_idx, 'candidate')} / {total}")
         else:
             w['idx_label'].config(text="- / -")
-            w['name_label'].config(text="")
-
-    # ================================================================
-    # Preview-state builder
-    # ================================================================
-
-    def _get_tentative_raw_patches(self) -> list[dict]:
-        """Build the tentative kit: live channels with generated patches overlaid."""
-        patches = []
-        for i in range(8):
-            st = self.slot_state[i]
-            if st['candidates']:
-                patches.append(st['candidates'][st['selected_idx']])
-            else:
-                patches.append(channel_to_raw_patch(self.synth.channels[i]))
-        return patches
-
-    def _apply_tentative_kit_to_live_synth(self):
-        """Apply all tentative patches (generated candidates) to the live synth."""
-        for i in range(8):
-            st = self.slot_state[i]
-            if st['candidates']:
-                patch = st['candidates'][st['selected_idx']]
-                channel_data = convert_drum_patch_data(patch)
-                apply_drum_patch_to_channel(self.synth.channels[i], channel_data)
-
-    def _save_patterns(self):
-        """Save pattern state for later restoration."""
-        if self._saved_patterns is None:
-            self._saved_patterns = [p.copy() for p in self.pattern_manager.patterns]
-
-    def _restore_patterns(self):
-        """Restore saved pattern state."""
-        if self._saved_patterns is not None:
-            self.pattern_manager.patterns = self._saved_patterns
-            self._saved_patterns = None
-
-    def _restore_channels(self):
-        """Restore channels that weren't explicitly applied."""
-        for i in range(8):
-            if i not in self._applied_slots:
-                self.synth.channels[i].set_parameters(self._saved_channel_states[i])
+        error = self._lane(slot_idx, 'error')
+        name = self._lane(slot_idx, 'name') if total else ''
+        w['name_label'].config(text=f"error: {error}" if error and not total else name)
 
     # ================================================================
     # Pattern bank generation
     # ================================================================
 
     def _maybe_generate_pattern_bank(self):
-        """Generate a pattern bank if in generate mode and pattern model is loaded."""
-        if self._pattern_mode != 'generate' or not self.pattern_gen.is_loaded:
-            self._invalidate_pattern_bank()
+        """Generate a pattern bank for the tried kit in generate mode."""
+        if self._closed or self._pattern_mode != 'generate':
             return
-
-        raw_patches = self._get_tentative_raw_patches()
-        pm = self.pattern_manager
-        seed = self._get_seed()
-        pat_temp = self.pattern_temp_var.get()
-
-        try:
-            self._cached_pattern_bank = self.pattern_gen.generate_bank(
-                raw_patches,
-                tempo=pm.bpm,
-                swing=0.0,
-                fill_rate=pm.fill_rate,
-                step_rate=pm.step_rate,
-                temperature=pat_temp,
-                seed=seed,
-            )
-            self._pat_bank_label.config(text="Bank ready (12 patterns)",
-                                        fg=COLORS['led_on'])
-        except Exception as e:
-            print(f"Pattern bank generation error: {e}", flush=True)
-            self._cached_pattern_bank = None
-            self._pat_bank_label.config(text=f"error: {e}",
-                                        fg='#ff8888')
-        self._update_pattern_controls()
+        self._act('ai.generate_patterns', None, temperature=self.pattern_temp_var.get(),
+                  seed=self._get_seed())
 
     # ================================================================
-    # Preview: one-shot
+    # Preview
     # ================================================================
 
     def _on_preview_slot(self, slot_idx):
-        """Trigger a one-shot preview for the selected candidate on this slot.
-
-        Applies the candidate patch to the live synth channel and triggers it
-        at velocity 127, identical to pressing keys 1-8 in the main window.
-        """
-        st = self.slot_state[slot_idx]
-        if not st['candidates']:
+        """Try the slot's candidate on its live channel and hit it at
+        velocity 127, as keys 1-8 do in the main window."""
+        if not self._lane(slot_idx, 'candidates'):
             return
-
-        patch = st['candidates'][st['selected_idx']]
-        channel_data = convert_drum_patch_data(patch)
-        apply_drum_patch_to_channel(self.synth.channels[slot_idx], channel_data)
-        self.synth.trigger_drum(slot_idx, velocity=127)
-
-    # ================================================================
-    # Preview: pattern loop (current pattern)
-    # ================================================================
+        self._act('ai.try', None, channel=slot_idx + 1,
+                  on_done=lambda result: self.core.trigger(slot_idx, 127))
 
     def _on_toggle_loop_preview(self):
-        if self.preview_playing:
-            self._stop_loop_preview()
-        else:
-            self._start_loop_preview()
-
-    def _start_loop_preview(self):
-        """Loop the current selected/playing pattern with the tentative kit.
-
-        Uses the live synth and the main audio callback transport, so swing,
-        accents, fills, substeps, and probability all behave identically to
-        main-window playback.
-        """
-        self._apply_tentative_kit_to_live_synth()
-
-        if self._pattern_mode == 'generate' and self._cached_pattern_bank:
-            self._save_patterns()
-            pm = self.pattern_manager
-            pat_name = PATTERN_NAMES[pm.playing_pattern_index
-                                     if pm.playing_pattern_index >= 0
-                                     else pm.selected_pattern_index]
-            pat_data = self._cached_pattern_bank.get(pat_name)
-            if pat_data:
-                pat_idx = PATTERN_NAMES.index(pat_name)
-                self.pattern_manager.apply_single_pattern(pat_idx, pat_data)
-
-        if self.start_transport:
-            self.start_transport()
-        self.preview_playing = True
-        self.preview_loop_btn.config(text="Stop Loop", bg='#884444')
-
-    # ================================================================
-    # Preview: bank sequence
-    # ================================================================
+        self._toggle_preview('loop')
 
     def _on_toggle_bank_preview(self):
-        if self.preview_playing:
-            self._stop_loop_preview()
+        self._toggle_preview('bank')
+
+    def _toggle_preview(self, mode):
+        """Loop the playing pattern (or chain all 12 from A) with the tried kit,
+        on the main transport; stopping puts the preset's patterns back."""
+        if self.core.get('ai.preview') != 'off':
+            self._act('ai.pattern_try', "Preview", mode=None)
         else:
-            self._start_bank_preview()
+            self._act('ai.pattern_try', "Preview", mode=mode,
+                      bank=self._pattern_mode == 'generate')
 
-    def _start_bank_preview(self):
-        """Sequence through all patterns with the tentative kit.
-
-        Temporarily chains all 12 patterns so the main transport cycles
-        through them automatically, using the same playback engine as the
-        main window.
-        """
-        self._apply_tentative_kit_to_live_synth()
-        self._save_patterns()
-
-        if self._pattern_mode == 'generate' and self._cached_pattern_bank:
-            self.pattern_manager.apply_pattern_bank(self._cached_pattern_bank)
-
-        # Chain all patterns for sequential bank playback
-        for i, p in enumerate(self.pattern_manager.patterns):
-            p.chained_to_next = (i < len(self.pattern_manager.patterns) - 1)
-            p.chained_from_prev = (i > 0)
-
-        # Start from pattern A
-        self.pattern_manager.selected_pattern_index = 0
-        if self.start_transport:
-            self.start_transport()
-        self.preview_playing = True
-        self.preview_bank_btn.config(text="Stop Bank", bg='#884444')
+    def _update_preview_buttons(self):
+        preview = self.core.get('ai.preview')
+        self.preview_loop_btn.config(
+            text="Stop Loop" if preview == 'loop' else "Loop Preview",
+            bg='#884444' if preview == 'loop' else COLORS['bg_light'])
+        self.preview_bank_btn.config(
+            text="Stop Bank" if preview == 'bank' else "Preview Bank",
+            bg='#884444' if preview == 'bank' else COLORS['bg_light'])
 
     # ================================================================
-    # Stop preview
+    # Keep
     # ================================================================
 
-    def _stop_loop_preview(self):
-        """Stop any running loop/bank preview and restore state."""
-        if self.stop_transport:
-            self.stop_transport()
-        self._restore_patterns()
-        self._restore_channels()
-
-        self.preview_playing = False
-        self.preview_loop_btn.config(text="Loop Preview", bg=COLORS['bg_light'])
-        self.preview_bank_btn.config(text="Preview Bank", bg=COLORS['bg_light'])
-
-    # ================================================================
-    # Apply
-    # ================================================================
+    def _checked_slots(self):
+        return [i + 1 for i in range(8)
+                if self.slot_widgets[i]['apply_var'].get() and self._lane(i, 'candidates')]
 
     def _on_apply_selected(self):
-        """Apply checked patch slots to the live synth (patterns unchanged)."""
-        with self.apply_change('AI drum patches'):
-            applied = self._apply_checked_slots()
-            if applied and self.on_apply_callback:
-                self.on_apply_callback('patches')
+        """Keep the checked slots' candidates (one undo step; patterns unchanged)."""
+        channels = self._checked_slots()
+        if not channels:
+            return
 
-        if applied:
-            names = ", ".join(f"{i+1}" for i in applied)
-            self.model_status_label.config(
-                text=f"Applied to slot{'s' if len(applied) > 1 else ''} {names}",
-                fg=COLORS['led_on'])
-
-    def _apply_checked_slots(self):
-        """Apply the checked patch slots to the live synth; their indexes."""
-        applied = []
-        for i in range(8):
-            st = self.slot_state[i]
-            w = self.slot_widgets[i]
-            if w['apply_var'].get() and st['candidates']:
-                patch = st['candidates'][st['selected_idx']]
-                channel_data = convert_drum_patch_data(patch)
-                apply_drum_patch_to_channel(self.synth.channels[i], channel_data)
-                applied.append(i)
-                self._applied_slots.add(i)
-                self._saved_channel_states[i] = self.synth.channels[i].get_parameters()
-        return applied
+        def done(result):
+            kept = result['kept']
+            if kept and not self._closed:
+                names = ", ".join(str(c) for c in kept)
+                self.model_status_label.config(
+                    text=f"Applied to slot{'s' if len(kept) > 1 else ''} {names}",
+                    fg=COLORS['led_on'])
+        self._act('ai.keep', "Apply Failed", on_done=done, channels=channels)
 
     def _on_replace_patterns(self):
-        """Apply checked patches + replace all 12 patterns from the cached AI bank."""
-        if not self._cached_pattern_bank:
+        """Keep the checked slots and replace all 12 patterns from the AI bank."""
+        if self.core.get('ai.bank') != 'ready':
             messagebox.showwarning("No Pattern Bank",
                                    "Generate patterns first by setting the pattern\n"
                                    "mode to 'Generate New AI Patterns' and\n"
@@ -897,36 +638,42 @@ class DrumGeneratorDialog:
                                    parent=self.dialog)
             return
 
-        with self.apply_change('AI drum patches and patterns'):
-            # Apply patches first
-            self._apply_checked_slots()
-
-            # Replace all patterns
-            self.pattern_manager.apply_pattern_bank(self._cached_pattern_bank)
-            self._patterns_applied = True
-            self._saved_patterns = None
-
-            if self.on_apply_callback:
-                self.on_apply_callback('patches_and_patterns')
-
-        self.model_status_label.config(
-            text=f"Applied patches + 12 patterns",
-            fg=COLORS['led_on'])
+        def done(result):
+            if not self._closed:
+                self.model_status_label.config(text="Applied patches + 12 patterns",
+                                               fg=COLORS['led_on'])
+        self._act('ai.replace_patterns', "Apply Failed", on_done=done,
+                  channels=self._checked_slots())
 
     # ================================================================
-    # Cleanup
+    # Refresh and cleanup
     # ================================================================
+
+    def _refresh(self):
+        """Show the core's AI state (on the dialog's own timer)."""
+        if self._closed:
+            return
+        self._update_model_status()
+        for i in range(8):
+            self._update_slot_display(i)
+        self._update_pattern_controls()
+        self._update_preview_buttons()
+        self._refresh_job = self.dialog.after(100, self._refresh)
 
     def _on_close(self):
-        if self.preview_playing:
-            self._stop_loop_preview()
+        if self._closed:
+            return
+        self._closed = True
+        if self._refresh_job is not None:
+            self.dialog.after_cancel(self._refresh_job)
         # Save temperature preferences
-        self.preferences_manager.set('drum_generator_patch_temperature',
-                                     self.temp_var.get())
-        self.preferences_manager.set('drum_generator_pattern_temperature',
-                                     self.pattern_temp_var.get())
-        # Restore non-applied channels and patterns
-        self._restore_channels()
-        if not self._patterns_applied:
-            self._restore_patterns()
+        for name, var in (('patch', self.temp_var), ('pattern', self.pattern_temp_var)):
+            try:
+                self.core.set(f'pref.ai.{name}_temperature', var.get())
+            except (tk.TclError, ValueError):
+                pass  # not a number: keep the saved one
+        # Slots not kept go back to their sounds, the preset's patterns stay
+        self._act('ai.clear')
         self.dialog.destroy()
+        if self.on_close is not None:
+            self.on_close()
