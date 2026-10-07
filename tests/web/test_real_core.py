@@ -188,3 +188,57 @@ def test_a_lane_copied_from_one_channel_pastes_into_another(open_panel, real_cor
     assert real_core.get('pattern.A.ch2.step5.vel') == 100
     page.wait_js(f"document.querySelector('{PAD.format(n=9)}').classList.contains('on')",
                  pump=real_core.backend.stream.pull)
+
+
+# ---------------------------------------------------------------- edit rack (web slice W4)
+
+RACK = '.rack [data-suffix="{s}"]'
+
+
+def test_a_rack_fader_sets_the_noise_attack_of_the_selected_channel(open_panel, real_core):
+    page = open_panel(real_core, owns_core=False)
+    page.click('.strip[data-channel="3"] .chb')
+    until(page, lambda: real_core.get('global.channel') == 3)
+    fader = RACK.format(s='noise.attack')
+    page.wait_js(f"document.querySelector({fader!r}).dataset.address === 'ch3.noise.attack'",
+                 pump=real_core.backend.stream.pull)
+    before, ch1 = real_core.get('ch3.noise.attack'), real_core.get('ch1.noise.attack')
+    page.drag(f'{fader} .track', dy=0, fy=0.25)  # a track click three quarters up
+    until(page, lambda: real_core.get('ch3.noise.attack') > max(before, 50))
+    assert real_core.get('ch1.noise.attack') == ch1  # edit all is off
+    page.wait_js("!document.querySelector('#undo').disabled", pump=real_core.backend.stream.pull)
+    page.click('#undo')
+    until(page, lambda: real_core.get('ch3.noise.attack') == before)
+
+
+def test_click_to_assign_sets_the_lfo_destination_in_the_core(open_panel, real_core):
+    page = open_panel(real_core, owns_core=False)
+    page.click(f"{RACK.format(s='lfo1.target')} button")
+    page.wait_js("document.querySelector('#stage').classList.contains('assigning')")
+    page.click('.strip[data-channel="1"] px-knob[data-address="ch1.osc.decay"] .dial')
+    until(page, lambda: real_core.get('ch1.lfo1.target') == 'osc_decay')
+    page.wait_js(f"document.querySelector('{RACK.format(s='lfo1.target')} button').textContent"
+                 " === '→ osc decay'", pump=real_core.backend.stream.pull)
+
+
+def test_modulation_bands_move_while_the_lfo_runs(open_panel, real_core):
+    page = open_panel(real_core, owns_core=False)
+    pump = real_core.backend.stream.pull
+    for address, value in (('ch2.osc.decay', 10000.0), ('ch2.noise.decay', 10000.0),
+                           ('ch2.lfo1.target', 'pitch_semitones'), ('ch2.lfo1.depth', 100.0),
+                           ('ch2.lfo1.rate', 9.0), ('ch2.lfo1.on', True)):
+        real_core.set(address, value)
+    until(page, lambda: real_core.get('ch2.lfo1.on') is True)
+    real_core.trigger(1)
+    knob = '.strip[data-channel="2"] px-knob[data-address="ch2.osc.pitch"]'
+    page.wait_js(f"document.querySelector({knob!r}).dataset.mod === 'lfo1'", pump=pump)
+    first = page.js(f"document.querySelector({knob!r}).dataset.modTo")
+    page.wait_js(f"document.querySelector({knob!r}).dataset.modTo !== {first!r}", pump=pump)
+
+
+def test_closing_the_rack_is_saved_as_a_preference(open_panel, real_core):
+    page = open_panel(real_core, owns_core=False)
+    page.click('#rack-toggle')
+    page.qtbot.waitUntil(lambda: real_core.get('pref.ui.rack_open') is False)
+    assert real_core.preferences.get('ui_rack_open') is False
+    page.qtbot.waitUntil(lambda: page.window.height() == 560)
