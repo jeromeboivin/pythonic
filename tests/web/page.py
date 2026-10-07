@@ -107,8 +107,37 @@ class Page:
         self.wait_js('window.__painted', timeout)
 
     # ------------------------------------------------------------------ input
+    def settle(self, timeout=2.0):
+        """Wait for the window and the page to agree on the size before input
+        lands: the edit rack resizes the window through the bridge after the
+        page changed, and Chromium sees the new size a little later (a click
+        sent in between lands on the old boxes). A window at the stage's
+        aspect (the window the tests open) waits for the stage's height too.
+        Never fails: a window sized by hand just continues after `timeout`."""
+        deadline = time.monotonic() + timeout
+        waited = False
+        while True:
+            size = self.view.size()
+            state = self.js("[innerWidth, innerHeight, Number((document.getElementById('stage') "
+                            "|| {dataset: {}}).dataset.height || 1000)]")
+            width, height, stage = state if state else (0, 0, 1000)
+            expected = round(size.width() * stage / 1600)
+            aspect_ok = abs(size.height() - expected) <= 1 or self.window.isMaximized()
+            if width == size.width() and height == size.height() and aspect_ok:
+                break
+            if time.monotonic() > deadline:
+                return
+            waited = True
+            self.qtbot.wait(10)
+        if waited:  # hit testing follows the next painted frame
+            self.run('window.__settled = false; requestAnimationFrame(() => '
+                     'requestAnimationFrame(() => { window.__settled = true; }));')
+            self.wait_js('window.__settled')
+
     def rect(self, selector):
-        """(x, y, width, height) of an element in view pixels."""
+        """(x, y, width, height) of an element in view pixels (once the page
+        and the window agree on the size, see settle())."""
+        self.settle()
         box = self.js(f"(() => {{ const r = document.querySelector({json.dumps(selector)})"
                       f".getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; }})()")
         return tuple(box)
