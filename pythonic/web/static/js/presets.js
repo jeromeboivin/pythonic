@@ -45,7 +45,8 @@ function el(tag, cls, text) {
   return node;
 }
 
-export function mountPresets({ store, client, ctx, display, act, stage, slot, files, openPage, patchItems }) {
+export function mountPresets({ store, client, ctx, display, act, stage, slot, files, openPage, patchItems,
+  beforeLoad = async () => true }) {
   const offs = [];
   const prev = slot('preset-prev');
   const next = slot('preset-next');
@@ -61,6 +62,7 @@ export function mountPresets({ store, client, ctx, display, act, stage, slot, fi
 
   // ------------------------------------------------------------ load and save
   async function load(path, label = 'PRESET') {
+    if (!(await beforeLoad())) return null;
     const r = await files.run('preset.load', { path }, { label, failTitle: 'Could not load the preset' });
     if (r) display.show(label, String(r.name || fileName(r.path)).toUpperCase());
     return r;
@@ -119,6 +121,7 @@ export function mountPresets({ store, client, ctx, display, act, stage, slot, fi
   });
 
   async function loadLast() {
+    if (!(await beforeLoad())) return;
     const r = await files.run('preset.load_last', {}, { label: 'PRESET', failTitle: 'Could not load the preset' });
     if (r) display.show('PRESET', r.loaded ? String(r.name || '').toUpperCase() : 'no last preset');
   }

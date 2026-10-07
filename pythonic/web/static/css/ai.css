@@ -1,0 +1,92 @@
+/* The AI drum generator page (js/ai-page.js), a page of the edit rack drawer.
+   Its three columns line up with the face's (230 | strips | 270, gap 12; the
+   drawer's 1px border taken off), so each lane sits under its strip. */
+.aipage { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 4px; padding: 4px 0 6px; }
+.ai-head { display: flex; align-items: center; gap: 12px; height: 28px; flex: none; padding: 0 8px; }
+.ai-head .btn.sq { padding: 5px 10px; }
+.ai-title { font-weight: 700; font-size: 15px; letter-spacing: .06em; text-transform: uppercase; color: var(--label); }
+.ai-state { font-size: 12px; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: .06em; }
+.ai-state[data-state="generating"], .ai-state[data-state="loading"], .ai-state[data-state="installing"] { animation: ai-pulse .7s infinite alternate; }
+.ai-state[data-state="unavailable"] { color: var(--error); animation: none; }
+@keyframes ai-pulse { from { opacity: 1; } to { opacity: .35; } }
+.ai-head .sp { flex: 1; }
+.ai-tried { font-size: 12px; font-weight: 700; color: var(--button-lit-text); text-transform: uppercase; letter-spacing: .04em; }
+
+.ai-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 229px 1fr 269px; gap: 12px; }
+.ai-sec { border: 1px solid var(--box); border-radius: 6px; padding: 4px 8px 6px; display: flex; flex-direction: column; gap: 6px; min-width: 0; min-height: 0; }
+.ai-sec h4 { margin: 0; font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); }
+.aipage .note { font-size: 11px; color: #8a8a8d; line-height: 1.3; }
+.aipage .btn.sq.arr { padding: 4px 7px; min-width: 22px; }
+.aipage .btn.red { color: #d93b3b; }
+
+/* left: models, temperature, candidates, seed, generate all */
+.ai-left { margin-left: 0; border-left: 0; border-radius: 0 6px 6px 0; }
+.ai-model { display: grid; grid-template-columns: 90px 1fr auto; align-items: center; gap: 6px; font-size: 11px; }
+.ai-model .k, .ai-left .fl .k { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--dim); white-space: nowrap; }
+.ai-model .st { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #8a8a8d; }
+.ai-model .st[data-tone="ok"] { color: var(--accent); }
+.ai-model .st[data-tone="busy"] { color: var(--midi); }
+.ai-model .st[data-tone="error"] { color: var(--error); }
+.ai-model .btn.sq { padding: 3px 7px; font-size: 11px; }
+.ai-models { display: flex; flex-direction: column; gap: 5px; }
+.ai-settings { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+.ai-pickers { display: flex; flex-direction: column; gap: 6px; }
+.ai-left .fl { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+.ai-left .fl .k { min-width: 50px; }
+.ai-cands { min-width: 22px; text-align: center; font-weight: 700; font-size: 14px; cursor: ns-resize; }
+.ai-seed {
+  width: 62px; font: 700 12px var(--font-label); background: #0b0b0c; color: var(--label);
+  border: 1px solid #2f3034; border-radius: 3px; padding: 3px 6px; outline: none; user-select: text;
+}
+.ai-seed:focus { border-color: var(--accent); }
+.ai-seed::placeholder { color: #6c6e72; font-weight: 500; }
+#ai-generate-all { padding: 8px 4px; font-size: 13px; }
+
+/* middle: the 8 lanes under the strips */
+.ai-mid { padding: 4px 0 6px; }
+.ai-mid h4 { padding: 0 8px; }
+.ai-lanes { flex: 1; display: grid; grid-template-columns: repeat(8, 1fr); min-height: 0; }
+.ai-lane {
+  display: flex; flex-direction: column; gap: 5px; align-items: stretch; min-width: 0;
+  border-top: 3px solid var(--cc); border-left: 1px solid var(--rule); padding: 5px 6px 0;
+}
+.ai-lane:first-child { border-left: 0; }
+.ai-lane .lrow { display: flex; align-items: center; gap: 4px; justify-content: space-between; }
+.ai-lane px-list .lbox { font-size: 11px; padding: 3px 16px 3px 5px; min-width: 64px; }
+.ai-lane px-list .lbox::after { right: 5px; }
+.ai-lane px-list .val, .ai-lane px-list .lbl { display: none; }
+.ai-lane .btn.sq { padding: 4px 6px; font-size: 11px; }
+.ai-lane .btn.gen { flex: 1; }
+.ai-lane .nav .cnt { font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.ai-lane .cname { font-size: 12px; font-weight: 700; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: 15px; }
+.ai-lane.trying .cname { font-style: italic; color: var(--cc); }
+.ai-lane .lnote { font-size: 10px; color: #8a8a8d; line-height: 1.25; overflow: hidden; max-height: 38px; word-break: break-word; }
+.ai-lane .lnote.busy { color: var(--accent); animation: ai-pulse .7s infinite alternate; }
+.ai-lane .lnote.bad { color: var(--error); }
+.ai-lane[data-state="generating"] .nav, .ai-lane[data-state="generating"] .cname { opacity: .4; }
+
+/* without the ML extras: the install box replaces the lanes */
+.ai-install { display: none; flex: 1; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 10px; text-align: center; }
+.aipage.unavailable .ai-lanes { display: none; }
+.aipage.unavailable .ai-install { display: flex; }
+.ai-install-title { font-size: 15px; font-weight: 700; color: var(--label); }
+.ai-install .note { font-size: 12px; }
+.ai-command { color: var(--label); background: #1b1b1d; padding: 2px 6px; border-radius: 3px; font-size: 12px; user-select: text; }
+.ai-install .btn.sq { padding: 6px 12px; }
+
+/* right: patterns and apply */
+.ai-right { border-right: 0; border-radius: 6px 0 0 6px; }
+.ai-pmodes { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; }
+.ai-pmodes .btn.sq { padding: 5px 4px; font-size: 11px; }
+.ai-bankrow { display: flex; align-items: center; gap: 8px; min-height: 58px; }
+.ai-bankrow px-knob, .ai-bankrow #ai-new-bank { visibility: hidden; }
+.ai-right.generate .ai-bankrow px-knob, .ai-right.generate .ai-bankrow #ai-new-bank { visibility: visible; }
+.ai-banknote { flex: 1; }
+.ai-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-top: auto; }
+.ai-actions .btn.sq { padding: 6px 4px; font-size: 11px; }
+.ai-actions #ai-revert { grid-column: span 2; }
+.aipage px-knob .lbl { font-size: 10px; color: var(--dim); }
+.aipage .val { font-size: 10px; min-height: 12px; }
+
+/* The strip tab of a channel trying a candidate: its name in italics */
+.strip .tab.aitry { font-style: italic; outline: 2px dashed var(--accent); outline-offset: 1px; }

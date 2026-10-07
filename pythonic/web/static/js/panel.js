@@ -246,6 +246,14 @@ export function mountPanel(stage, { store, client, meta = {} }) {
     return null;
   };
   ctx.openCcMappings = () => openPage('setup', { tab: 'midi' });
+  // Guards a preset load waits for (the AI page settles its tried sounds):
+  // fn() -> boolean | Promise<boolean>, false cancels the load
+  const loadGuards = new Set();
+  const guardPresetLoad = (fn) => { loadGuards.add(fn); return () => loadGuards.delete(fn); };
+  const beforePresetLoad = async () => {
+    for (const fn of [...loadGuards]) if (!(await fn())) return false;
+    return true;
+  };
 
   /** Errors nobody waits for: audio callback, stalled stream, MIDI, AI worker, ... */
   const reportError = (event) => {
@@ -470,7 +478,7 @@ export function mountPanel(stage, { store, client, meta = {} }) {
   const patterns = mountPatterns({ store, ctx, display, act, slot, selected: () => selectedPattern(store) });
   rack = mountRack({ store, client, ctx, display, stage, slot, drawer, files });
   const presets = mountPresets({ store, client, ctx, display, act, stage, slot, files, openPage,
-    patchItems: rack.patchItems });
+    patchItems: rack.patchItems, beforeLoad: beforePresetLoad });
   const exportsMenu = mountExports({ client, ctx, display, stage, patterns, files });
   baseDisplay();
 
@@ -499,6 +507,8 @@ export function mountPanel(stage, { store, client, meta = {} }) {
     exports: exportsMenu,
     registerPage,
     openPage,
+    /** Ask before a preset load: fn() -> boolean | Promise (false cancels); returns off. */
+    guardPresetLoad,
     /** Registered page names. */
     get pages() { return [...pages.keys()]; },
     /** Show an error nobody waited for (the global handler). */

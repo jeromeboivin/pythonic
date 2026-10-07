@@ -2,6 +2,7 @@
 // and the store, fit the stage, mount the panel, then read the values the
 // panel watches. window.pythonic exposes { bridge, client, store, meta, ready }.
 
+import { mountAiPage } from './ai-page.js';
 import { connectBridge, createFakeBridge } from './bridge.js';
 import { createCoreClient } from './core-client.js';
 import { mountPanel } from './panel.js';
@@ -38,6 +39,7 @@ export async function boot({ bridge = null, stage = document.getElementById('sta
   const meta = await client.describe(''); // every registered address
   const panel = mountPanel(stage, { store, client, meta });
   const setup = mountSetup({ panel, store, client, meta });
+  panel.ai = mountAiPage({ panel, store, client, stage }); // the AI drum generator page
   store.seed(await client.get(store.watched()));
   return { bridge, client, store, meta, panel, setup };
 }
