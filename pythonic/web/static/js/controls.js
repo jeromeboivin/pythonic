@@ -197,7 +197,10 @@ export function createControlContext({ store, client, meta = {}, root }) {
     if (!m.readonly && m.default !== null && m.default !== undefined) {
       items.push([`Reset to default (${formatValue(m, m.default)})`, () => control.commit(m.default)]);
     }
-    if (!m.readonly) {
+    // Settings (midi.*, audio.*, pref.*) are not controller targets; inside the
+    // setup sheet, CC mappings… would open the sheet the control is on
+    const learnable = !/^(midi|audio|pref)\./.test(address);
+    if (!m.readonly && learnable) {
       items.push(null);
       items.push(ctx.learning() === address
         ? ['Cancel MIDI learn', () => client.act('midi.learn_cancel')]
@@ -213,7 +216,8 @@ export function createControlContext({ store, client, meta = {}, root }) {
       items.push(isBendTarget(address, bend, ctx.selectedChannel())
         ? ['Remove pitch bend', () => ctx.set('midi.pitchbend_target', null)]
         : ['Assign pitch bend', () => ctx.set('midi.pitchbend_target', address)]);
-      if (ctx.openCcMappings) items.push(null, ['CC mappings…', () => ctx.openCcMappings()]);
+      const inSetup = !!(control.closest && control.closest('[data-sheet="setup"]'));
+      if (ctx.openCcMappings && !inSetup) items.push(null, ['CC mappings…', () => ctx.openCcMappings()]);
     }
     return ctx.openMenu(items, clientX, clientY);
   };

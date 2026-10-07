@@ -32,8 +32,19 @@ def bound_on_every_channel(panel):
     return bound
 
 
+def bound_in_setup(panel):
+    """The addresses the setup sheet binds, tab by tab."""
+    bound = set()
+    for tab in ('audio', 'midi', 'synthesis', 'ai'):
+        panel.run(f"pythonic.panel.openPage('setup', {{tab: '{tab}'}})")
+        panel.wait_js(f"document.querySelector('.setup') && document.querySelector('.setup').dataset.tab === '{tab}'")
+        bound |= panel.bound_addresses()
+    panel.run("pythonic.setup.close()")
+    return bound
+
+
 def test_every_address_is_bound_or_listed_absent(panel, core_table):
-    bound = bound_on_every_channel(panel)
+    bound = bound_on_every_channel(panel) | bound_in_setup(panel)
     patterns = absent_patterns()
     names = set(core_table['describe'])
 

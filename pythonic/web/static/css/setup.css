@@ -1,0 +1,65 @@
+/* The setup sheet (js/setup.js): tabs on top, the sheet sizes to its tab,
+   audio and midi in two columns. Colours come from tokens.css. */
+.sheet.setup-sheet { padding: 12px 14px 14px; }
+.setup { display: flex; flex-direction: column; gap: 10px; }
+.setup .su-head { display: flex; align-items: center; gap: 12px; }
+.setup .su-title { font-weight: 700; font-size: 16px; letter-spacing: .06em; text-transform: uppercase; color: var(--label); }
+.setup .su-tabs { display: flex; gap: 3px; }
+.setup .su-tabs .btn { padding: 6px 14px; }
+.setup .su-sp { flex: 1; }
+.setup .su-close { padding: 4px 9px; }
+.setup .su-error { font-size: 12px; color: var(--error); }
+.setup .su-cols { display: grid; gap: 10px; align-items: start; }
+.setup .su-cols.two { grid-template-columns: 1fr 1fr; }
+.setup .su-cols.two.midi { grid-template-columns: 1fr 1.15fr; }
+.setup .su-cols.one { grid-template-columns: 1fr; }
+.setup .su-sec { border: 1px solid var(--box); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.setup .su-sec h4 { margin: 0; font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--label); font-weight: 700; }
+.setup .su-field { display: flex; align-items: center; gap: 6px; min-height: 26px; }
+.setup .su-lbl { width: 88px; flex: none; font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--dim); }
+.setup .su-row { display: flex; align-items: center; gap: 10px; }
+.setup .su-wrap { display: contents; }
+.setup .su-note { font-size: 12px; color: #8a8a8d; line-height: 1.3; white-space: normal; }
+.setup .lbox { font-size: 12px; overflow: hidden; text-overflow: ellipsis; max-width: 240px; }
+.setup .lbox small { color: #8a8a8d; font-weight: 500; text-transform: none; }
+.setup .btn.su-small { padding: 4px 8px; font-size: 11px; }
+.setup .btn.su-step { min-width: 24px; padding: 4px 0; }
+.setup .su-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: transparent; }
+.setup .su-dot.on { background: var(--accent); box-shadow: 0 0 5px var(--accent); }
+.setup .su-restart-row { margin-top: 2px; }
+.setup .btn.su-restart:not(.on) { opacity: .55; }
+.setup .su-stream { font-size: 11px; color: var(--display-text); background: var(--display-bg); border: 1px solid #2a2a2a; border-radius: 3px; padding: 4px 8px; }
+.setup .su-stream.stopped { color: var(--error); }
+.setup .su-stream span[data-address] { display: none; }
+.setup .su-led { margin-left: 2px; }
+
+/* CC mappings: unlimited rows, the list scrolls after 10 */
+.setup .su-learning { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--learn); }
+.setup .su-learning[hidden] { display: none; }
+.setup .su-ccrows { display: flex; flex-direction: column; gap: 3px; max-height: calc(10 * 29px); overflow-y: auto; padding-right: 2px; }
+.setup .su-ccrow { display: grid; grid-template-columns: 20px 44px 14px 1fr 46px 26px; gap: 5px; align-items: center; height: 26px; flex: none; }
+.setup .su-ccrow.draft .su-target { color: #8a8a8d; border-style: dashed; }
+.setup .su-cclbl { font-size: 10px; font-weight: 700; color: var(--midi); }
+.setup .su-cc {
+  width: 44px; font: 700 13px var(--font-label); background: #000; color: var(--midi);
+  border: 1px solid #5a4210; border-radius: 3px; padding: 3px 5px; text-align: right;
+}
+.setup .su-arrow { color: var(--dim); text-align: center; }
+.setup .su-target { max-width: none; min-width: 0; }
+.setup .su-act { display: flex; align-items: center; gap: 4px; }
+.setup .su-act-led { width: 6px; height: 6px; border-radius: 50%; background: #3a2a08; flex: none; }
+.setup .cc-hit .su-act-led { background: var(--midi); box-shadow: 0 0 6px var(--midi); }
+.setup .su-act-bar { display: block; height: 4px; width: 0; max-width: 34px; background: var(--midi); border-radius: 2px; }
+.setup .su-act { width: 46px; }
+.setup .su-act-bar { flex: none; }
+.setup .su-remove { padding: 3px 0; }
+.setup .su-cc-tools { gap: 6px; }
+
+/* AI */
+.setup .su-path { font-size: 12px; color: var(--label); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 300px; }
+.setup .su-ml { color: var(--midi); }
+.setup .su-ml[hidden] { display: none; }
+
+/* Menus of the sheet's lists (targets, devices) keep their case */
+.px-menu.su-menu .it { text-transform: none; }
+.px-menu.su-menu .it.dis { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }

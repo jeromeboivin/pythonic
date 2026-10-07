@@ -289,7 +289,7 @@ class FakeCore:
         if meta['kind'] in ('json', 'map', 'list'):
             return value
         if meta['kind'] == 'str':
-            return str(value)
+            return None if value is None else str(value)
         entry = Address(meta['address'], get=lambda: None, kind=meta['kind'],
                         minimum=meta['minimum'], maximum=meta['maximum'],
                         labels=tuple(meta['labels']))

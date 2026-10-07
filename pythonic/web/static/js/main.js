@@ -5,6 +5,7 @@
 import { connectBridge, createFakeBridge } from './bridge.js';
 import { createCoreClient } from './core-client.js';
 import { mountPanel } from './panel.js';
+import { mountSetup } from './setup.js';
 import { mountStage } from './stage.js';
 import { createStore } from './store.js';
 
@@ -36,8 +37,9 @@ export async function boot({ bridge = null, stage = document.getElementById('sta
   mountStage(stage);
   const meta = await client.describe(''); // every registered address
   const panel = mountPanel(stage, { store, client, meta });
+  const setup = mountSetup({ panel, store, client, meta });
   store.seed(await client.get(store.watched()));
-  return { bridge, client, store, meta, panel };
+  return { bridge, client, store, meta, panel, setup };
 }
 
 if (document.getElementById('stage') && !globalThis.__pythonicNoBoot) {
