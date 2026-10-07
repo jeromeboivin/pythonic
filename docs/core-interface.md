@@ -86,6 +86,7 @@ action thread (modules finishing deferred actions).
 | `audio.output_devices`, `audio.input_devices`, `audio.default_input` | read-only | device names |
 | `pref.*` | settings | below |
 | `ai.*` | | the AI generators, below |
+| `po32.*` | | the PO-32 transfer and import, below |
 
 Step and lane addresses are resolved on first use: `registry.names()` lists
 the registered addresses only (not `pattern.<P>.ch<N>...` nor `pref.ui.*`).
@@ -104,6 +105,7 @@ so both GUIs and older versions share the file) and is not undoable.
 | `pref.audio.pending` (read-only) | | the four above whose saved value waits for `audio.apply` (the "restart audio" dots) |
 | `pref.audio.mono` | at once (`audio.mono` follows) | `audio_mono` |
 | `pref.audio.input_device` (PO-32 recording input) | when the input opens | `audio_input_device` |
+| `pref.po32.save_recordings` | next PO-32 recording, saved as a WAV file in `po32.recordings_folder` | `po32_debug_save_recordings` |
 | `pref.smoothing_ms` (5..100 ms) | at once, every channel | `param_smoothing_ms` |
 | `pref.ai.pattern_model`, `pref.ai.patch_model` (paths, None = bundled) | next model load | `drum_generator_pattern_model_path`, `drum_generator_model_path` |
 | `pref.ai.pattern_temperature`, `pref.ai.patch_temperature` (0.1..3) | next generation | `drum_generator_pattern_temperature`, `drum_generator_patch_temperature` |
@@ -113,8 +115,7 @@ so both GUIs and older versions share the file) and is not undoable.
 
 MIDI settings are `midi.*` (above); the MIDI device and MIDI on/off are saved
 by `midi.open` / `midi.close`. `last_preset` is written by `preset.load`.
-`po32_debug_save_recordings` stays with the PO-32 dialog; `window_width`,
-`window_height`, `master_volume_db` and `max_recent_files` are not used.
+`window_width`, `window_height`, `master_volume_db` and `max_recent_files` are not used.
 
 ## Verbs
 
@@ -154,6 +155,7 @@ pattern), `channel` 1..8.
 | `midi.learn` | target | finishes when a CC arrives (`{'cc', 'target'}`) or with status `cancelled` |
 | `midi.learn_cancel` | | `{'cancelled'}` |
 | `ai.*` | | the AI generators, below |
+| `po32.*` | | the PO-32 transfer and import, below |
 
 **Files.** Paths are absolute, or names relative to `pref.preset_folder`. A
 preset load replaces the whole preset (sounds, globals, programs, morph,
@@ -187,11 +189,12 @@ version = state['version']
 |---|---|
 | `version` | the newest version; pass it back next frame |
 | `changes` | `{address: value}` changed since `since` (a queued set appears once the audio thread has applied it; a bulk change reports every value it may have changed) |
-| `events` | action events newer than `since`: `{'id', 'verb', 'status': 'done', 'result', 'version'}` or `{'id', 'verb', 'status': 'error', 'error': message, 'version'}`; `midi.learn` may end `cancelled`; WAV exports first post `{'id', 'verb', 'status': 'progress', 'progress': 0..1, 'version'}` events (not an end: `wait` skips them). Errors not tied to an action (audio callback, stalled stream) have `id` None and a `source` |
+| `events` | action events newer than `since`: `{'id', 'verb', 'status': 'done', 'result', 'version'}` or `{'id', 'verb', 'status': 'error', 'error': message, 'version'}`; `midi.learn` and `po32.send` may end `cancelled`; WAV exports and `po32.send` first post `{'id', 'verb', 'status': 'progress', 'progress': 0..1, 'version'}` events (not an end: `wait` skips them). Errors not tied to an action (audio callback, stalled stream) have `id` None and a `source` |
 | `transport` | `playing`, `position` (0-based step of the playing pattern), `playing_pattern`, `selected_pattern`, `queued_pattern` (0..11 or None), `chain` (indexes of the chain being played) |
 | `modulation` | `channel` (0-based selected channel), `offsets` (`{mod target: offset}`) for the knobs' modulation arcs |
 | `audio` | `running`, `device`, `default_device`, `sample_rate`, `synth_rate`, `block_size`, `latency_ms`, `mono`, `callbacks`, `underruns`, `dropped` |
 | `midi` | `activity` (message counter), `notes` (per-channel note counters), `pickup` (`{address: {cc, physical, linked, count}}` for ghost markers) |
+| `po32` | `level` (input peak 0..1 of the last block), `recorded_seconds`, `progress` (send 0..1), `preview_step` (0..15, -1 without a preview) |
 
 A front-end keeps no copy of engine state it cannot rebuild from `get` and
 `changes`: after any verb, the values it changed arrive in `changes`.
@@ -258,6 +261,66 @@ sounds as **one undo step**; `ai.revert` puts the old sounds back.
 | `ai.randomize_pattern` | pattern=None, channel=None (the whole pattern) | `{'pattern', 'channel'}`: one AI pattern (tempo, swing, fill and step rate, `pref.ai.pattern_temperature`) over the pattern or one lane, one undo step |
 | `ai.install` | | `{'installed', 'output'}` (the last lines); runs in the background, the worker uses the new packages without a restart |
 
+## PO-32 transfer and import (`po32.*`)
+
+**Audio.** Every stream is the core's, opened on its audio backend (a fake
+backend in tests). Sending and previewing play a buffer rendered off the
+audio thread at the output rate through the **live output stream**: the
+audio engine's `Player` is installed at block start, and after the synth has
+rendered a block the callback copies the next slice of the buffer into it.
+A transfer **replaces** the block while it plays (pad hits or a running
+pattern never reach the PO-32); a preview is **mixed** in. Both need the
+stream to run (`po32.send` errors otherwise: save the WAV instead), and both
+end when the stream stops. Listening and recording open a mono 44.1 kHz
+**input stream**; its callback writes the block's peak level and copies the
+samples into a buffer allocated when the recording starts (120 s; a full
+buffer stops the recording and decodes it). The decode runs on the action
+thread.
+
+**Transfer.** The PO-32 receives the 8 sounds (to its sounds 1-8 or 9-16)
+with a default morph patch each, and as many **empty** pattern slots as the
+chosen chain has patterns, from PO-32 pattern 1 (`slots` in the result), and
+the default state block. Channels not chosen are sent as a silent patch.
+
+| Verb | Arguments | Result |
+|---|---|---|
+| `po32.prepare` | bank=0 (0: PO-32 sounds 1-8, 1: 9-16), chain=None (a `po32.chain_options` label, a letter or a list of letters / indexes; default the first option), channels=None (1..8 to send; default the unmuted channels) | `{'seconds', 'bank', 'chain', 'slots', 'channels'}`: renders the signal of the current sounds |
+| `po32.send` | as `po32.prepare` | renders again and plays it; `progress` events, then `{'sent': True, 'seconds'}`, or status `cancelled` (`po32.cancel`), or an error (the stream stopped) |
+| `po32.cancel` | | `{'cancelled'}` |
+| `po32.save_wav` | path, overwrite=False, and the `po32.prepare` arguments | `{'saved', 'exists', 'path', 'seconds'}`: mono 16-bit 44.1 kHz |
+| `po32.listen` | on=True, device=None (an input device name; default `pref.audio.input_device`, else the system default) | `{'listening', 'device'}`; `on=False` closes the input (and drops a recording) |
+| `po32.record` | device=None | `{'recording': True, 'device'}`; drops the previous decode |
+| `po32.stop` | | ends the recording, closes the input, decodes: as `po32.decode` (`{'decoded': False}` when nothing was recorded) |
+| `po32.decode` | path (a WAV file) | `{'source', 'drums', 'patterns', 'card', 'banks'}`; picks the first 12 non-empty patterns (letters A.. in order), focuses the first, selects the first bank with sounds |
+| `po32.select_bank` | bank 0 / 1 (only a decoded one) | `{'bank'}` |
+| `po32.focus` | pattern (1..16, the decoded patterns) | `{'focus'}` |
+| `po32.pick` | pattern, picked=None (toggle), letter=None | `{'pattern', 'picked', 'letter'}`: at most 12 picks; a new pick takes the first free letter; a letter another pick holds swaps the two; focuses the pattern |
+| `po32.pick_first`, `po32.pick_clear` | | `{'picks'}`: the first 12 (non-empty first), none |
+| `po32.preview` | on=True | `{'previewing', 'pattern'}`: stops the panel transport and loops the focused pattern with the bank's sounds at the panel tempo (velocity 100). Starting the transport, a bank or focus change, a pick toggled, or `on=False` ends it; the panel stays stopped |
+| `po32.import` | | `{'drums', 'patterns': [{'pattern', 'letter'}]}`: the bank's sounds on channels 1-8 (names kept), all 12 patterns (picked ones on their letters: steps 1-16, no accent or fill, probability 100, velocity 64, a pattern shorter than 16 steps grows to 16; the others emptied, lengths kept), morph A = the sounds, B = the PO-32's morph patches, morph at A. One undo step |
+
+| Address | Kind | What |
+|---|---|---|
+| `po32.chain_options` | list | the chain groups of the patterns (`'A - B'`, `'C'`, ...) |
+| `po32.transfer` | enum | `none`, `ready`, `sending`, `sent`, `stopped`, `error` |
+| `po32.transfer_seconds` | float | length of the last rendered signal |
+| `po32.progress` | float | send progress 0..1 (also in `poll()['po32']`) |
+| `po32.listening`, `po32.recording`, `po32.input` | | the input is open, recording, its device |
+| `po32.level`, `po32.recorded_seconds` | float | input peak 0..1, recording length (also in `poll()['po32']`) |
+| `po32.decode` | enum | `none`, `decoding`, `decoded`, `error` (kept until the next record or decode) |
+| `po32.decoded` | json | None or `{'source', 'drums', 'patterns', 'card', 'banks'}` |
+| `po32.banks` | list | two bools: bank 0 / 1 has decoded sounds |
+| `po32.bank` | int | the selected bank |
+| `po32.sounds` | list | 8 summaries of the bank's decoded sounds (None where none) |
+| `po32.patterns` | list | `{'number', 'empty', 'summary'}` per decoded pattern |
+| `po32.picks` | list | `{'pattern', 'letter'}` in pattern order |
+| `po32.focus` | int | the focused pattern (0: none) |
+| `po32.grid` | list | 8 lists of 16 bools: the focused pattern's triggers in the bank (a PO-32 step holds drums 1-8 only, so bank 1 grids are empty) |
+| `po32.previewing`, `po32.preview_step` | | a preview plays, its step (also in `poll()['po32']`) |
+| `po32.imported` | bool | an import was done since the decode |
+| `po32.error` | str | the last PO-32 error (also an error event) |
+| `po32.recordings_folder` | str | where `pref.po32.save_recordings` saves recordings |
+
 ## Undo
 
 - Every `set` of an undoable address is one step. Bracket a drag or a paint
@@ -266,13 +329,13 @@ sounds as **one undo step**; `ai.revert` puts the old sounds back.
   400 ms pass without one); `record=False` keeps a set out of the journal.
 - Verbs that rewrite many values (pattern ops, program select, morph learn
   and capture, preset load / paste / initialize / randomize all, drum patch
-  load) are one snapshot step each. Depth 50.
+  load, PO-32 import) are one snapshot step each. Depth 50.
 - Not undone: transport, selection (`global.channel`, `pattern.selected`),
   mutes, Edit all, settings (`pref.*`, `midi.*`).
-- Code that still writes the engine directly (the PO-32 dialog, until its
-  slice) wraps its writes in
-  `with core.bulk_change(label, parts=...):` to make them one step reported by
-  poll.
+- Core modules that build a new state and install it (preset loads, the
+  PO-32 import) wrap the install in
+  `with core.bulk_change(label, parts=...):` to make it one step reported by
+  poll. Front-ends never write the engine.
 - Tried AI candidates and AI pattern previews stay outside the journal until
   `ai.keep` / `ai.replace_patterns` (one step each), above.
 

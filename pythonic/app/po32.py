@@ -55,7 +55,7 @@ Import:
   first) and ``po32.pick_clear``.
 - ``po32.preview`` (on=True): stop the panel's transport and loop the focused
   pattern with the bank's decoded sounds at the panel tempo (velocity 100).
-  Starting the transport, changing the bank, the focus or the picks, or
+  Starting the transport, changing the bank or the focus, toggling a pick, or
   ``on=False`` ends it; the panel stays stopped.
 - ``po32.import``: replace the sounds of channels 1-8 with the bank's sounds
   and all 12 patterns: picked ones land on their letters (steps 1-16 of the
