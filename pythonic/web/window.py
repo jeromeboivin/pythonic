@@ -11,7 +11,7 @@ and, when it owns the core, closes it.
 import sys
 
 import shiboken6
-from PySide6.QtCore import QSize, Qt, QUrl
+from PySide6.QtCore import QSize, Qt, QUrl, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
@@ -49,7 +49,9 @@ class PanelPage(QWebEnginePage):
 
 class PanelWindow(QWidget):
     """The window of the web interface over an app core (or a stand-in with
-    the same interface)."""
+    the same interface). ``closed`` is emitted once the window has closed."""
+
+    closed = Signal()
 
     def __init__(self, core, *, owns_core=True, url=INDEX_URL, profile=None, echo_console=True):
         super().__init__()
@@ -83,6 +85,7 @@ class PanelWindow(QWidget):
     def closeEvent(self, event):  # noqa: N802
         self.shutdown()
         super().closeEvent(event)
+        self.closed.emit()
 
     def shutdown(self):
         """Stop the frames and, when the window owns it, close the core."""

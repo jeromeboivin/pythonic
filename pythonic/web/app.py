@@ -36,6 +36,8 @@ def run(quit_after=None, devtools_port=None, core=None):
         from pythonic.app import AppCore
         core = AppCore()
     window = PanelWindow(core)
+    # The app ends with its window, whatever other top-level windows remain
+    window.closed.connect(app.quit)
     loaded = []
     window.view.loadFinished.connect(loaded.append)
     # As tkinter: the last preset loads before the core freezes the start-up

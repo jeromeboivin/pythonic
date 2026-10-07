@@ -46,11 +46,11 @@ jobs:
       - name: Tests (Linux)
         if: runner.os == 'Linux'
         timeout-minutes: 10
-        run: xvfb-run -a python -m pytest tests -q --ignore=tests/web
+        run: xvfb-run -a python -m pytest tests -v --ignore=tests/web
       - name: Tests
         if: runner.os != 'Linux'
         timeout-minutes: 10
-        run: python -m pytest tests -q --ignore=tests/web
+        run: python -m pytest tests -v --ignore=tests/web
       - name: Web front-end tests
         timeout-minutes: 8
         run: python -m pytest tests/web -v
