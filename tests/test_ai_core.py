@@ -113,6 +113,10 @@ def test_the_gui_process_never_imports_torch(prefs, tmp_path):
         "import sys\n"
         "from pythonic.app import AppCore\n"
         "import gui.main_window, gui.drum_generator_dialog\n"
+        "try:\n"
+        "    import pythonic.web.app, pythonic.web.window, pythonic.web.bridge\n"
+        "except ImportError:\n"
+        "    pass  # no QtWebEngine here: the web interface is not installed\n"
         "core = AppCore(audio_backend=None, midi_backend=None, stall_timeout=None,\n"
         f"              ai_worker=[sys.executable, {FAKE_WORKER!r}])\n"
         "core.set('pref.ai.patch_model', sys.argv[1])\n"
@@ -131,6 +135,27 @@ def test_the_gui_process_never_imports_torch(prefs, tmp_path):
     assert out.stdout.strip().endswith('ok')
 
 
+def test_the_worker_runs_below_the_audio_stream(tmp_path):
+    code = (
+        "import os, sys\n"
+        "sys.path.insert(0, 'pythonic/app')\n"
+        "import ai_worker\n"
+        "env = {'MKL_NUM_THREADS': '3'}\n"
+        "before = os.nice(0) if hasattr(os, 'nice') else None\n"
+        "ai_worker.yield_to_audio(env)\n"
+        "after = os.nice(0) if hasattr(os, 'nice') else None\n"
+        "threads = str(max(1, (os.cpu_count() or 2) // 2))\n"
+        "assert env == {'OMP_NUM_THREADS': threads, 'MKL_NUM_THREADS': '3',\n"
+        "               'OPENBLAS_NUM_THREADS': threads}, env\n"
+        "assert before is None or after > before, (before, after)\n"
+        "print('ok')\n"
+    )
+    out = subprocess.run([sys.executable, '-c', code], cwd=ROOT, capture_output=True, text=True,
+                         timeout=60)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == 'ok'
+
+
 # ====================================================================== generating and trying
 def test_generating_a_lane_shows_generating_then_tries_candidate_1(make_core, tmp_path):
     gate = tmp_path / 'gate'
@@ -138,14 +163,19 @@ def test_generating_a_lane_shows_generating_then_tries_candidate_1(make_core, tm
     core = make_core('--gate', str(gate))
     before = sound(core, 1)
     action = core.act('ai.generate', channel=1, candidates=4, seed=5)
-    deadline = time.monotonic() + 5
-    while not core.get('ai.ch1.generating') and time.monotonic() < deadline:
+    # The verb marks the lane, sends the request, then notes the changes: wait
+    # for all three (the action thread may be between them when the lane shows)
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        changes = core.poll()['changes']
+        if (core.get('ai.ch1.generating') and core.get('ai.state') == 'generating'
+                and changes.get('ai.ch1.generating') is True):
+            break
         time.sleep(0.01)
     assert core.get('ai.ch1.generating') is True
     assert core.get('ai.state') == 'generating'
-    assert sound(core, 1) == before
-    changes = core.poll()['changes']
     assert changes.get('ai.ch1.generating') is True
+    assert sound(core, 1) == before
     gate.unlink()
     event = core.wait(action, 10)
     assert event['status'] == 'done'

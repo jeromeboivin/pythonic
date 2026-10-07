@@ -106,7 +106,30 @@ def _sampling(generator):
     return getattr(generator, 'sampling_summary', None)
 
 
+def yield_to_audio(environ=None):
+    """The worker shares the machine with the audio stream: model loads and
+    generation run below normal priority, with torch on at most half the
+    cores, so they cannot starve the audio callback of CPU (underruns while
+    the AI page loads its models). Thread counts already set are kept; call
+    before torch is imported."""
+    environ = os.environ if environ is None else environ
+    threads = str(max(1, (os.cpu_count() or 2) // 2))
+    for name in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS'):
+        environ.setdefault(name, threads)
+    try:
+        if hasattr(os, 'nice'):
+            os.nice(10)
+        elif sys.platform == 'win32':
+            import ctypes
+            below_normal = 0x4000
+            kernel32 = ctypes.windll.kernel32
+            kernel32.SetPriorityClass(kernel32.GetCurrentProcess(), below_normal)
+    except (OSError, AttributeError):
+        pass  # a lower priority is a nicety, not a requirement
+
+
 def main():
+    yield_to_audio()
     # Keep fd 1 for the protocol; everything printed goes to stderr
     out = os.fdopen(os.dup(1), 'w', buffering=1, encoding='utf-8')
     os.dup2(2, 1)
