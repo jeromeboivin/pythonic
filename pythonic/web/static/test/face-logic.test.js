@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { guessDrumType } from '../js/drum-type.js';
 import { ccsFor, ghostPosition, isBendTarget, withoutAddress } from '../js/midi-cues.js';
 import { modulatedAddresses, sourceAddresses } from '../js/modulation.js';
+import { undoText } from '../js/values.js';
 
 test('drum types from the names real presets use', () => {
   const names = {
@@ -73,4 +74,14 @@ test('the ghost marker shows until the controller picks the value up', () => {
   assert.equal(ghostPosition({ physical: 0.5, linked: true }, 0.5), null);
   assert.equal(ghostPosition({ physical: 0.2, linked: true }, 0.6), 0.2); // edited since
   assert.equal(ghostPosition({ physical: null, linked: false }, 0.5), null);
+});
+
+test('an undo step names the control, else the address in words', () => {
+  const names = { 'global.tempo': 'tempo', 'ch2.osc.decay': 'ch2 decay' };
+  const nameOf = (address) => names[address] || null;
+  assert.equal(undoText('global.tempo', nameOf), 'TEMPO');
+  assert.equal(undoText('ch2.osc.decay', nameOf), 'CH2 DECAY');
+  assert.equal(undoText('pattern.A.ch1.step3.trig', nameOf), 'PATTERN A CH1 STEP3 TRIG');
+  assert.equal(undoText('randomize all', nameOf), 'RANDOMIZE ALL');
+  assert.equal(undoText('', nameOf), '');
 });

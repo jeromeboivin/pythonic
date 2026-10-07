@@ -46,8 +46,12 @@ def test_a_drag_on_a_strip_knob_is_one_gesture(panel, qtbot):
     sets = [c for c in set_calls(core) if c[0] == 'ch3.osc.decay']
     assert sets and all(not o['burst'] for _, _, o in sets)
     assert core.values['ch3.osc.decay'] > before
-    position = panel.js(f"Number(document.querySelector({DECAY3!r}).dataset.position)")
-    assert position == pytest.approx(_position(before) + 0.25, abs=0.03)
+    # The knob shows the local echo, then the frames that report the sets: a
+    # frame of an earlier set of the drag may briefly show before the last one
+    expected = pytest.approx(_position(before) + 0.25, abs=0.03)
+    position = f"Number(document.querySelector({DECAY3!r}).dataset.position)"
+    qtbot.waitUntil(lambda: panel.js(position) == expected)
+    assert _position(core.values['ch3.osc.decay']) == expected
 
 
 def _position(decay_ms):
@@ -280,6 +284,8 @@ def test_undo_and_redo_follow_the_journal(panel, qtbot):
     panel.click('#undo')
     qtbot.waitUntil(lambda: 'undo' in core.verbs_called())
     panel.wait_js("pythonic.panel.display.text()[0] === 'UNDO'")
+    # The step names the control as the panel does, not the address
+    assert panel.js("pythonic.panel.display.text()[1]") == 'CH1 DECAY'
 
 
 def test_morph_knob_and_learn_buttons(panel, qtbot):

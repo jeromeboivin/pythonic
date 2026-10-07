@@ -39,7 +39,7 @@ import { mountPresets } from './presets.js';
 import { createSheets } from './sheet.js';
 import { pageRange } from './steps-logic.js';
 import { mountStepRow, selectedPattern } from './steps.js';
-import { formatValue } from './values.js';
+import { formatValue, undoText } from './values.js';
 
 const CHANNELS = [1, 2, 3, 4, 5, 6, 7, 8];
 export const CTRL_PREF = 'pref.ui.ctrl_knob';
@@ -376,6 +376,12 @@ export function mountPanel(stage, { store, client, meta = {} }) {
   });
 
   // ------------------------------------------------------------ left column
+  // The name a control bound to an address shows on the display (null: none)
+  const controlName = (address) => {
+    const control = [...stage.querySelectorAll('[data-address]')]
+      .find((e) => e.dataset.address === address && (e.getAttribute('name') || e.getAttribute('label')));
+    return control ? control.getAttribute('name') || control.getAttribute('label') : null;
+  };
   const undo = $('#undo');
   const redo = $('#redo');
   watch('undo.can_undo', (v) => { undo.disabled = !v; });
@@ -383,7 +389,7 @@ export function mountPanel(stage, { store, client, meta = {} }) {
   for (const button of [undo, redo]) {
     button.addEventListener('click', () => act(button.dataset.verb).then((event) => {
       const r = event.result || {};
-      display.show(button.dataset.verb.toUpperCase(), r.done ? String(r.label || '').toUpperCase() : 'nothing to ' + button.dataset.verb);
+      display.show(button.dataset.verb.toUpperCase(), r.done ? undoText(r.label, controlName) : 'nothing to ' + button.dataset.verb);
     }));
   }
   const programButtons = $$('#programs .btn');

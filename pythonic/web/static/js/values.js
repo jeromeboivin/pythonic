@@ -206,3 +206,10 @@ export function parseValue(meta, text) {
   else if (meta.unit === 'ratio') v /= 100;
   return coerce(meta, v);
 }
+
+/** The display text of an undo / redo step's label: the name of the control
+ * bound to it (nameOf(address) -> name | null), else the label in words. */
+export function undoText(label, nameOf = () => null) {
+  const text = String(label || '');
+  return (nameOf(text) || text.replace(/\./g, ' ')).toUpperCase();
+}
