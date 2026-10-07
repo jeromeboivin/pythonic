@@ -2707,40 +2707,17 @@ class PythonicGUI:
             self.midi_indicator.itemconfig(self._midi_indicator_id, fill=self.COLORS['led_off'])
     
     def _show_po32_transfer(self):
-        """Open the PO-32 Tonic transfer dialog"""
-        preset_name = self.core.get('preset.name')
-        PO32TransferDialog(
-            self.root,
-            self.synth,
-            self.pattern_manager,
-            preset_name=preset_name
-        )
+        """Open the PO-32 Tonic transfer dialog (the core renders and sends)"""
+        PO32TransferDialog(self.root, self.core, when_done=self._when_action_done)
     
     def _show_po32_import(self):
-        """Open the PO-32 import dialog (with pattern & bank support)."""
-        def on_import_complete():
-            """Refresh all UI after import (still inside the import's undo step)."""
-            self._update_ui_from_channel()
-            self._update_pattern_editors()
-            # Morph back to endpoint A (the slider follows poll)
-            self.core.set('morph.position', 0.0)
-            self._update_morph_ui()
-        
-        dialog = PO32ImportDialog(
-            parent=self.root,
-            synth=self.synth,
-            pattern_manager=self.pattern_manager,
-            on_import_callback=on_import_complete,
-            preferences_manager=self.preferences_manager,
-            apply_change=self.core.bulk_change,
-        )
-        # Store morph_manager on root so PO32ImportDialog can find it
-        self.root.morph_manager = self.morph_manager
-        # Wait for dialog to close, then refresh UI
+        """Open the PO-32 import dialog (with pattern & bank support).
+
+        The core records, decodes and imports; the knobs, patterns and morph
+        follow from poll."""
+        dialog = PO32ImportDialog(parent=self.root, core=self.core,
+                                  when_done=self._when_action_done)
         self.root.wait_window(dialog.dialog)
-        self._update_ui_from_channel()
-        self._update_pattern_editors()
-        self._update_morph_ui()
     
     def _show_drum_generator(self):
         """Open the AI Drum Generator dialog (modal) on the core's AI module.
