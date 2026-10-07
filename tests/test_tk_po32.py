@@ -48,12 +48,12 @@ def pump(gui, until, timeout=30.0):
 
 def test_the_old_po32_paths_are_gone():
     for name in ('po32_transfer.py', 'po32_import_dialog.py'):
-        source = (GUI / name).read_text()
+        source = (GUI / name).read_text(encoding='utf-8')
         for old in ('sounddevice', 'sd.', 'OutputStream', 'InputStream', 'set_parameters',
                     'pattern_manager', 'preferences_manager', 'morph_manager', 'synth',
                     'apply_change', 'threading', 'po32_codec', 'po32_decoder'):
             assert old not in source, (name, old)
-    main = (GUI / 'main_window.py').read_text()
+    main = (GUI / 'main_window.py').read_text(encoding='utf-8')
     assert 'root.morph_manager' not in main
 
 
