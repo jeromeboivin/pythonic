@@ -191,7 +191,7 @@ version = state['version']
 | `changes` | `{address: value}` changed since `since` (a queued set appears once the audio thread has applied it; a bulk change reports every value it may have changed) |
 | `events` | action events newer than `since`: `{'id', 'verb', 'status': 'done', 'result', 'version'}` or `{'id', 'verb', 'status': 'error', 'error': message, 'version'}`; `midi.learn` and `po32.send` may end `cancelled`; WAV exports and `po32.send` first post `{'id', 'verb', 'status': 'progress', 'progress': 0..1, 'version'}` events (not an end: `wait` skips them). Errors not tied to an action (audio callback, stalled stream) have `id` None and a `source` |
 | `transport` | `playing`, `position` (0-based step of the playing pattern), `playing_pattern`, `selected_pattern`, `queued_pattern` (0..11 or None), `chain` (indexes of the chain being played) |
-| `modulation` | `channel` (0-based selected channel), `offsets` (`{mod target: offset}`) for the knobs' modulation arcs |
+| `modulation` | `channel` (0-based selected channel), `offsets` (`{mod target: offset}` of the selected channel, in the target address's units), `channels` (the offsets of every channel, 8 dicts) for the knobs' modulation arcs (a channel keeps its last block's offsets while it is silent) |
 | `audio` | `running`, `device`, `default_device`, `sample_rate`, `synth_rate`, `block_size`, `latency_ms`, `mono`, `callbacks`, `underruns`, `dropped` |
 | `midi` | `activity` (message counter), `notes` (per-channel note counters), `pickup` (`{address: {cc, physical, linked, count}}` for ghost markers) |
 | `po32` | `level` (input peak 0..1 of the last block), `recorded_seconds`, `progress` (send 0..1), `preview_step` (0..15, -1 without a preview) |

@@ -306,6 +306,23 @@ def test_modulation_readouts_of_the_selected_channel(make_core, backend):
     assert 'pan' in mod['offsets']
 
 
+def test_modulation_readouts_of_every_channel(make_core, backend):
+    core = started(make_core())
+    channel = core.synth.channels[5]
+    channel.lfo2.enabled = True
+    channel.lfo2.target = ModTarget.OSC_DECAY
+    channel.lfo2.depth = 80.0
+    core.synth.trigger_drum(5, 127)
+    for _ in range(5):
+        backend.stream.pull()
+    mod = core.poll()['modulation']
+    assert mod['channel'] == 0  # selected channel 1 has no modulation
+    assert mod['offsets'] == {}
+    assert len(mod['channels']) == 8
+    assert set(mod['channels'][5]) == {'osc_decay'}
+    assert all(offsets == {} for i, offsets in enumerate(mod['channels']) if i != 5)
+
+
 def test_callback_failure_outputs_silence_and_is_reported(make_core, backend):
     core = started(make_core())
 

@@ -335,6 +335,8 @@ class AppCore:
         ``transport`` holds the playing state, the play position (0-based
         step of the playing pattern), the playing, selected and queued
         pattern indexes (0..11) and the indexes of the chain being played.
+        ``modulation`` holds the modulation offsets (engine units, by mod
+        target) of the selected channel and of every channel.
         ``midi`` holds the MIDI activity and per-channel note counters and the
         pickup state of each CC-driven control (controller position, linked).
         ``po32`` holds the input level, the recording length, the send
@@ -352,7 +354,9 @@ class AppCore:
         pm = self.pattern_manager
         synth = self.synth
         channel_idx = synth.selected_channel
-        offsets = synth.channels[channel_idx]._last_mod_offsets
+        # The audio thread replaces each dict whole: reading the reference is safe
+        channel_offsets = [{target.value: value for target, value in ch._last_mod_offsets.items()}
+                           for ch in synth.channels]
         return {
             'version': version,
             'changes': changes,
@@ -367,7 +371,8 @@ class AppCore:
             },
             'modulation': {
                 'channel': channel_idx,
-                'offsets': {target.value: value for target, value in offsets.items()},
+                'offsets': channel_offsets[channel_idx],
+                'channels': channel_offsets,
             },
             'audio': self.audio.status(),
             'midi': self.midi.readout(),
