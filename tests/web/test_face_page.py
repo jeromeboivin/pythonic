@@ -22,8 +22,14 @@ def wheel_notches(panel, qtbot, selector, address, notches):
     """Turn the wheel notch by notch (Chromium merges events sent at once)."""
     for _ in range(abs(notches)):
         before = panel.core.values[address]
-        panel.wheel(selector, steps=1 if notches > 0 else -1)
-        qtbot.waitUntil(lambda: panel.core.values[address] != before)
+        for attempt in range(3):  # offscreen Chromium now and then drops a wheel event
+            panel.wheel(selector, steps=1 if notches > 0 else -1)
+            try:
+                qtbot.waitUntil(lambda: panel.core.values[address] != before, timeout=1500)
+                break
+            except qtbot.TimeoutError:
+                if attempt == 2:
+                    raise
 
 
 def text(panel, selector):
@@ -77,8 +83,7 @@ def test_a_click_on_the_fader_track_jumps_there(panel, qtbot):
 
 
 def test_the_wheel_on_a_fader_moves_two_percent(panel, qtbot):
-    panel.wheel(LEVEL2, steps=-1)
-    qtbot.waitUntil(lambda: bool(set_calls(panel.core)))
+    wheel_notches(panel, qtbot, LEVEL2, 'ch2.mix.level', -1)
     address, value, options = set_calls(panel.core)[0]
     assert (address, round(value, 6), options['burst']) == ('ch2.mix.level', -1.4, True)
 
@@ -139,7 +144,8 @@ def test_incoming_cc_blinks_the_led_and_shows_the_pickup_ghost(panel, qtbot):
 
 
 def test_the_display_shows_the_touched_control(panel, qtbot):
-    panel.wheel(f'{STRIP.format(n=5)} px-knob[data-address="ch5.osc.pitch"]', steps=1)
+    wheel_notches(panel, qtbot, f'{STRIP.format(n=5)} px-knob[data-address="ch5.osc.pitch"]',
+                  'ch5.osc.pitch', 1)
     panel.wait_js("pythonic.panel.display.text()[0] === 'CH5 TUNE'")
     assert panel.js("pythonic.panel.display.text()[1]") == '+0.5 st'
 
@@ -218,8 +224,7 @@ def test_the_strip_ctrl_mode_is_a_panel_preference(panel, qtbot):
     panel.run("[...document.querySelectorAll('.px-menu .it')].find((i) => i.textContent === 'delay mix').click()")
     qtbot.waitUntil(lambda: panel.core.values.get('pref.ui.ctrl_knob', {}).get('mode') == 'delay_mix')
     panel.wait_js(f"document.querySelector({ctrl!r}).dataset.address === 'ch3.fx.delay_mix'")
-    panel.wheel(ctrl, steps=1)
-    qtbot.waitUntil(lambda: any(a == 'ch3.fx.delay_mix' for a, _, _ in set_calls(panel.core)))
+    wheel_notches(panel, qtbot, ctrl, 'ch3.fx.delay_mix', 1)
 
 
 def test_a_user_ctrl_knob_picks_its_parameter_from_its_label(panel, qtbot):
@@ -245,15 +250,15 @@ def test_step_rate_fill_rate_master_and_swing(panel, qtbot):
     panel.wait_js("!!document.querySelector('.px-menu')")
     panel.run("[...document.querySelectorAll('.px-menu .it')].find((i) => i.textContent === '6x').click()")
     qtbot.waitUntil(lambda: core.values['global.fill_rate'] == 6)
-    panel.wheel('px-knob[data-address="global.master"]', steps=-1)
+    wheel_notches(panel, qtbot, 'px-knob[data-address="global.master"]', 'global.master', -1)
     qtbot.waitUntil(lambda: core.values['global.master'] == pytest.approx(-0.7))
     wheel_notches(panel, qtbot, 'px-knob[data-address="global.swing"]', 'global.swing', 3)
     qtbot.waitUntil(lambda: core.values['global.swing'] == pytest.approx(0.03))
 
 
 def test_the_tempo_knob_and_display(panel, qtbot):
-    panel.wheel('px-knob[data-address="global.tempo"]', steps=1)
-    qtbot.waitUntil(lambda: panel.core.values['global.tempo'] == 121)
+    wheel_notches(panel, qtbot, 'px-knob[data-address="global.tempo"]', 'global.tempo', 1)
+    assert panel.core.values['global.tempo'] == 121
     panel.wait_js("document.querySelector('#tempo-value').textContent === '121'")
     wheel_notches(panel, qtbot, '#tempo-value', 'global.tempo', -2)
     qtbot.waitUntil(lambda: panel.core.values['global.tempo'] == 119)
