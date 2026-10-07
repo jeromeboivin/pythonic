@@ -5,6 +5,7 @@ import { createFakeBridge } from '../js/bridge.js';
 import { createCoreClient } from '../js/core-client.js';
 import { ctrlAddress, ctrlSetup, mountPanel } from '../js/panel.js';
 import { createStore } from '../js/store.js';
+import { patternValues } from './pattern-fixtures.js';
 
 const num = (address, minimum, maximum, unit, extra = {}) => ({ address, kind: 'float', minimum, maximum,
   default: 0, unit, curve: 'linear', labels: [], readonly: false, ...extra });
@@ -26,6 +27,7 @@ function setup(values = {}) {
     all[`ch${n}.name`] = ['808 BD', '808 MT', 'Metal Ping'][n - 1] || `Drum ${n}`;
   }
   all['pref.ui.ctrl_knob'] = null;
+  Object.assign(all, patternValues());
   const bridge = createFakeBridge({ describe, values: { ...all, ...values },
     actions: { 'transport.toggle': (_a, f) => { f.transport.playing = !f.transport.playing; } } });
   const queued = [];
@@ -64,14 +66,14 @@ test('the wheel over the tempo display moves it by 1 BPM as a burst', async () =
   assert.equal(seg.textContent, '122');
 });
 
-test('transport lights START/STOP, outlines the playhead pad and shows the step', () => {
-  const { stage, bridge, panel } = setup();
+test('transport lights START/STOP, outlines the playhead pad and shows pattern and page', () => {
+  const { stage, bridge, panel } = setup({ 'pattern.A.length': 32 });
   bridge.transport.playing = true;
   bridge.transport.position = 21;
   bridge.pushFrame();
   assert.ok(stage.querySelector('#start-stop').classList.contains('on'));
-  assert.deepEqual([...stage.querySelectorAll('.pad.ph')].map((p) => p.dataset.step), ['6']);
-  assert.deepEqual(panel.display.text(), ['PATTERN A  STEP 22', '808 BEATS']);
+  assert.deepEqual([...stage.querySelectorAll('.pad.ph')].map((p) => p.dataset.step), ['22']);
+  assert.deepEqual(panel.display.text(), ['PATTERN A  17-32', '808 BEATS']);
 });
 
 test('START/STOP starts the toggle verb', async () => {

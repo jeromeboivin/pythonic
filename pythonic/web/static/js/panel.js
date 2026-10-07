@@ -6,19 +6,23 @@
 // that start verbs carry data-verb.
 //
 // Extension slots for later slices (elements with data-slot):
-//   step-entry  left column: step-mode buttons, last step, all ch, follow, matrix
-//   patterns    left column: patterns A-L, chain, menu, copy, paste
+//   step-entry  left column: step-mode buttons, last step, all ch, follow, matrix (steps.js)
+//   patterns    left column: patterns A-L, chain, menu, copy, paste (patterns.js)
 //   preset, rack-toggle, po32, setup   right column buttons (shown as placeholders)
-//   steps       bottom row: page bars, step numbers and the 16 pads (placeholder pads)
-//   rack        the edit rack drawer under the face
+//   steps       bottom row: page bars, step numbers and the 16 pads (steps.js)
+//   rack        the edit rack drawer under the face: panel.drawer (drawer.js) shows
+//               one page at a time (the ⊞ matrix, the edit rack as its base page)
 // A slice fills a slot (replaceChildren) with px-* controls; they bind to the
 // panel's control context on insertion (panel.ctx).
 
 import { guessDrumType } from './drum-type.js';
 import { createControlContext, provideContext } from './controls.js';
+import { createDrawer } from './drawer.js';
+import { mountPatterns } from './patterns.js';
+import { pageRange } from './steps-logic.js';
+import { mountStepRow, selectedPattern } from './steps.js';
 import { formatValue } from './values.js';
 
-const PATTERNS = 'ABCDEFGHIJKL';
 const CHANNELS = [1, 2, 3, 4, 5, 6, 7, 8];
 export const CTRL_PREF = 'pref.ui.ctrl_knob';
 
@@ -95,9 +99,6 @@ function stripHtml(n) {
 function faceHtml() {
   const programs = Array.from({ length: 16 }, (_, i) =>
     `<button class="btn" type="button" data-verb="program.select" data-program="${i + 1}">${i + 1}</button>`).join('');
-  const pads = Array.from({ length: 16 }, (_, i) =>
-    `<div class="pad g${Math.floor(i / 4) + 1}" data-step="${i + 1}"></div>`).join('');
-  const numbers = Array.from({ length: 16 }, (_, i) => `<div>${i + 1}</div>`).join('');
   return html`
   <div class="panel-face">
     <div class="col left">
@@ -155,10 +156,7 @@ function faceHtml() {
       <button class="ss" id="start-stop" type="button" data-verb="transport.toggle" title="start / stop"></button>
       <span class="wtab">start / stop</span>
     </div>
-    <div class="slot-steps" data-slot="steps">
-      <div class="pnums">${numbers}</div>
-      <div class="pads">${pads}</div>
-    </div>
+    <div class="slot-steps" data-slot="steps"></div>
   </div>
   <div class="slot-rack" data-slot="rack"></div>`;
 }
@@ -176,11 +174,11 @@ export function mountPanel(stage, { store, client, meta = {} }) {
   let muteLatch = false;
 
   // ------------------------------------------------------------ display
+  // Pattern and page on the first line (the pads' view), the preset on the second
+  let view = { letter: 'A', page: 0 };
   const baseDisplay = () => {
-    const t = store.readout('transport') || {};
-    const letter = PATTERNS[t.playing ? t.playing_pattern : t.selected_pattern] || 'A';
-    const step = t.playing ? `  STEP ${String((t.position || 0) + 1).padStart(2, '0')}` : '';
-    display.setBase(`PATTERN ${letter}${step}`, String(store.value('preset.name') || 'PYTHONIC').toUpperCase());
+    display.setBase(`PATTERN ${view.letter}  ${pageRange(view.page).padStart(5)}`,
+      String(store.value('preset.name') || 'PYTHONIC').toUpperCase());
   };
   const onTouch = (e) => display.show(e.detail.name, e.detail.text);
   stage.addEventListener('px-touch', onTouch);
@@ -375,22 +373,35 @@ export function mountPanel(stage, { store, client, meta = {} }) {
 
   // ------------------------------------------------------------ transport
   const startStop = $('#start-stop');
-  const pads = $$('.pad');
   offs.push(store.watchReadout('transport', (t) => {
     startStop.classList.toggle('on', !!t.playing);
-    const step = t.playing ? t.position % 16 : -1;
-    pads.forEach((pad, i) => pad.classList.toggle('ph', i === step));
-    baseDisplay();
   }));
   startStop.addEventListener('click', () => { act(startStop.dataset.verb); });
+
+  // ------------------------------------------------------------ steps and patterns
+  const slot = (name) => stage.querySelector(`[data-slot="${name}"]`);
+  const drawer = createDrawer(slot('rack'));
+  const steps = mountStepRow({ store, client, ctx, display, slot, drawer,
+    onView: (next) => { view = next; baseDisplay(); } });
+  const patterns = mountPatterns({ store, ctx, display, act, slot, selected: () => selectedPattern(store) });
   baseDisplay();
 
   return {
     ctx,
     display,
     /** The element of an extension slot (see the module comment). */
-    slot: (name) => stage.querySelector(`[data-slot="${name}"]`),
+    slot,
+    /** The edit rack drawer's pages (drawer.js): the matrix, later the rack pages. */
+    drawer,
+    /** The step row and step entry (steps.js): state, setMode, setPage, render. */
+    steps,
+    /** The pattern buttons and menu (patterns.js): addMenuItems, openMenu. */
+    patterns,
+    /** Run a verb; its error shows on the display. */
+    act,
     destroy() {
+      steps.destroy();
+      patterns.destroy();
       offs.forEach((off) => off());
       ctx.destroy();
       stage.removeEventListener('px-touch', onTouch);

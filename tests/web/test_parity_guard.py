@@ -47,7 +47,16 @@ def test_the_face_binds_its_controls(panel):
             'morph.differs', 'program.current', 'program.occupied', 'undo.can_undo',
             'undo.can_redo', 'midi.connected'} <= bound
     verbs = set(panel.js("[...document.querySelectorAll('[data-verb]')].map((e) => e.dataset.verb)"))
-    assert verbs == {'transport.toggle', 'undo', 'redo', 'program.select', 'morph.learn'}
+    assert verbs == {'transport.toggle', 'undo', 'redo', 'program.select', 'morph.learn',
+                     'pattern.select', 'pattern.chain_prev', 'pattern.chain_next',
+                     'pattern.copy_lane', 'pattern.paste_lane'}
+
+
+def test_the_step_row_binds_every_pattern(panel):
+    bound = panel.bound_addresses()
+    for p in 'ABCDEFGHIJKL':
+        assert {f'pattern.{p}.length', f'pattern.{p}.chained', f'pattern.{p}.empty'} <= bound
+    assert 'pattern.selected' in bound
 
 
 def test_every_absent_entry_has_a_reason():
