@@ -57,8 +57,11 @@ def alert_up(panel, tone=None):
 
 
 def answer_alert(panel, primary=True):
+    """Answer the alert showing and wait for that alert to go (another one,
+    such as the error a confirmed action ends with, may already be up)."""
+    panel.run("window.__answered = document.querySelector('.sheet-layer[data-sheet=\"alert\"] .alert-sheet')")
     panel.click('.alert-buttons .btn.primary' if primary else '.alert-buttons .btn:not(.primary)')
-    panel.wait_js("!document.querySelector('.sheet-layer[data-sheet=\"alert\"]')")
+    panel.wait_js("!window.__answered || !window.__answered.isConnected")
 
 
 def display(panel):
