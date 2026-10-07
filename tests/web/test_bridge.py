@@ -131,3 +131,22 @@ def test_resync_resends_unchanged_readouts(fake_core):
     bridge.resync('null')
     bridge.tick()
     assert len(frames) == 2
+
+
+def test_resize_window_follows_the_stage_height_at_the_panel_scale(open_panel, fake_core, qtbot):
+    page = open_panel(fake_core)
+    window = page.window
+    bridge = window.bridge
+    assert call(bridge, 'resizeWindow', {'from': 1000, 'to': 700}) == {'size': [1280, 560]}
+    assert (window.width(), window.height()) == (1280, 560)
+    assert (window.minimumWidth(), window.minimumHeight()) == (1280, 560)  # still scale 0.8
+    assert call(bridge, 'resizeWindow', {'from': 700, 'to': 1000}) == {'size': [1280, 800]}
+    assert (window.minimumWidth(), window.minimumHeight()) == (1280, 800)
+    window.resize(1600, 1000)  # scale 1: the rack is 300 window pixels
+    qtbot.waitUntil(lambda: window.view.height() == 1000)
+    assert call(bridge, 'resizeWindow', {'from': 1000, 'to': 700}) == {'size': [1600, 700]}
+    assert 'error' in call(bridge, 'resizeWindow', {'from': 'x'})
+
+
+def test_resize_window_without_a_window_does_nothing(fake_core):
+    assert call(Bridge(fake_core), 'resizeWindow', {'from': 1000, 'to': 700}) == {'size': None}

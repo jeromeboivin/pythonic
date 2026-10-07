@@ -4,8 +4,10 @@ The web interface's top-level window: a QWebEngineView showing
 
 The page draws a fixed 1600x1000 panel scaled to the window and letterboxed
 (``static/js/stage.js``); the window opens at the minimum 1280x800 (scale
-0.8) and cannot shrink below it. Closing the window stops the frame timer
-and, when it owns the core, closes it.
+0.8) and cannot shrink below it. With the edit rack drawer closed the panel
+is the face alone (1600x700): the window shrinks by the rack's height at the
+panel's scale and its minimum follows (1280x560), see ``fit_stage_height``.
+Closing the window stops the frame timer and, when it owns the core, closes it.
 """
 
 import sys
@@ -22,6 +24,7 @@ from .bridge import Bridge
 from .scheme import INDEX_URL, install_handler
 
 MIN_SIZE = QSize(1280, 800)
+STAGE_SIZE = QSize(1600, 1000)  # the panel's design size, edit rack open
 PANEL_BACKGROUND = '#000000'
 
 
@@ -69,7 +72,7 @@ class PanelWindow(QWidget):
         self.page.setBackgroundColor(QColor(PANEL_BACKGROUND))
         self.view.setPage(self.page)
 
-        self.bridge = Bridge(core, self, dialog_parent=self)
+        self.bridge = Bridge(core, self, dialog_parent=self, window=self)
         self.channel = QWebChannel(self)
         self.channel.registerObject('bridge', self.bridge)
         self.page.setWebChannel(self.channel)
@@ -81,6 +84,24 @@ class PanelWindow(QWidget):
 
         self.bridge.start()
         self.view.load(QUrl(url))
+
+    def fit_stage_height(self, old, new):
+        """The page's stage went from `old` to `new` design pixels high (the
+        edit rack drawer closed or opened): resize the window by the
+        difference at the panel's scale, so the panel keeps its size, and keep
+        the minimum at scale 0.8. A maximized or full-screen window keeps its
+        size (the panel letterboxes). Returns the window's (width, height)."""
+        minimum = QSize(MIN_SIZE.width(), round(MIN_SIZE.height() * new / STAGE_SIZE.height()))
+        view = self.view.size()
+        scale = min(view.width() / STAGE_SIZE.width(), view.height() / old)
+        height = max(minimum.height(), round(self.height() + (new - old) * scale))
+        if new < old:
+            self.setMinimumSize(minimum)
+        if not (self.isMaximized() or self.isFullScreen()):
+            self.resize(self.width(), height)
+        if new >= old:
+            self.setMinimumSize(minimum)
+        return self.width(), self.height()
 
     def closeEvent(self, event):  # noqa: N802
         self.shutdown()

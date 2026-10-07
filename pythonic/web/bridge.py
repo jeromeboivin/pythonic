@@ -22,6 +22,10 @@ over unchanged, and JSON keeps one format both ways):
   -> ``{"id": n}``; a window-modal ``QFileDialog`` opened with ``open()`` (never
   ``exec()``, which would stall the frame timer), its result emitted on ``dialog``
   as ``{"id", "path"}`` (``null`` when cancelled)
+- ``resizeWindow('{"from": 1000, "to": 700}')`` -> ``{"size": [w, h]}``: the page's stage
+  changed design height (the edit rack drawer closed or opened); the window grows or
+  shrinks by the difference at the panel's scale (``PanelWindow.fit_stage_height``);
+  ``{"size": null}`` without a window
 
 Malformed requests answer ``{"error": message}``.
 """
@@ -82,10 +86,11 @@ class Bridge(QObject):
     frame = Signal(str)
     dialog = Signal(str)
 
-    def __init__(self, core, parent=None, *, dialog_parent=None, hz=FRAME_HZ):
+    def __init__(self, core, parent=None, *, dialog_parent=None, window=None, hz=FRAME_HZ):
         super().__init__(parent)
         self.core = core
         self.dialog_parent = dialog_parent
+        self.window = window
         self.stats = FrameStats()
         self._since = 0
         self._last_readouts = None
@@ -215,6 +220,19 @@ class Bridge(QObject):
         self._dialogs[dialog_id] = dialog
         dialog.open()
         return to_json({'id': dialog_id})
+
+    @Slot(str, result=str)
+    def resizeWindow(self, request):  # noqa: N802 (JS-facing name)
+        try:
+            options = json.loads(request)
+            old, new = float(options['from']), float(options['to'])
+            if old <= 0 or new <= 0:
+                raise ValueError('stage heights must be positive')
+        except (ValueError, KeyError, TypeError) as exc:
+            return to_json({'error': _message(exc)})
+        if self.window is None:
+            return to_json({'size': None})
+        return to_json({'size': list(self.window.fit_stage_height(old, new))})
 
     def _dialog_finished(self, dialog_id, result):
         dialog = self._dialogs.pop(dialog_id, None)

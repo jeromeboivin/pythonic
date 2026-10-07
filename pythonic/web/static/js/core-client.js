@@ -18,7 +18,7 @@ export function createCoreClient(bridge, { schedule = defaultSchedule } = {}) {
 
   bridge.onFrame((frame) => {
     for (const event of frame.events || []) {
-      if (event.id == null) continue;
+      if (event.id == null || event.status === 'progress') continue; // not an end
       const resolve = waiting.get(event.id);
       if (resolve) { waiting.delete(event.id); resolve(event); } else {
         early.set(event.id, event);
@@ -90,6 +90,9 @@ export function createCoreClient(bridge, { schedule = defaultSchedule } = {}) {
     /** Bracket a drag: the sets in between are one undo step. */
     beginGesture() { flush(); return bridge.call('gesture', 'begin'); },
     endGesture() { flush(); return bridge.call('gesture', 'end'); },
+    /** The stage changed height (the edit rack drawer): the window follows by
+     * the difference at the panel's scale (Python side: PanelWindow.fit_stage_height). */
+    resizeWindow: (from, to) => bridge.call('resizeWindow', { from, to }),
     openFile: (options = {}) => dialog('open', options),
     saveFile: (options = {}) => dialog('save', options),
     chooseFolder: (options = {}) => dialog('folder', options),

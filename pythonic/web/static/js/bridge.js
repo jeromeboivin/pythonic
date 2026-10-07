@@ -8,7 +8,7 @@
 //
 // Slots (see pythonic/web/bridge.py): get(addresses), set(changes),
 // act({verb, args}), describe(prefix | addresses), gesture('begin'|'end'),
-// resync(null), fileDialog(options).
+// resync(null), fileDialog(options), resizeWindow({from, to}).
 
 /** Connect to the Python bridge over QWebChannel; null outside the app. */
 export function connectBridge(scope = globalThis) {
@@ -122,6 +122,8 @@ export function createFakeBridge({ describe = {}, values = {}, actions = {} } = 
         case 'gesture':
         case 'resync':
           return null;
+        case 'resizeWindow':
+          return { size: null };
         case 'fileDialog': {
           const id = nextId++;
           const path = fake.dialogAnswers.length ? fake.dialogAnswers.shift() : null;
