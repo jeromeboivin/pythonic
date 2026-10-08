@@ -6,6 +6,7 @@ and errors. Every test drives the core through its interface, with temporary
 folders and preferences.
 """
 
+import re
 import json
 import pathlib
 import time
@@ -70,6 +71,19 @@ def patterns(core):
 # .mtpreset
 # ---------------------------------------------------------------------------
 
+def test_a_preset_without_a_name_is_named_after_its_file(make_core, tmp_path):
+    # Microtonic V3 files carry no preset name (only the drum patches have one)
+    text = re.sub(r'^\tName: [^\n]*\n', '', REFERENCE_PRESETS[0].read_text(), count=1, flags=re.M)
+    path = tmp_path / 'AC Driver (120).mtpreset'
+    path.write_text(text)
+    core = make_core()
+
+    result = run(core, 'preset.load', path=str(path))
+
+    assert result['name'] == 'AC Driver (120)'
+    assert core.get('preset.name') == 'AC Driver (120)'
+
+
 @pytest.mark.parametrize('path', REFERENCE_PRESETS, ids=lambda p: p.name)
 def test_every_reference_preset_loads_through_the_core(make_core, path):
     core = make_core()
@@ -78,8 +92,9 @@ def test_every_reference_preset_loads_through_the_core(make_core, path):
 
     result = run(core, 'preset.load', path=str(path))
 
-    assert result == {'path': str(path), 'name': data['name'], 'format': 'mtpreset'}
-    assert core.get('preset.name') == data['name']
+    name = PythonicPresetParser().parse_file(str(path)).get('Name') or path.stem
+    assert result == {'path': str(path), 'name': name, 'format': 'mtpreset'}
+    assert core.get('preset.name') == name
     assert core.get('preset.path') == str(path)
     for index, drum in enumerate(data['drums']):
         channel = core.synth.channels[index]

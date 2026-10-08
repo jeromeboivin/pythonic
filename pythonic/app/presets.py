@@ -192,9 +192,11 @@ class Presets:
             state, mutes = self._from_json(data)
             return state, mutes, stem, 'json'
         parser = PythonicPresetParser()
-        data = parser.convert_to_synth_format(parser.parse_string(text))
-        state, mutes = self._from_mtpreset(data)
-        return state, mutes, data.get('name') or stem, 'mtpreset'
+        parsed = parser.parse_string(text)
+        state, mutes = self._from_mtpreset(parser.convert_to_synth_format(parsed))
+        # The format has no preset name: the file name is it (the converter
+        # would answer 'Untitled')
+        return state, mutes, parsed.get('Name') or stem, 'mtpreset'
 
     def _globals(self, tempo, swing, step_rate, fill_rate, master):
         pm = self._core.pattern_manager
