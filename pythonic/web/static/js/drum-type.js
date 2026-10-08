@@ -40,3 +40,23 @@ export function guessDrumType(name) {
   }
   return '';
 }
+
+// Drum types that stand in for each other (the inst mode's choices): all
+// toms, all hats, all cymbals, the shaken percussion
+const FAMILIES = { LT: 'TOM', MT: 'TOM', HT: 'TOM', TOM: 'TOM', CH: 'HH', HH: 'HH', OH: 'HH',
+  RC: 'CY', CC: 'CY', CY: 'CY', TB: 'SH', SH: 'SH' };
+
+/** The family of a drum type label ('' stays ''). */
+export const drumFamily = (label) => FAMILIES[label] || label || '';
+
+/**
+ * The drum patch names of `names` of the same family as `name` (a channel's
+ * drum patch name), in their order; all of them when `name` has no drum type
+ * or none matches.
+ */
+export function sameKind(names, name) {
+  const family = drumFamily(guessDrumType(name));
+  const list = Array.isArray(names) ? names : [];
+  const matches = family ? list.filter((n) => drumFamily(guessDrumType(n)) === family) : [];
+  return matches.length ? matches : list;
+}

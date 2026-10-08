@@ -143,7 +143,10 @@ function faceHtml() {
       <div class="slot-step-entry slot-mark" data-slot="step-entry"></div>
       <div class="hl">pattern</div>
       <div class="slot-patterns slot-mark" data-slot="patterns"></div>
-      <div class="hl">program</div>
+      <div class="hl prog-head"><span>program</span>
+        <button class="btn sq slot" type="button" data-slot="kit-mode" disabled>kit</button>
+        <div style="display:contents" data-address="factory.patches">
+        <button class="btn sq slot" type="button" data-slot="inst-mode" disabled>inst</button></div></div>
       <div class="programs" id="programs" data-address="program.occupied">
         <div style="display:contents" data-address="program.current">
         <div style="display:contents" data-address="program.names">${programs}</div></div>

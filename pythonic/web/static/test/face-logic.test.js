@@ -2,10 +2,23 @@
 // the MIDI cues of a control.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { guessDrumType } from '../js/drum-type.js';
+import { drumFamily, guessDrumType, sameKind } from '../js/drum-type.js';
 import { ccsFor, ghostPosition, isBendTarget, withoutAddress } from '../js/midi-cues.js';
 import { modulatedAddresses, sourceAddresses } from '../js/modulation.js';
 import { undoText } from '../js/values.js';
+
+test('the inst choices are the drum patches of the same family, else all', () => {
+  const names = ['505 BD', '505 Tom High', '707 BD 1', '808 MT', '808 CH', '808 OH', '909 Tom Low', 'DMX Shaker',
+    'DMX Tambourine', 'LM2 Cabasa', '808 CP'];
+  assert.deepEqual(sameKind(names, '808 BD'), ['505 BD', '707 BD 1']);
+  assert.deepEqual(sameKind(names, 'DMX Tom'), ['505 Tom High', '808 MT', '909 Tom Low']);
+  assert.deepEqual(sameKind(names, '909 CH'), ['808 CH', '808 OH']);
+  assert.deepEqual(sameKind(names, 'LM2 Tambourine'), ['DMX Shaker', 'DMX Tambourine', 'LM2 Cabasa']);
+  assert.deepEqual(sameKind(names, 'Init'), names);
+  assert.deepEqual(sameKind(names, 'Cowbell'), names); // a type no factory patch has
+  assert.equal(drumFamily('HT'), 'TOM');
+  assert.equal(drumFamily(''), '');
+});
 
 test('drum types from the names real presets use', () => {
   const names = {

@@ -259,6 +259,24 @@ store lacks.
   page of the edit rack drawer, cells (`.matrix .stp[data-channel][data-step]`)
   drawn and edited like the pads (a paint stroke stays in its row); a
   channel label selects the channel; ⊞ again or `◀ edit rack` hides it.
+- **Kit mode** (TR-8 KIT; `#kit-mode` beside the PROGRAM heading): the step
+  row gets `data-select="kit"` and the pads give way to the 16 programs
+  (`.kits .kit[data-program]`): the kit name (`program.names`), `on` when it
+  holds sounds (`program.occupied`), `cur` (blinking) for `program.current`.
+  A press runs `program.select` (the pattern plays on; an empty program
+  starts as a copy) and shows `KIT` / `4 909` on the display. The kit button
+  again, a step mode, last step or a page bar go back to the steps.
+- **Inst mode** (TR-8 INST; `#inst-mode` beside kit, bound to
+  `factory.patches`): `data-select="inst"`; the pads offer the factory drum
+  patches of the selected channel's drum family (`sameKind`, drum-type.js:
+  toms, hats, cymbals and shakers stand in for each other; every one when
+  the channel has no drum type), each pad the machine over the rest of the
+  name (`.kit[data-patch]`), `cur` (blinking) for the channel's own. A press
+  loads it (`drum_patch.load` with `factory` and the channel), shows `INST
+  CHn` / the name, and hits the channel at 100 while stopped. A channel
+  button changes the channel the pads offer for. More than 16 choices page
+  with the page bars; a bar past them, the inst button again, a step mode or
+  last step go back to the steps.
 - **Patterns** (`.pbtn[data-pattern]`, bound to `pattern.<P>.empty`, its
   wrapper to `.chained`, its length badge to `.length`; the grid to
   `pattern.selected`): click = `pattern.select` (queued while playing);
@@ -287,14 +305,17 @@ store lacks.
   more pattern menu entries (export to MIDI / audio, #13);
   `panel.patterns.openMenu(index, x, y)`.
 - `panel.steps`: `state` (`mode`, `page`, `follow`, `allCh`, `armed`,
-  `selected`), `setMode(field)`, `setPage(page)`, `render()`, `matrix`.
+  `selected`, `select`: `'kit'`, `'inst'` or null, `instPage`), `setMode(field)`,
+  `setPage(page)`, `setSelect('kit' | 'inst' | null)`, `render()`, `matrix`.
 
 ## Edit rack (`rack.js`, `rack-layout.js`)
 
 Decision #11 (open / close: #7). The drawer's base page: a header (channel,
 patch name, drum type, the click-to-assign bar, **edit all** bound to
 `global.edit_all`, **drum patch ▾**: load / save `.mtdrum`, export the
-channel's hit as WAV, asking before replacing a file) over one row of
+channel's hit as WAV, asking before replacing a file, factory drum patch
+into CHn… (a menu of the machines, then that machine's sounds, the
+channel's own marked; `drum_patch.load` with `factory`)) over one row of
 sections: oscillator, noise, envelopes (fader bank), mix (osc · noise
 crossfader), velocity (fader bank), FX, then modulation with the LFO 1, LFO 2
 and pump rows (dimmed while off). `RACK_SECTIONS` lists every control with

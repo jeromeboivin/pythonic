@@ -18,6 +18,9 @@ Addresses:
   preset (read-only: a front-end saves it as another file).
 - ``factory.presets`` (read-only list): the file names of the factory presets
   shipped with Pythonic, in machine order (``808 Beats.json``, ...).
+- ``factory.patches`` (read-only list): the names of the factory drum patches,
+  the channel sounds of the six factory kits, in machine order (``505 BD``,
+  ..., ``LM2 OH``); each name starts with its machine.
 
 Verbs (results and errors arrive through ``poll`` as action events):
 
@@ -39,9 +42,11 @@ Verbs (results and errors arrive through ``poll`` as action events):
   result is ``{'saved': False, 'exists': True, 'path'}`` so the front-end can
   ask and save again. Result ``{'saved': True, 'exists': bool, 'path'}``.
   The factory presets folder is refused.
-- ``drum_patch.load`` (path, channel=None): load a .mtdrum drum patch into a
-  channel (1..8, default the selected one); one undo step. Result
-  ``{'channel', 'name', 'path'}``.
+- ``drum_patch.load`` (path=None, channel=None, factory=None): load a .mtdrum
+  drum patch, or a factory drum patch by name (``factory='808 BD'``: the
+  whole channel sound of that kit), into a channel (1..8, default the
+  selected one); one undo step. Result ``{'channel', 'name', 'path'}`` (path
+  None for a factory drum patch).
 - ``drum_patch.save`` (path, channel=None, overwrite=False): save a channel's
   drum patch (``.mtdrum`` added when the path has no extension); overwrite
   works as for ``preset.save``.
@@ -78,7 +83,9 @@ def channel_addresses(channel):
     return [f'ch{channel}.{suffix}' for suffix in sorted(SOUND_SUFFIXES)] + [f'ch{channel}.name']
 
 
-_factory_path = factory.preset_path  # the verb's ``factory`` argument shadows the module
+# The verbs' ``factory`` argument shadows the module
+_factory_path = factory.preset_path
+_factory_patch = factory.patch
 
 
 def _with_suffix(path, suffix):
@@ -125,6 +132,7 @@ class Presets:
         reg(Address('preset.clipboard', get=lambda: self._clipboard is not None, kind='bool'))
         reg(Address('preset.factory', get=lambda: factory.is_factory_path(self._path), kind='bool'))
         reg(Address('factory.presets', get=factory.preset_files, kind='list'))
+        reg(Address('factory.patches', get=lambda: [name for name, _ in factory.patches()], kind='list'))
 
     def verbs(self):
         return {
@@ -412,8 +420,12 @@ class Presets:
         return {'files': self.files()}
 
     # ================================================================== drum patches
-    def _verb_load_patch(self, path, channel=None):
+    def _verb_load_patch(self, path=None, channel=None, factory=None):
+        if (path is None) == (factory is None):
+            raise ValueError('give a path or a factory drum patch')
         index = self.channel_index(channel)
+        if factory is not None:
+            return self._load_factory_patch(index, factory)
         path = self.resolve(path)
         patch = DrumPatchParser().parse_file(path)
         # Patches without a Name line are named after the file
@@ -425,6 +437,14 @@ class Presets:
             lambda: apply_drum_patch_to_channel(core.synth.channels[index], data))
         core.note_changes(channel_addresses(index + 1))
         return {'channel': index + 1, 'name': data['name'], 'path': path}
+
+    def _load_factory_patch(self, index, name):
+        sound = self._sound(_factory_patch(name))
+        core = self._core
+        core.undo.snapshot_op((CHANNELS,), 'load drum patch',
+                              lambda: core.synth.channels[index].set_parameters(sound))
+        core.note_changes(channel_addresses(index + 1))
+        return {'channel': index + 1, 'name': sound['name'], 'path': None}
 
     def _verb_save_patch(self, path, channel=None, overwrite=False):
         index = self.channel_index(channel)

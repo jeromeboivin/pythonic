@@ -312,6 +312,40 @@ def test_a_factory_preset_loads_from_the_menu_and_names_its_kits(open_panel, rea
     assert [p.to_dict() for p in real_core.pattern_manager.patterns] == lanes
 
 
+def test_kit_mode_switches_programs_from_the_pads(open_panel, real_core):
+    page = open_panel(real_core, owns_core=False)
+    pump = real_core.backend.stream.pull
+    assert finish(real_core, real_core.act('preset.load', factory='808 Beats'))['status'] == 'done'
+    lanes = [p.to_dict() for p in real_core.pattern_manager.patterns]
+    page.click('#kit-mode')
+    page.wait_js("document.querySelector('.kits .kit.cur') &&"
+                 " document.querySelector('.kits .kit.cur').dataset.program === '3'", pump=pump)
+    assert page.js("document.querySelector('.kits .kit[data-program=\"6\"] .kn').textContent") == 'LM2'
+
+    page.click('.kits .kit[data-program="6"]')
+    page.wait_js("document.querySelector('.kits .kit.cur').dataset.program === '6'", pump=pump)
+    assert real_core.get('program.current') == 6 and real_core.get('ch8.name') == 'LM2 OH'
+    assert [p.to_dict() for p in real_core.pattern_manager.patterns] == lanes
+
+
+def test_inst_mode_loads_a_factory_sound_into_the_selected_channel(open_panel, real_core):
+    page = open_panel(real_core, owns_core=False)
+    pump = real_core.backend.stream.pull
+    assert finish(real_core, real_core.act('preset.load', factory='808 Beats'))['status'] == 'done'
+    page.click('.strip[data-channel="5"] .chb')  # 808 SD
+    page.wait_js("pythonic.store.value('global.channel') === 5", pump=pump)
+    page.click('#inst-mode')
+    page.wait_js("document.querySelector('.kits .kit.cur') &&"
+                 " document.querySelector('.kits .kit.cur').dataset.patch === '808 SD'", pump=pump)
+    offered = page.js("[...document.querySelectorAll('.kits .kit.on')].map((k) => k.dataset.patch)")
+    assert offered == ['505 SD', '707 SD 1', '707 SD 2', '808 SD', '909 SD', 'DMX SD', 'LM2 SD']
+
+    page.click('.kits .kit[data-patch="909 SD"]')
+    page.wait_js("document.querySelector('.kits .kit.cur').dataset.patch === '909 SD'", pump=pump)
+    assert real_core.get('ch5.name') == '909 SD' and real_core.get('ch1.name') == '808 BD'
+    assert real_core.get('program.names')[2] == ''  # the kit is no longer all 808
+
+
 def test_export_to_midi_from_the_pattern_menu_writes_the_file(open_panel, real_core, tmp_path):
     page = open_panel(real_core, owns_core=False)
     pump = real_core.backend.stream.pull

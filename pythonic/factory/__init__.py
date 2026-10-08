@@ -4,6 +4,8 @@ The factory content shipped with Pythonic, read-only.
 - ``presets/``: one JSON preset per drum machine (505, 707, 808, 909, DMX,
   LM2): that machine's sounds and twelve patterns, with all six machines'
   sounds in programs 1-6. Built by a local script (not in the repository).
+- the factory kits (``kits()``, those programs) and the factory drum patches
+  (``patches()``: every channel sound of every kit, by name).
 """
 
 import json
@@ -48,3 +50,17 @@ def kits():
     with open(PRESETS_DIR / files[0], encoding='utf-8') as f:
         slots = json.load(f)['programs']['slots']
     return [slots[str(i)] for i in range(len(MACHINES))]
+
+
+def patches():
+    """The factory drum patches: (name, sound) of every channel of every
+    factory kit, in machine then channel order ("505 BD", ...)."""
+    return [(sound['name'], sound) for kit in kits() for sound in kit['channels']]
+
+
+def patch(name):
+    """The sound of the factory drum patch called ``name``."""
+    for patch_name, sound in patches():
+        if patch_name == name:
+            return sound
+    raise ValueError(f'not a factory drum patch: {name!r}')

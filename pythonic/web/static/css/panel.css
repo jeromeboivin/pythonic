@@ -105,6 +105,8 @@ px-toggle .cc { right: -4px; top: -12px; }
 .undo-row { justify-content: center; gap: 18px; }
 .slot-step-entry { height: 178px; }
 .slot-patterns { height: 138px; }
+.prog-head { display: flex; align-items: center; justify-content: center; gap: 10px; }
+.prog-head .btn { padding: 1px 10px; font-size: 11px; min-width: 0; }
 .programs { display: grid; grid-template-columns: repeat(8, 1fr); gap: 3px; }
 .programs .btn { padding: 5px 0; font-size: 11px; min-width: 0; }
 .programs .btn.empty:not(.on) { color: #2f6b4a; }
@@ -192,6 +194,29 @@ px-display.alert { animation: alert-blink .5s 3 alternate; }
 .pads { touch-action: none; }
 .pad { height: 80px; }
 .slot-steps.armed .pad { cursor: crosshair; }
+/* Kit and inst modes: the pads pick programs (TR-8 KIT) or factory drum patches
+   for the selected channel (TR-8 INST); lit = a choice, the current one blinks */
+.kits { display: none; grid-template-columns: repeat(16, 1fr); gap: 8px; }
+.slot-steps[data-select] .kits { display: grid; }
+.slot-steps[data-select] .pads { display: none; }
+.slot-steps[data-select] .pnums { visibility: hidden; }
+.slot-steps[data-select="kit"] .pgbars { opacity: .35; }
+.slot-steps[data-select="inst"] .pgbars .pg.out { opacity: .2; }
+.kit {
+  position: relative; height: 80px; border-radius: 4px; cursor: pointer; display: flex; align-items: center;
+  justify-content: center; background: #151515; box-shadow: inset 0 0 0 2px #262626, 0 2px 0 #000;
+}
+.kit > * { pointer-events: none; }
+.kit b { position: absolute; left: 6px; top: 5px; font-size: 12px; color: #6c6e72; }
+.kit .kn { font-size: 15px; font-weight: 700; color: #55575b; text-align: center; padding: 0 4px; overflow-wrap: anywhere; }
+.kit.on { background: var(--button-lit-bg); }
+.kit.on b { color: var(--dim); }
+.kit.on .kn { color: var(--button-lit-text); }
+.kit.cur { animation: kit-blink .5s infinite alternate; }
+@keyframes kit-blink {
+  from { box-shadow: inset 0 0 0 2px var(--button-lit-glow), 0 0 14px var(--button-lit-glow); }
+  to { box-shadow: inset 0 0 0 2px #262626, 0 2px 0 #000; }
+}
 .slot-steps.armed .pad:hover { outline: 2px dashed #ff7070; outline-offset: 2px; }
 
 /* A step (pad or matrix cell): the trigger lit in its beat-group colour at the

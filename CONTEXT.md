@@ -22,11 +22,19 @@ _Avoid_: Instrument, role, slot
 
 **Program**:
 One of sixteen stored sets of the eight channel sounds inside a preset, switched to change all sounds at once.
-_Avoid_: Kit, bank, slot
+_Avoid_: Bank, slot
+
+**Kit**:
+The eight channel sounds a program holds, named after the words its drum patch names share ("808"). The factory kits are the six drum machines' sounds, in programs 1 to 6 of every factory preset. The panel's kit mode picks programs on the pads.
+_Avoid_: Drum kit, sound set
 
 **Factory preset**:
 A read-only preset shipped with Pythonic, one per drum machine (505, 707, 808, 909, DMX, LM2): that machine's sounds and patterns, with all six machines' sounds as programs 1 to 6. Saved only as another file.
 _Avoid_: Demo, template, kit
+
+**Factory drum patch**:
+One channel sound of a factory kit ("909 SD"), loaded into any channel by name; the panel's inst mode offers those of the selected channel's drum type.
+_Avoid_: Tone, sample, factory sound
 
 **Pattern**:
 One of the twelve step sequences of a preset, A to L: a lane of steps for each channel, 1 to 64 steps long, played in a loop.

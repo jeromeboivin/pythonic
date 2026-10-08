@@ -16,8 +16,22 @@
 //
 // The page reads lanes (`pattern.<P>.ch<N>.<field>`, lists) and writes steps
 // (`pattern.<P>.ch<N>.step<S>.<field>`), echoing the lanes at once.
+//
+// Kit mode (TR-8 KIT, the `kit` button beside the PROGRAM heading): the pads
+// become the 16 programs, named by their kits (`program.names`), lit when
+// they hold sounds, the current one blinking; a press switches program
+// (`program.select`) while the pattern plays on. A step mode, last step or a
+// page bar goes back to the steps.
+//
+// Inst mode (TR-8 INST, the `inst` button beside it): the pads become the
+// factory drum patches (`factory.patches`) of the selected channel's drum
+// family (toms, hats, cymbals and shakers stand in for each other; all of
+// them, paged by the page bars, when the channel has no drum type), the one
+// playing blinking; a press loads it into the channel (`drum_patch.load`
+// with `factory`) and, while stopped, plays it. A channel button picks the
+// channel whose sound the pads choose.
 
-import { guessDrumType } from './drum-type.js';
+import { guessDrumType, sameKind } from './drum-type.js';
 import {
   CHANNELS, cleanSubsteps, dragValue, editChannels, FIELDS, followPage, groupOf, laneAddress,
   lengthAddress, MODES, padView, PAGE_SIZE, PAGES, pageCount, pageRange, PATTERNS, playheadIndex,
@@ -80,7 +94,8 @@ function paintCell(cell, step, view) {
  * the matrix; `onView({letter, page})` tells the panel what the pads show.
  */
 export function mountStepRow({ store, client, ctx, display, slot, drawer, onView = () => {} }) {
-  const state = { mode: 'trig', page: 0, follow: true, allCh: false, armed: false, selected: 0 };
+  const state = { mode: 'trig', page: 0, follow: true, allCh: false, armed: false, selected: 0, select: null,
+    instPage: 0 };
   const offs = [];
   let patternOffs = [];
   let stroke = null;
@@ -118,6 +133,7 @@ export function mountStepRow({ store, client, ctx, display, slot, drawer, onView
   entry.replaceChildren(modes);
 
   lastStep.addEventListener('click', () => {
+    state.select = null;
     state.armed = !state.armed;
     display.show('LAST STEP', state.armed ? 'press the last pad' : 'off');
     render();
@@ -140,6 +156,7 @@ export function mountStepRow({ store, client, ctx, display, slot, drawer, onView
   });
 
   function setMode(field) {
+    state.select = null;
     state.mode = field;
     display.show('STEP MODE', MODE_NAMES[field]);
     render();
@@ -153,6 +170,12 @@ export function mountStepRow({ store, client, ctx, display, slot, drawer, onView
     bar.dataset.page = String(p);
     bar.append(el('span', '', `steps ${pageRange(p).replace('-', '–')}`), el('i'));
     bar.addEventListener('click', () => {
+      if (state.select === 'inst' && p < pageCount(instChoices().length)) {
+        state.instPage = p;
+        render();
+        return;
+      }
+      state.select = null;
       state.page = p;
       state.follow = false;
       display.show('PAGE', `steps ${pageRange(p)}`);
@@ -167,7 +190,111 @@ export function mountStepRow({ store, client, ctx, display, slot, drawer, onView
   const padRow = el('div', 'pads');
   const pads = Array.from({ length: PAGE_SIZE }, (_, i) => stepCell('pad', i + 1));
   padRow.append(...pads);
-  row.replaceChildren(bars, numbers, padRow);
+
+  // ------------------------------------------------------------ kit mode
+  const kitRow = el('div', 'kits');
+  const kitPads = Array.from({ length: PAGE_SIZE }, (_, i) => {
+    const pad = el('div', 'kit');
+    pad.dataset.program = String(i + 1);
+    pad.append(el('b', '', String(i + 1)), el('span', 'kn'));
+    pad.addEventListener('click', () => {
+      if (state.select === 'inst') pickInst(i); else pickKit(i + 1);
+    });
+    return pad;
+  });
+  kitRow.append(...kitPads);
+  row.replaceChildren(bars, numbers, padRow, kitRow);
+  const kitButton = slot('kit-mode');
+  if (kitButton) {
+    kitButton.disabled = false;
+    kitButton.classList.remove('slot');
+    kitButton.id = 'kit-mode';
+    kitButton.addEventListener('click', () => setSelect(state.select === 'kit' ? null : 'kit'));
+  }
+  const instButton = slot('inst-mode');
+  if (instButton) {
+    instButton.disabled = false;
+    instButton.classList.remove('slot');
+    instButton.id = 'inst-mode';
+    instButton.addEventListener('click', () => setSelect(state.select === 'inst' ? null : 'inst'));
+  }
+  const channelName = () => String(store.value(`ch${channel()}.name`) || '');
+  /** The factory drum patches the inst pads offer the selected channel. */
+  const instChoices = () => sameKind(store.value('factory.patches'), channelName());
+  const kitName = (program) => String((store.value('program.names') || [])[program - 1] || '');
+
+  /** Show kits or drum patches on the pads instead of the steps: 'kit', 'inst' or null. */
+  function setSelect(select) {
+    state.select = select;
+    state.armed = false;
+    state.instPage = 0;
+    if (select === 'kit') display.show('KIT', 'pads pick programs');
+    else if (select === 'inst') showInst();
+    else display.show('STEP MODE', MODE_NAMES[state.mode]);
+    render();
+  }
+
+  function showInst() {
+    const type = guessDrumType(channelName());
+    const n = instChoices().length;
+    display.show(`INST CH${channel()}`, `${type ? `${type}: ` : ''}${n} factory sound${n === 1 ? '' : 's'}`);
+  }
+
+  function pickInst(i) {
+    const name = instChoices()[state.instPage * PAGE_SIZE + i];
+    if (!name) return;
+    const ch = channel();
+    display.show(`INST CH${ch}`, name.toUpperCase());
+    client.act('drum_patch.load', { factory: name, channel: ch }).then((event) => {
+      if (event.status === 'error') { display.alert('DRUM_PATCH.LOAD', event.error); return; }
+      const t = store.readout('transport');
+      if (!(t && t.playing)) client.trigger(ch, 100);
+    });
+  }
+
+  function renderInsts() {
+    const choices = instChoices();
+    const current = channelName();
+    const base = state.instPage * PAGE_SIZE;
+    kitPads.forEach((pad, i) => {
+      const name = choices[base + i] || '';
+      const [machine, ...rest] = name.split(' ');
+      delete pad.dataset.program;
+      pad.dataset.patch = name;
+      pad.classList.toggle('on', !!name);
+      pad.classList.toggle('cur', !!name && name === current);
+      pad.firstChild.textContent = machine || '';
+      pad.lastChild.textContent = rest.join(' ');
+    });
+  }
+
+  function pickKit(program) {
+    const name = kitName(program);
+    const occupied = (store.value('program.occupied') || [])[program - 1];
+    display.show('KIT', name ? `${program} ${name.toUpperCase()}` : `${program} ${occupied ? '' : 'new: a copy'}`.trim());
+    client.act('program.select', { program }).then((event) => {
+      if (event.status === 'error') display.alert('PROGRAM.SELECT', event.error);
+    });
+  }
+
+  function renderKits() {
+    const current = store.value('program.current');
+    const occupied = store.value('program.occupied') || [];
+    kitPads.forEach((pad, i) => {
+      pad.dataset.program = String(i + 1);
+      delete pad.dataset.patch;
+      pad.firstChild.textContent = String(i + 1);
+      pad.classList.toggle('on', !!occupied[i]);
+      pad.classList.toggle('cur', i + 1 === current);
+      pad.lastChild.textContent = kitName(i + 1);
+    });
+  }
+  for (const address of ['program.current', 'program.occupied', 'program.names']) {
+    offs.push(store.watch(address, () => { if (state.select === 'kit') renderKits(); }, { now: false }));
+  }
+  for (const address of ['factory.patches', ...CHANNELS.map((ch) => `ch${ch}.name`)]) {
+    offs.push(store.watch(address, () => { if (state.select === 'inst') schedule(); }, { now: false }));
+  }
 
   // ------------------------------------------------------------ the matrix (drawer page)
   const matrix = el('div', 'matrix');
@@ -210,7 +337,6 @@ export function mountStepRow({ store, client, ctx, display, slot, drawer, onView
     const n = length();
     const pages = pageCount(n);
     const base = state.page * PAGE_SIZE;
-    modeButtons.forEach((b) => b.classList.toggle('on', b.dataset.mode === state.mode));
     lastStep.classList.toggle('on', state.armed);
     lastStep.dataset.address = lengthAddress(letter());
     allCh.classList.toggle('on', state.allCh);
@@ -218,10 +344,21 @@ export function mountStepRow({ store, client, ctx, display, slot, drawer, onView
     const matrixShown = drawer.current === 'matrix';
     matrixToggle.classList.toggle('on', matrixShown);
     row.dataset.mode = state.mode;
+    if (state.select) row.dataset.select = state.select; else delete row.dataset.select;
+    if (kitButton) kitButton.classList.toggle('on', state.select === 'kit');
+    if (instButton) instButton.classList.toggle('on', state.select === 'inst');
+    if (state.select === 'kit') renderKits();
+    if (state.select === 'inst') {
+      if (state.instPage >= pageCount(instChoices().length)) state.instPage = 0;
+      renderInsts();
+    }
+    modeButtons.forEach((b) => b.classList.toggle('on', !state.select && b.dataset.mode === state.mode));
     row.classList.toggle('armed', state.armed);
+    const inst = state.select === 'inst';
+    const barPages = inst ? pageCount(instChoices().length) : pages;
     pageBars.forEach((bar, p) => {
-      bar.classList.toggle('on', p === state.page);
-      bar.classList.toggle('out', p >= pages);
+      bar.classList.toggle('on', p === (inst ? state.instPage : state.page));
+      bar.classList.toggle('out', p >= barPages);
     });
     numberCells.forEach((cell, i) => {
       const step = base + i + 1;
@@ -476,6 +613,7 @@ export function mountStepRow({ store, client, ctx, display, slot, drawer, onView
     matrix,
     render,
     setMode,
+    setSelect,
     /** Show a page (0..3); turns follow off as a page pick does. */
     setPage(page) { state.page = page; state.follow = false; render(); },
     destroy() {

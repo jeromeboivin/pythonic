@@ -103,6 +103,8 @@ run (section 1.13).
 | Audio / MIDI / Synthesis / AI Settings... | setup… → `openPage('setup')` (one sheet with tabs, #22) | done W5 / W6 |
 | (recent files, never shown in tkinter) | recent files in the preset menu (`pref.recent_files`) | done W5 (new) |
 | (last preset, loaded at start-up) | reload last preset (`preset.load_last`) | done W5 (new) |
+| (kit mode, not in tkinter) | kit button beside the PROGRAM heading: the pads show the 16 programs by kit name and switch them (`program.select`, `program.names`) | done (new, web only) |
+| (inst mode, not in tkinter) | inst button beside kit: the pads offer the factory drum patches of the selected channel's drum family and load one (`drum_patch.load` with `factory`); also drum patch ▾ › factory drum patch into CHn… | done (new, web only) |
 | (factory presets, not in tkinter) | factory section of the preset menu (`factory.presets`, `preset.load({factory})`), ◀ ▶ walk it while one is loaded (`preset.factory`), saved only as another file; restore factory kits… (`program.restore_factory`) | done (new, web only) |
 
 ### 1.6.2 Pattern menu (MENU or right-click a pattern)

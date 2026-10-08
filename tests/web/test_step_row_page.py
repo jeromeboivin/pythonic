@@ -252,3 +252,157 @@ def test_chain_and_lane_buttons_run_their_verbs(panel, qtbot):
         ('pattern.chain_next', {'pattern': 'A'}),
         ('pattern.copy_lane', {'pattern': 'A', 'channel': 3}),
         ('pattern.paste_lane', {'pattern': 'A', 'channel': 3})]
+
+
+# ---------------------------------------------------------------- kit mode
+
+def kit_state(panel, current=3, names=('505', '707', '808', '909', 'DMX', 'LM2')):
+    """Programs 1-6 holding the factory kits, ``current`` playing, as the page sees them."""
+    core = panel.core
+    core.post_change('program.names', list(names) + [''] * (16 - len(names)))
+    core.post_change('program.occupied', [True] * len(names) + [False] * (16 - len(names)))
+    core.post_change('program.current', current)
+    panel.wait_js(f"pythonic.store.value('program.current') === {current}"
+                  f" && (pythonic.store.value('program.names') || [])[0] === {names[0]!r}")
+
+
+def kits(panel, selector='.kits .kit'):
+    return panel.js(f"[...document.querySelectorAll('{selector}')].map((k) => k.dataset.program)")
+
+
+def test_kit_mode_shows_the_programs_on_the_pads(panel, qtbot):
+    kit_state(panel)
+    panel.click('#kit-mode')
+    panel.wait_js("document.querySelector('.slot-steps').dataset.select === 'kit'")
+    assert panel.js("getComputedStyle(document.querySelector('.pads')).display") == 'none'
+    assert panel.js("[...document.querySelectorAll('.kits .kit .kn')].slice(0, 7).map((k) => k.textContent)") == \
+        ['505', '707', '808', '909', 'DMX', 'LM2', '']
+    assert kits(panel, '.kits .kit.on') == ['1', '2', '3', '4', '5', '6']
+    assert kits(panel, '.kits .kit.cur') == ['3']
+    assert panel.js("document.querySelector('#kit-mode').classList.contains('on')")
+    assert not panel.js("document.querySelector('[data-mode].on')")
+
+
+def test_a_kit_pad_switches_program_and_the_pads_follow(panel, qtbot):
+    core = panel.core
+    kit_state(panel)
+    panel.click('#kit-mode')
+    panel.wait_js("document.querySelector('.slot-steps').dataset.select === 'kit'")
+    panel.click('.kits .kit[data-program="4"]')
+    qtbot.waitUntil(lambda: ('act', 'program.select', {'program': 4}) in core.calls)
+    panel.wait_js("pythonic.panel.display.text()[1] === '4 909'")
+    core.post_change('program.current', 4)
+    panel.wait_js("document.querySelector('.kits .kit.cur').dataset.program === '4'")
+    # an empty program: a copy of the current sounds
+    panel.click('.kits .kit[data-program="9"]')
+    qtbot.waitUntil(lambda: ('act', 'program.select', {'program': 9}) in core.calls)
+    panel.wait_js("pythonic.panel.display.text()[1] === '9 new: a copy'")
+    assert not step_sets(core)
+
+
+def test_a_step_mode_or_the_kit_button_goes_back_to_the_steps(panel, qtbot):
+    kit_state(panel)
+    panel.click('#kit-mode')
+    panel.wait_js("document.querySelector('.slot-steps').dataset.select === 'kit'")
+    panel.click('#kit-mode')
+    panel.wait_js("!document.querySelector('.slot-steps').dataset.select")
+    assert panel.js("document.querySelector('[data-mode=\"trig\"]').classList.contains('on')")
+    panel.click('#kit-mode')
+    panel.wait_js("document.querySelector('.slot-steps').dataset.select === 'kit'")
+    mode(panel, 'acc')
+    assert not panel.js("document.querySelector('.slot-steps').dataset.select")
+    panel.core.post_change('pattern.A.length', 32)
+    panel.wait_js("pythonic.store.value('pattern.A.length') === 32")
+    panel.click('#kit-mode')
+    panel.wait_js("document.querySelector('.slot-steps').dataset.select === 'kit'")
+    panel.click('.pg[data-page="1"]')
+    panel.wait_js("!document.querySelector('.slot-steps').dataset.select && pythonic.panel.steps.state.page === 1")
+
+
+# ---------------------------------------------------------------- inst mode
+
+FACTORY_PATCHES = ['505 BD', '505 Tom High', '707 BD 1', '707 BD 2', '808 BD', '808 MT', '808 SD', '909 BD',
+                   '909 Tom Low', 'DMX BD', 'DMX Tom', 'LM2 BD']
+
+
+def inst_state(panel, name='808 BD', channel=1, patches=FACTORY_PATCHES):
+    core = panel.core
+    core.post_change('factory.patches', list(patches))
+    core.post_change(f'ch{channel}.name', name)
+    core.post_change('global.channel', channel)
+    panel.wait_js(f"pythonic.store.value('ch{channel}.name') === {name!r}"
+                  f" && (pythonic.store.value('factory.patches') || []).length === {len(patches)}"
+                  f" && pythonic.store.value('global.channel') === {channel}")
+
+
+def inst_pads(panel, selector='.kits .kit.on'):
+    return panel.js(f"[...document.querySelectorAll('{selector}')].map((k) => k.dataset.patch)")
+
+
+def test_inst_mode_offers_the_factory_sounds_of_the_channels_drum_type(panel, qtbot):
+    inst_state(panel)
+    panel.click('#inst-mode')
+    panel.wait_js("document.querySelector('.slot-steps').dataset.select === 'inst'")
+    assert inst_pads(panel) == ['505 BD', '707 BD 1', '707 BD 2', '808 BD', '909 BD', 'DMX BD', 'LM2 BD']
+    assert inst_pads(panel, '.kits .kit.cur') == ['808 BD']
+    assert panel.js("[...document.querySelectorAll('.kits .kit')].slice(0, 2)"
+                    ".map((k) => k.querySelector('b').textContent + '|' + k.querySelector('.kn').textContent)") == \
+        ['505|BD', '707|BD 1']
+    assert panel.js("pythonic.panel.display.text()") == ['INST CH1', 'BD: 7 factory sounds']
+    assert panel.js("document.querySelector('#inst-mode').classList.contains('on')")
+
+    # another channel: its own drum family (toms stand in for each other)
+    inst_state(panel, name='909 Tom Mid', channel=3)
+    panel.wait_js("document.querySelector('.kits .kit.on').dataset.patch === '505 Tom High'")
+    assert inst_pads(panel) == ['505 Tom High', '808 MT', '909 Tom Low', 'DMX Tom']
+
+
+def test_an_inst_pad_loads_the_sound_into_the_channel_and_plays_it(panel, qtbot):
+    core = panel.core
+    inst_state(panel, channel=2)
+    panel.click('#inst-mode')
+    panel.wait_js("document.querySelector('.slot-steps').dataset.select === 'inst'")
+    panel.click('.kits .kit[data-patch="909 BD"]')
+    qtbot.waitUntil(lambda: ('act', 'drum_patch.load', {'factory': '909 BD', 'channel': 2}) in core.calls)
+    qtbot.waitUntil(lambda: ('trigger', 1, 100) in core.calls)  # the core counts channels from 0
+    panel.wait_js("pythonic.panel.display.text()[1] === '909 BD'")
+    assert not step_sets(core)
+
+
+def test_without_a_drum_type_inst_mode_pages_every_factory_sound(panel, qtbot):
+    names = [f'{m} Sound {i}' for m in ('505', '707') for i in range(1, 13)]  # 24 names, no drum type
+    inst_state(panel, name='Init', patches=names)
+    panel.click('#inst-mode')
+    panel.wait_js("document.querySelector('.slot-steps').dataset.select === 'inst'")
+    assert len(inst_pads(panel)) == 16
+    assert panel.js("[...document.querySelectorAll('.pg.out')].map((b) => b.dataset.page)") == ['2', '3']
+    panel.click('.pg[data-page="1"]')
+    panel.wait_js("document.querySelector('.kits .kit.on').dataset.patch === '707 Sound 5'")
+    assert len(inst_pads(panel)) == 8
+    assert panel.js("document.querySelector('.slot-steps').dataset.select") == 'inst'
+    panel.click('.pg[data-page="3"]')  # past the sounds: back to the steps
+    panel.wait_js("!document.querySelector('.slot-steps').dataset.select")
+
+
+def test_the_drum_patch_menu_loads_a_factory_sound_by_machine(panel, qtbot):
+    core = panel.core
+    core.verbs['drum_patch.load'] = lambda factory, channel: {'channel': channel, 'name': factory, 'path': None}
+    inst_state(panel, channel=4)
+    panel.click('#patch-menu')
+    panel.wait_js("[...document.querySelectorAll('.px-menu .it')].some((i) => i.textContent === 'factory drum patch into CH4…')")
+    pick(panel, 'factory drum patch into CH4…')
+    panel.wait_js("[...document.querySelectorAll('.px-menu .it')].some((i) => i.textContent === 'DMX')")
+    assert panel.js("[...document.querySelectorAll('.px-menu .it:not(.dis)')].map((i) => i.textContent)") == \
+        ['505', '707', '808', '909', 'DMX', 'LM2']
+    pick(panel, '909')
+    panel.wait_js("[...document.querySelectorAll('.px-menu .it')].some((i) => i.textContent === '909 Tom Low')")
+    assert panel.js("[...document.querySelectorAll('.px-menu .it.cur')].map((i) => i.textContent)") == []
+    pick(panel, '909 Tom Low')
+    qtbot.waitUntil(lambda: ('act', 'drum_patch.load', {'factory': '909 Tom Low', 'channel': 4}) in core.calls)
+    panel.wait_js("pythonic.panel.display.text()[1] === '909 TOM LOW'")
+
+
+def pick(panel, label):
+    panel.run(f"[...document.querySelectorAll('.px-menu .it')].forEach((i) => "
+              f"{{ delete i.dataset.pick; if (i.textContent === {label!r}) i.dataset.pick = 'yes'; }})")
+    panel.click('.px-menu [data-pick="yes"]')

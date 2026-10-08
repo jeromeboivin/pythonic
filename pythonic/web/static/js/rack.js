@@ -243,6 +243,38 @@ export function mountRack({ store, client, ctx, display, stage, slot, drawer, fi
   // ------------------------------------------------------------ drum patch menu
   // Also in the PRESET menu (presets.js), so it stays reachable with the rack closed
   const patchName = (n) => String(store.value(`ch${n}.name`) || `channel ${n}`);
+  /** Where the factory drum patch menus open: under drum patch ▾, or the PRESET button with the rack closed. */
+  const menuAnchor = () => {
+    for (const el of [patchMenu, stage.querySelector('#preset-button')]) {
+      const r = el && el.getBoundingClientRect();
+      if (r && r.width) return [r.left, r.bottom + 2];
+    }
+    return [0, 0];
+  };
+  const factoryNames = () => (Array.isArray(store.value('factory.patches')) ? store.value('factory.patches') : []);
+
+  /** The factory drum patches as two menus: the machines, then one machine's sounds. */
+  function openFactoryMachines(n) {
+    const machines = [...new Set(factoryNames().map((name) => name.split(' ')[0]))];
+    const items = [[`factory drum patch · CH${n}`, null], ...machines.map((m) => [m, () => openFactoryMachine(n, m)])];
+    ctx.openMenu(items, ...menuAnchor());
+  }
+
+  function openFactoryMachine(n, machine) {
+    const current = String(store.value(`ch${n}.name`) || '');
+    const label = `CH${n} DRUM PATCH`;
+    const load = async (name) => {
+      const r = await files.run('drum_patch.load', { factory: name, channel: n },
+        { label, failTitle: 'Could not load the drum patch' });
+      if (r) display.show(label, String(r.name || '').toUpperCase());
+    };
+    const items = [[`${machine} · CH${n}`, null],
+      ...factoryNames().filter((name) => name.split(' ')[0] === machine)
+        .map((name) => [name, () => load(name), { current: name === current }]),
+      ['◀ machines', () => openFactoryMachines(n)]];
+    ctx.openMenu(items, ...menuAnchor());
+  }
+
   const patchItems = () => {
     const n = selected();
     const label = `CH${n} DRUM PATCH`;
@@ -266,6 +298,7 @@ export function mountRack({ store, client, ctx, display, stage, slot, drawer, fi
           filters: ['WAV audio (*.wav)'], name: `${patchName(n)}.wav`, suffix: 'wav' });
         if (path) files.save('export.drum_wav', { path, channel: n }, { label: `CH${n} WAV`, failTitle: 'Could not export the WAV file' });
       }],
+      [`factory drum patch into CH${n}…`, factoryNames().length ? () => openFactoryMachines(n) : null],
     ];
   };
   patchMenu.addEventListener('click', (e) => {

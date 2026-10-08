@@ -149,3 +149,34 @@ def test_restoring_brings_back_the_current_kit_in_one_undo_step(make_core, machi
 
     assert run(core, 'undo') == {'done': True, 'label': 'restore factory kits'}
     assert sounds(core) == edited
+
+
+def test_the_factory_drum_patches_are_every_kit_sound(make_core, machine_sounds):
+    core = make_core()
+    names = core.get('factory.patches')
+    assert names == [sound['name'] for m in MACHINES for sound in machine_sounds[m]]
+    assert len(names) == 48 and names[0] == '505 BD' and names[-1] == 'LM2 OH'
+    assert all(name.split()[0] in MACHINES for name in names)
+
+
+def test_a_factory_drum_patch_loads_into_a_channel_in_one_undo_step(make_core, machine_sounds):
+    core = make_core()
+    run(core, 'preset.load', factory='808 Beats')
+    before = sounds(core)
+    version = core.poll()['version']
+
+    result = run(core, 'drum_patch.load', factory='909 BD', channel=2)
+
+    assert result == {'channel': 2, 'name': '909 BD', 'path': None}
+    assert sounds(core)[1] == machine_sounds['909'][0]
+    assert sounds(core)[0] == before[0]
+    changes = core.poll(version)['changes']
+    assert changes['ch2.name'] == '909 BD' and changes['program.names'][2] == ''
+    assert run(core, 'undo') == {'done': True, 'label': 'load drum patch'}
+    assert sounds(core) == before
+
+
+def test_a_drum_patch_load_needs_a_path_or_a_known_factory_patch(make_core):
+    core = make_core()
+    assert 'not a factory drum patch' in act(core, 'drum_patch.load', factory='606 BD')['error']
+    assert act(core, 'drum_patch.load', channel=1)['status'] == 'error'

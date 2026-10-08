@@ -82,6 +82,7 @@ action thread (modules finishing deferred actions).
 | `preset.clipboard` | read-only bool | the preset clipboard is full |
 | `preset.factory` | read-only bool | the current preset is a factory preset (read-only file) |
 | `factory.presets` | read-only list | the factory presets' file names, in machine order (`505 Beats.json` .. `LM2 Beats.json`) |
+| `factory.patches` | read-only list | the factory drum patches: the 48 channel sounds of the six factory kits, in machine order (`505 BD` .. `LM2 OH`); each name starts with its machine |
 | `midi.device`, `midi.connected`, `midi.synced_tempo`, `midi.learning` | read-only | MIDI input state; `describe('midi.device')['labels']` lists the ports of the last scan |
 | `midi.base_note` (0..120), `midi.clock_sync`, `midi.cc_map` ({CC: target}), `midi.pitchbend_target` | settings | saved at once; a target is an address or `selected.<sound suffix>` (the selected channel) |
 | `audio.running|device|device_is_default|sample_rate|synth_rate|block_size|buffer_ms|mono` | read-only | the running stream |
@@ -142,7 +143,7 @@ pattern), `channel` 1..8.
 | `preset.load` | path, or factory (a `factory.presets` name, with or without `.json`) | `{'path', 'name', 'format'}` (`mtpreset` or `json`) |
 | `preset.load_last` | | as `preset.load`, plus `loaded`; `{'loaded': False}` without a last preset |
 | `preset.save` | path, overwrite=False | `{'saved', 'exists', 'path'}` |
-| `drum_patch.load` | path, channel (default selected) | `{'channel', 'name', 'path'}` |
+| `drum_patch.load` | path, or factory (a `factory.patches` name: the whole channel sound), channel (default selected) | `{'channel', 'name', 'path'}` (path None for a factory drum patch); one undo step |
 | `drum_patch.save` | path, channel, overwrite=False | `{'saved', 'exists', 'path', 'channel'}` |
 | `export.midi` | path, pattern, overwrite=False | `{'saved', 'exists', 'path', 'pattern'}`: the pattern's MIDI file |
 | `export.wav` | path, pattern, tail=`'cut'` (`'cut'`, `'append'` +2 s, `'loop'` +1 pass), overwrite=False | `{'saved', 'exists', 'path', 'pattern', 'tail', 'frames', 'sample_rate', 'channels'}`; progress events while it renders |
