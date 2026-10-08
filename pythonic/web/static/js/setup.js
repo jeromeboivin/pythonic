@@ -1,5 +1,5 @@
 // The setup sheet (map decisions #13, #14, #22): an overlay sheet with tabs
-// on top (audio | midi | synthesis | ai) that sizes to its tab. SETUP opens it
+// on top (audio | midi | synthesis | ai | display) that sizes to its tab. SETUP opens it
 // on audio; the MIDI LED and a control's right-click ▸ CC mappings… open it
 // on midi (panel.openPage('setup', {tab})). Values apply live, like any
 // address; only the stream settings (output device, buffer, sample rate,
@@ -18,6 +18,8 @@
 //   synthesis  parameter smoothing
 //   ai         pattern and patch models (native open dialog, clear) and their
 //              temperatures: the same pref.ai.* addresses the AI page shows
+//   display    GPU rendering of this panel (pref.web.gpu): saved at once,
+//              applied at the next start (Chromium reads it before Qt starts)
 //
 // mountSetup({panel, store, client, meta}) registers the page; returns
 // {open(options), close(), tab, element, destroy()}.
@@ -576,7 +578,27 @@ export function mountSetup({ panel, store, client, meta = {} }) {
     return body;
   }
 
-  const BUILDERS = { audio: audioTab, midi: midiTab, synthesis: synthesisTab, ai: aiTab };
+  // ------------------------------------------------------------ display tab
+  function displayTab() {
+    const body = el('div', 'su-cols one');
+    const gpu = el('px-toggle');
+    gpu.dataset.address = 'pref.web.gpu';
+    gpu.setAttribute('label', 'use the GPU');
+    gpu.setAttribute('name', 'GPU rendering');
+    const row = el('div', 'su-row');
+    row.append(gpu, note('Draws this panel with the graphics card. Off, it draws in software: '
+      + 'a little more CPU, but it avoids crashes of some graphics drivers (off by default on Windows). '
+      + 'Applies at the next start of Pythonic.'));
+    body.append(section('display', row));
+    // The display says when it applies, instead of the toggle's plain on / off
+    gpu.addEventListener('px-touch', (e) => {
+      e.stopPropagation();
+      display.show('GPU RENDERING', `${e.detail.value ? 'on' : 'off'} at the next start`);
+    });
+    return body;
+  }
+
+  const BUILDERS = { audio: audioTab, midi: midiTab, synthesis: synthesisTab, ai: aiTab, display: displayTab };
 
   // ------------------------------------------------------------ the sheet
   function clearTab() {

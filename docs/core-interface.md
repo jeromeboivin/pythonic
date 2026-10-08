@@ -107,6 +107,7 @@ so both GUIs and older versions share the file) and is not undoable.
 | `pref.audio.input_device` (PO-32 recording input) | when the input opens | `audio_input_device` |
 | `pref.po32.save_recordings` | next PO-32 recording, saved as a WAV file in `po32.recordings_folder` | `po32_debug_save_recordings` |
 | `pref.smoothing_ms` (5..100 ms) | at once, every channel | `param_smoothing_ms` |
+| `pref.web.gpu` (bool; default off on Windows, on elsewhere) | next start of the web interface (`web_gpu(manager)` reads it before Qt starts) | `web_gpu` (absent = the platform default) |
 | `pref.ai.pattern_model`, `pref.ai.patch_model` (paths, None = bundled) | next model load | `drum_generator_pattern_model_path`, `drum_generator_model_path` |
 | `pref.ai.pattern_temperature`, `pref.ai.patch_temperature` (0.1..3) | next generation | `drum_generator_pattern_temperature`, `drum_generator_patch_temperature` |
 | `pref.preset_folder` (must exist) | at once (`preset.files` follows) | `preset_folder` |

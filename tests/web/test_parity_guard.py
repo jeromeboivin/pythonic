@@ -35,7 +35,7 @@ def bound_on_every_channel(panel):
 def bound_in_setup(panel):
     """The addresses the setup sheet binds, tab by tab."""
     bound = set()
-    for tab in ('audio', 'midi', 'synthesis', 'ai'):
+    for tab in ('audio', 'midi', 'synthesis', 'ai', 'display'):
         panel.run(f"pythonic.panel.openPage('setup', {{tab: '{tab}'}})")
         panel.wait_js(f"document.querySelector('.setup') && document.querySelector('.setup').dataset.tab === '{tab}'")
         bound |= panel.bound_addresses()

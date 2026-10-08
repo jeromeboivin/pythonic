@@ -27,6 +27,11 @@ AI (shared by the AI settings and the AI generator): ``pref.ai.pattern_model``
 and ``pref.ai.patch_model`` (checkpoint paths, None for the bundled one),
 ``pref.ai.pattern_temperature`` and ``pref.ai.patch_temperature`` (0.1..3).
 
+Display: ``pref.web.gpu`` (bool): the web interface renders with the GPU.
+Chromium reads it before Qt starts, so it applies at the next start. Off by
+default on Windows, where QtWebEngine 6.11's GPU path crashes the app after a
+minute or two of playing; on elsewhere (``web_gpu`` reads it at launch).
+
 Files: ``pref.preset_folder`` (an existing folder: the folder of
 ``preset.files`` and of relative preset paths) and ``pref.recent_files``
 (read-only).
@@ -49,6 +54,7 @@ the device cannot be probed).
 import math
 import os
 import re
+import sys
 
 from .registry import Address
 
@@ -58,6 +64,17 @@ SYNTH_RATES = (0, 22050, 11025, 8000)  # 0: same as the output rate
 STREAM_SETTINGS = ('pref.audio.device', 'pref.audio.buffer_ms', 'pref.audio.sample_rate',
                    'pref.audio.synth_rate')
 _UI_NAME = re.compile(r'pref\.ui\.([a-z0-9_]+)$')
+
+
+def web_gpu_default(platform=None):
+    """Whether the web interface uses the GPU when the preference is unset."""
+    return (sys.platform if platform is None else platform) != 'win32'
+
+
+def web_gpu(manager, platform=None):
+    """The saved ``pref.web.gpu`` of a PreferencesManager (its default when unset)."""
+    value = manager.get('web_gpu')
+    return web_gpu_default(platform) if value is None else bool(value)
 
 
 def effective_synth_rate(synth_rate, sample_rate):
@@ -129,6 +146,10 @@ class Prefs:
             reg(Address(f'pref.ai.{name}_temperature', get=saved(key, float, default),
                         set=lambda v, k=key: self._save(k, v), minimum=0.1, maximum=3.0,
                         default=default, queued=False, undoable=False))
+
+        reg(Address('pref.web.gpu', get=lambda: web_gpu(pref),
+                    set=lambda v: self._save('web_gpu', bool(v)), kind='bool',
+                    default=web_gpu_default(), queued=False, undoable=False))
 
         reg(Address('pref.preset_folder', get=lambda: pref.get_preset_folder(),
                     set=self._set_preset_folder, kind='str', queued=False, undoable=False,

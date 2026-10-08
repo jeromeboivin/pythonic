@@ -8,11 +8,17 @@ import sys
 from .scheme import register_scheme
 
 
-def prepare_headless(environ=None):
-    """With Qt's offscreen platform, Chromium must render in software: with a
-    display around it tries the GPU and draws nothing. Call before Qt starts."""
+def prepare_rendering(gpu=True, environ=None):
+    """Make Chromium render in software unless it may use the GPU. Call before
+    Qt starts.
+
+    ``gpu``: the ``pref.web.gpu`` preference (off by default on Windows, where
+    QtWebEngine 6.11's GPU path crashes the app after a minute or two of
+    playing). Qt's offscreen platform always renders in software: with a
+    display around, Chromium tries the GPU there and draws nothing.
+    """
     environ = os.environ if environ is None else environ
-    if not environ.get('QT_QPA_PLATFORM', '').startswith('offscreen'):
+    if gpu and not environ.get('QT_QPA_PLATFORM', '').startswith('offscreen'):
         return
     flags = environ.get('QTWEBENGINE_CHROMIUM_FLAGS', '')
     if '--disable-gpu' not in flags.split():
@@ -31,7 +37,11 @@ def run(quit_after=None, devtools_port=None, core=None):
     exit code. ``quit_after`` (seconds) closes the window by itself, prints
     the frame timings and exits non-zero when the page did not load (start-up
     checks)."""
-    prepare_headless()
+    from pythonic.app.prefs import web_gpu
+    from pythonic.preferences_manager import PreferencesManager
+
+    preferences = core.preferences if core is not None else PreferencesManager()
+    prepare_rendering(gpu=web_gpu(preferences))
     register_scheme()  # before the QApplication exists
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication
@@ -42,7 +52,7 @@ def run(quit_after=None, devtools_port=None, core=None):
     app.setApplicationName('Pythonic')
     if core is None:
         from pythonic.app import AppCore
-        core = AppCore()
+        core = AppCore(preferences)
     window = PanelWindow(core)
     # The app ends with its window, whatever other top-level windows remain
     window.closed.connect(app.quit)

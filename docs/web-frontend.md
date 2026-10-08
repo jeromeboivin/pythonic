@@ -44,7 +44,8 @@ pythonic/web/
   bridge.py        Bridge QObject (slots + frame signal), FrameStats, FRAME_HZ = 60, FRAME_BUDGET_MS = 4
   window.py        PanelWindow(core, owns_core=True): view + page + channel; MIN_SIZE 1280x800;
                    fit_stage_height(old, new) (the edit rack drawer); dispose()
-  app.py           run(quit_after, devtools_port, core): the --ui web entry; prepare_headless();
+  app.py           run(quit_after, devtools_port, core): the --ui web entry; prepare_rendering(gpu)
+                   (--disable-gpu offscreen or when pref.web.gpu is off);
                    frame_report(stats): the line a --quit-after run prints
   static/
     index.html     loads css/*, qrc:///qtwebchannel/qwebchannel.js, js/main.js
@@ -419,7 +420,7 @@ file. `panel.exports`: `exportMidi(letter)`, `exportAudio(letter, tail)`,
 Decision #22 (container #13, pickers #14). `mountSetup` (main.js, after the
 panel) registers the `setup` page: `panel.sheets.show('setup', element,
 {dismissable: true})`, tabs on top (`.su-tabs .btn[data-tab]`: audio | midi |
-synthesis | ai), the card's width follows the tab (`TAB_WIDTHS`). SETUP opens
+synthesis | ai | display), the card's width follows the tab (`TAB_WIDTHS`). SETUP opens
 it on audio; `openPage('setup', {tab})` on a tab (the MIDI LED and CC
 mappings… use midi). ✕ or a click outside closes it. `pythonic.setup`:
 `open(options)`, `close()`, `tab`, `element`.
@@ -453,6 +454,8 @@ mappings… use midi). ✕ or a click outside closes it. `pythonic.setup`:
   native open dialog for `*.pt`; `.su-clear`: back to the bundled one, as
   `ai.models` shows), `px-knob` `pref.ai.pattern_temperature` /
   `.patch_temperature`; a note when `ai.available` is false.
+- **display**: `px-toggle` `pref.web.gpu` (GPU rendering of the panel); it
+  applies at the next start, which the panel display says on a click.
 
 Right-click menus leave out MIDI learn and pitch bend for settings
 (`midi.*`, `audio.*`, `pref.*`: the core refuses them as targets) and CC
@@ -557,7 +560,7 @@ node --test pythonic/web/static/test/*.test.js     # optional local shortcut for
 ```
 
 `tests/web/conftest.py` sets `QT_QPA_PLATFORM=offscreen` (unless set),
-renders Chromium in software (`prepare_headless`) and registers the scheme
+renders Chromium in software (`prepare_rendering`) and registers the scheme
 before pytest-qt makes the QApplication. CI also sets
 `QTWEBENGINE_DISABLE_SANDBOX=1`. To watch a test, run it with
 `QT_QPA_PLATFORM=xcb`.

@@ -3,7 +3,7 @@
 midi; audio devices, rates and the restart dots; the MIDI input, base note
 and clock; the CC mappings (unlimited rows, any CC, add / edit / remove /
 clear, live activity, pitch bend), learning left to the panel; smoothing;
-the AI models and temperatures."""
+the AI models and temperatures; GPU rendering."""
 
 import json
 
@@ -55,7 +55,7 @@ def test_setup_opens_on_audio_and_sizes_to_its_tab(panel):
     open_setup(panel)
     assert setup_tab(panel) == 'audio'
     assert panel.js("[...document.querySelectorAll('.su-tabs .btn')].map((b) => b.textContent)") == \
-        ['audio', 'midi', 'synthesis', 'ai']
+        ['audio', 'midi', 'synthesis', 'ai', 'display']
     assert panel.js("document.querySelector('.su-tabs .btn.on').dataset.tab") == 'audio'
     wide = panel.js("document.querySelector('.sheet.setup-sheet').offsetWidth")
     panel.click('.su-tabs .btn[data-tab="synthesis"]')
@@ -424,3 +424,23 @@ def test_ai_tab_says_when_the_ml_extras_are_missing(panel):
     open_setup(panel, 'ai')
     panel.wait_js("!document.querySelector('.su-ml').hidden")
     assert 'not installed' in text(panel, '.su-ml')
+
+
+# ---------------------------------------------------------------- display
+
+def test_gpu_rendering_is_saved_for_the_next_start(panel):
+    open_setup(panel, 'display')
+    toggle = 'px-toggle[data-address="pref.web.gpu"] .btn'
+    lit = panel.js(f"document.querySelector('{toggle}').classList.contains('on')")
+    assert lit is panel.core.get('pref.web.gpu')
+    panel.click(toggle)
+    assert wait_set(panel, 'pref.web.gpu') == [not lit]
+    panel.wait_js("pythonic.panel.display.text()[1].endsWith('at the next start')")
+    assert display(panel) == ['GPU RENDERING', f"{'off' if lit else 'on'} at the next start"]
+
+
+def test_every_tab_fits_its_sheet_without_scrolling_sideways(panel):
+    for tab in ('audio', 'midi', 'synthesis', 'ai', 'display'):
+        open_setup(panel, tab)
+        assert panel.js("(() => { const c = document.querySelector('.sheet.setup-sheet');"
+                        " return c.scrollWidth <= c.clientWidth; })()"), tab

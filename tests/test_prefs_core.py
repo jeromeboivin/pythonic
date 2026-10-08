@@ -157,6 +157,21 @@ def test_mono_applies_at_once(make_core, backend, prefs):
     assert core.get('pref.audio.pending') == []
 
 
+def test_gpu_rendering_is_off_by_default_on_windows_only_and_saved(make_core, prefs):
+    from pythonic.app.prefs import web_gpu
+
+    assert web_gpu(prefs, platform='win32') is False
+    assert web_gpu(prefs, platform='linux') is True
+    assert web_gpu(prefs, platform='darwin') is True
+    core = make_core()
+    assert core.describe('pref.web.gpu')['kind'] == 'bool'
+    core.set('pref.web.gpu', True)
+    assert saved(prefs)['web_gpu'] is True
+    assert web_gpu(prefs, platform='win32') is True  # the launcher reads it back
+    core.set('pref.web.gpu', False)
+    assert core.get('pref.web.gpu') is False and web_gpu(prefs, platform='linux') is False
+
+
 def test_smoothing_applies_to_every_channel(make_core, prefs):
     core = make_core(audio_backend=None)
     core.set('pref.smoothing_ms', 12.0)

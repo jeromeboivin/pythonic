@@ -38,10 +38,10 @@ try:
 except ImportError:  # no QtWebEngine or no pytest-qt: nothing here can run
     collect_ignore_glob = ['test_*.py']
 else:
-    from pythonic.web.app import prepare_headless
+    from pythonic.web.app import prepare_rendering
     from pythonic.web.scheme import register_scheme
 
-    prepare_headless()
+    prepare_rendering(gpu=False)
     register_scheme()
 
     from tests.web.fake_core import FakeCore, core_table as build_core_table

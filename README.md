@@ -376,6 +376,7 @@ The test suite includes:
 - Check that PySide6 with QtWebEngine imports: `python -c "import PySide6.QtWebEngineWidgets"`; `pythonic --ui tk` always works.
 - Linux: on a locked-down distribution, in a container or as root, Chromium's sandbox may refuse to start; `QTWEBENGINE_DISABLE_SANDBOX=1 pythonic` is the fallback.
 - `pythonic --devtools` opens the Chromium DevTools on `http://127.0.0.1:9222` to inspect the page.
+- Windows: the panel renders without the GPU, because QtWebEngine 6.11's GPU path crashes the app after a minute or two of playing. SETUP ▸ display ▸ use the GPU turns it back on at the next start (to try a newer PySide6, say); turn it off there if the panel crashes on another system.
 
 ### High CPU Usage
 

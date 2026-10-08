@@ -5,10 +5,10 @@
 
 import { FACE_ONLY, rackControls } from './rack-layout.js';
 
-export const SETUP_TABS = ['audio', 'midi', 'synthesis', 'ai'];
+export const SETUP_TABS = ['audio', 'midi', 'synthesis', 'ai', 'display'];
 
 /** Sheet width per tab: audio and midi have two columns, the others one. */
-export const TAB_WIDTHS = { audio: 820, midi: 900, synthesis: 520, ai: 600 };
+export const TAB_WIDTHS = { audio: 820, midi: 900, synthesis: 560, ai: 600, display: 560 };
 
 /** The tab an open request asks for (SETUP opens on audio). */
 export const tabOf = (tab) => (SETUP_TABS.includes(tab) ? tab : 'audio');
