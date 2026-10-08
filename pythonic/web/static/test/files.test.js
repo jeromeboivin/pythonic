@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileName, folderOf, percent, replaceQuestion, samePath } from '../js/files.js';
-import { canSaveInPlace, neighbourFile } from '../js/presets.js';
+import { canSaveInPlace, neighbourFile, presetLabel } from '../js/presets.js';
 
 test('file names and folders of paths, either separator', () => {
   assert.equal(fileName('/a/b/808.mtpreset'), '808.mtpreset');
@@ -49,4 +49,14 @@ test('only a JSON preset is saved over its own file', () => {
   assert.ok(canSaveInPlace('/p/MINE.JSON'));
   assert.ok(!canSaveInPlace('/p/808.mtpreset'));
   assert.ok(!canSaveInPlace(null));
+  assert.ok(!canSaveInPlace('/site/pythonic/factory/presets/808 Beats.json', true));
+});
+
+test('the factory presets walk by name, whatever their folder', () => {
+  const factory = ['505 Beats.json', '707 Beats.json', '808 Beats.json'];
+  assert.equal(neighbourFile(factory, '/site/presets/707 Beats.json', null, 1), '808 Beats.json');
+  assert.equal(neighbourFile(factory, '/site/presets/707 Beats.json', null, -1), '505 Beats.json');
+  assert.equal(neighbourFile(factory, '/site/presets/808 Beats.json', null, 1), null);
+  assert.equal(presetLabel('808 Beats.json'), '808 Beats');
+  assert.equal(presetLabel('DMX.mtpreset'), 'DMX');
 });

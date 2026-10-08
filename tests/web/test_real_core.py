@@ -291,6 +291,27 @@ def test_a_preset_saved_from_the_menu_loads_back_from_the_folder_list(open_panel
     assert real_core.get('pref.recent_files')[0] == str(folder / 'mine.json')
 
 
+def test_a_factory_preset_loads_from_the_menu_and_names_its_kits(open_panel, real_core, tmp_path):
+    page = open_panel(real_core, owns_core=False)
+    pump = real_core.backend.stream.pull
+    page.click('#preset-button')
+    _pick(page, '909 Beats', '#preset-menu .pm-factory .it')
+    page.wait_js("pythonic.store.value('preset.factory') === true", pump=pump)
+    assert real_core.get('preset.name') == '909 Beats' and real_core.get('program.current') == 4
+    page.wait_js("document.querySelector('#programs .btn[data-program=\"4\"]').title === 'program 4: 909'",
+                 pump=pump)
+    page.wait_js("document.querySelector('#programs .btn[data-program=\"4\"]').classList.contains('on')")
+
+    # ▶ walks the factory presets; a kit switch keeps the patterns
+    page.click('#preset-next')
+    page.wait_js("pythonic.store.value('preset.name') === 'DMX Beats'", pump=pump)
+    lanes = [p.to_dict() for p in real_core.pattern_manager.patterns]
+    page.click('#programs .btn[data-program="3"]')
+    page.wait_js("pythonic.store.value('program.current') === 3", pump=pump)
+    assert real_core.get('ch1.name') == '808 BD'
+    assert [p.to_dict() for p in real_core.pattern_manager.patterns] == lanes
+
+
 def test_export_to_midi_from_the_pattern_menu_writes_the_file(open_panel, real_core, tmp_path):
     page = open_panel(real_core, owns_core=False)
     pump = real_core.backend.stream.pull

@@ -145,7 +145,8 @@ function faceHtml() {
       <div class="slot-patterns slot-mark" data-slot="patterns"></div>
       <div class="hl">program</div>
       <div class="programs" id="programs" data-address="program.occupied">
-        <div style="display:contents" data-address="program.current">${programs}</div>
+        <div style="display:contents" data-address="program.current">
+        <div style="display:contents" data-address="program.names">${programs}</div></div>
       </div>
     </div>
     <div class="col centre">
@@ -169,10 +170,12 @@ function faceHtml() {
         <div style="display:contents" data-address="preset.clipboard">
         <div style="display:contents" data-address="pref.preset_folder">
         <div style="display:contents" data-address="pref.recent_files">
+        <div style="display:contents" data-address="preset.factory">
+        <div style="display:contents" data-address="factory.presets">
         <button class="btn sq slot" type="button" data-slot="preset-prev" data-address="preset.path" disabled>◀</button>
         <button class="btn sq slot" type="button" data-slot="preset-next" data-address="preset.path" disabled>▶</button>
         <button class="btn sq slot w2" type="button" data-slot="preset" data-address="preset.name" disabled>preset</button>
-        </div></div></div></div>
+        </div></div></div></div></div></div>
         <button class="btn sq slot w2" type="button" data-slot="rack-toggle" disabled>edit rack</button>
         <button class="btn sq" type="button" data-slot="po32" id="po32-button">po-32</button>
         <button class="btn sq" type="button" data-slot="setup" id="setup-button">setup</button>
@@ -393,20 +396,24 @@ export function mountPanel(stage, { store, client, meta = {} }) {
     }));
   }
   const programButtons = $$('#programs .btn');
+  const programName = (i) => String((store.value('program.names') || [])[i] || '');
   const showPrograms = () => {
     const current = store.value('program.current');
     const occupied = store.value('program.occupied') || [];
     programButtons.forEach((b, i) => {
       b.classList.toggle('on', i + 1 === current);
       b.classList.toggle('empty', !occupied[i]);
+      b.title = programName(i) ? `program ${i + 1}: ${programName(i)}` : `program ${i + 1}`;
     });
   };
   watch('program.current', showPrograms);
   watch('program.occupied', showPrograms);
+  watch('program.names', showPrograms);
   for (const b of programButtons) {
     b.addEventListener('click', () => {
       const program = Number(b.dataset.program);
-      display.show('PROGRAM', String(program));
+      const name = programName(program - 1);
+      display.show('PROGRAM', name ? `${program} ${name.toUpperCase()}` : String(program));
       act('program.select', { program });
     });
   }
@@ -484,7 +491,7 @@ export function mountPanel(stage, { store, client, meta = {} }) {
   const patterns = mountPatterns({ store, ctx, display, act, slot, selected: () => selectedPattern(store) });
   rack = mountRack({ store, client, ctx, display, stage, slot, drawer, files });
   const presets = mountPresets({ store, client, ctx, display, act, stage, slot, files, openPage,
-    patchItems: rack.patchItems, beforeLoad: beforePresetLoad });
+    patchItems: rack.patchItems, ask: sheets.ask, beforeLoad: beforePresetLoad });
   const exportsMenu = mountExports({ client, ctx, display, stage, patterns, files });
   baseDisplay();
 

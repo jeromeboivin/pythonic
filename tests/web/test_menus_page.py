@@ -99,6 +99,86 @@ def test_prev_and_next_step_through_the_folder_without_wrapping(panel, tmp_path)
     panel.wait_js("!document.querySelector('#preset-next').disabled && document.querySelector('#preset-prev').disabled")
 
 
+FACTORY = ['505 Beats.json', '707 Beats.json', '808 Beats.json']
+
+
+def factory_state(panel, folder, current=None):
+    """The fake core with three factory presets, ``current`` (a name) loaded from them."""
+    core = panel.core
+    folder_state(panel, folder)
+    core.post_change('factory.presets', FACTORY)
+    core.post_change('preset.factory', current is not None)
+    core.post_change('preset.path', str(folder / 'factory' / current) if current else None)
+    panel.wait_js(f"pythonic.store.value('preset.factory') === {'true' if current else 'false'}")
+
+
+def test_the_factory_presets_head_the_menu_and_load_by_name(panel, tmp_path):
+    core = panel.core
+    core.verbs['preset.load'] = lambda factory: {'path': str(tmp_path / 'factory' / factory),
+                                                 'name': factory[:-len('.json')], 'format': 'json'}
+    factory_state(panel, tmp_path, '808 Beats.json')
+    open_preset_menu(panel)
+    assert items(panel, '#preset-menu .pm-factory .it') == ['505 Beats', '707 Beats', '808 Beats']
+    assert items(panel, '#preset-menu .pm-factory .it.cur') == ['808 Beats']
+    assert items(panel, '#preset-menu .pm-files .it.cur') == []
+    click_item(panel, '707 Beats', '#preset-menu .pm-factory .it')
+    assert wait_act(panel, 'preset.load') == [{'factory': '707 Beats.json'}]
+    panel.wait_js("pythonic.panel.display.text()[1] === '707 BEATS'")
+
+
+def test_prev_and_next_walk_the_factory_presets_while_one_is_loaded(panel, tmp_path):
+    core = panel.core
+    core.verbs['preset.load'] = lambda **args: {'path': 'x', 'name': 'x', 'format': 'json'}
+    factory_state(panel, tmp_path, '707 Beats.json')
+    panel.wait_js("!document.querySelector('#preset-prev').disabled && !document.querySelector('#preset-next').disabled")
+    panel.click('#preset-next')
+    assert wait_act(panel, 'preset.load') == [{'factory': '808 Beats.json'}]
+    core.post_change('preset.path', str(tmp_path / 'factory' / '808 Beats.json'))
+    panel.wait_js("document.querySelector('#preset-next').disabled")
+
+
+def test_a_factory_preset_is_saved_as_another_file(panel, tmp_path):
+    core = panel.core
+    core.verbs['preset.save'] = lambda path, overwrite=False: {'saved': True, 'exists': False, 'path': path}
+    factory_state(panel, tmp_path, '808 Beats.json')
+    open_preset_menu(panel)
+    assert 'save preset' in items(panel, '#preset-menu .pm-cmds .it')
+    click_item(panel, 'save preset')
+    panel.answer_dialog(tmp_path / 'my 808.json')  # the save-as dialog, not a save in place
+    (save,) = wait_act(panel, 'preset.save')
+    assert same_path(save['path'], tmp_path / 'my 808.json')
+
+
+def test_restore_factory_kits_asks_first(panel, tmp_path):
+    core = panel.core
+    folder_state(panel, tmp_path)
+    core.post_change('program.current', 3)
+    panel.wait_js("pythonic.store.value('program.current') === 3")
+    open_preset_menu(panel)
+    click_item(panel, 'restore factory kits…')
+    title, text = alert_up(panel, 'ok')
+    assert title == 'Restore the factory kits?' and 'Program 3 is one of them' in text
+    answer_alert(panel, primary=False)
+    assert acts(core, 'program.restore_factory') == []
+
+    open_preset_menu(panel)
+    click_item(panel, 'restore factory kits…')
+    alert_up(panel, 'ok')
+    answer_alert(panel, primary=True)
+    assert wait_act(panel, 'program.restore_factory') == [{}]
+    panel.wait_js("pythonic.panel.display.text()[1] === 'factory kits'")
+
+
+def test_a_program_button_names_its_kit(panel):
+    core = panel.core
+    core.post_change('program.names', ['505', '707', '808', '909', 'DMX', 'LM2'] + [''] * 10)
+    panel.wait_js("document.querySelector('#programs .btn[data-program=\"3\"]').title === 'program 3: 808'")
+    assert panel.js("document.querySelector('#programs .btn[data-program=\"7\"]').title") == 'program 7'
+    panel.click('#programs .btn[data-program="5"]')
+    panel.wait_js("pythonic.panel.display.text()[1] === '5 DMX'")
+    assert wait_act(panel, 'program.select') == [{'program': 5}]
+
+
 def test_open_preset_goes_through_the_native_dialog(panel, tmp_path):
     core = panel.core
     preset = tmp_path / 'other.mtpreset'

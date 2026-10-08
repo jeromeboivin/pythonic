@@ -223,7 +223,9 @@ channel's button hits it (bridge `trigger`, velocity 64, Ctrl+click 127, as
 tkinter); a channel button flashes when a MIDI note (`poll().midi.notes`)
 or a click hits its channel. UNDO / REDO show the step's label as the name
 of the control bound to it (`undoText`, values.js: `CH2 DECAY`), else the
-address in words.
+address in words. A program button's tooltip names its kit
+(`program.names`: `program 3: 808`), and a click shows it on the display
+(`PROGRAM` / `3 808`).
 
 ## Step row and patterns (`steps.js`, `patterns.js`)
 
@@ -379,18 +381,24 @@ Decisions #13 (where secondary features open) and #22 (the alert sheet).
 Decisions #12, #13, #14. The right column's ◀ ▶ load the previous / next
 file of `preset.files` around `preset.path` (no wrap, as tkinter; with the
 current preset outside the folder ▶ loads the first file; disabled at the
-ends). PRESET (`#preset-button`) toggles the preset menu (`#preset-menu`):
+ends); while a factory preset is loaded (`preset.factory`) they walk
+`factory.presets` instead. PRESET (`#preset-button`) toggles the preset menu
+(`#preset-menu`):
 
-- left: the preset folder's name (↻ refreshes) over its presets as an
-  in-panel list (`.pm-files`, the current one lit, a click loads it by name
-  relative to the folder), then the recent files (`.pm-recent`,
-  `pref.recent_files`, a click loads the path);
+- left: the factory presets (`.pm-factory`, marked read-only, the current
+  one lit, a click loads it with `preset.load({factory: name})`), the preset
+  folder's name (↻ refreshes) over its presets as an in-panel list
+  (`.pm-files`, the current one lit, a click loads it by name relative to the
+  folder), then the recent files (`.pm-recent`, `pref.recent_files`, a click
+  loads the path);
 - right: open preset… (native open dialog in the preset folder), save
-  “name.json” (over the open JSON preset, no question; a .mtpreset falls
-  back to save as), save preset as… (native save dialog, suffix `.json`,
+  “name.json” (over the open JSON preset, no question; a .mtpreset or a
+  factory preset falls back to save as), save preset as… (native save dialog, suffix `.json`,
   the replace question), reload last preset (`preset.load_last`), copy /
   cut / paste preset (paste off while `preset.clipboard` is false),
-  initialize preset, randomize all; the selected channel's drum patch
+  initialize preset, randomize all, restore factory kits… (asks on the alert
+  sheet, saying so when the current program is among 1-6, then
+  `program.restore_factory`); the selected channel's drum patch
   entries (`panel.rack.patchItems()`, the rack header's menu, so they work
   with the rack closed), export every drum as WAV… (folder dialog,
   `export.drum_wavs`); preset folder… (folder dialog, sets
@@ -398,9 +406,10 @@ ends). PRESET (`#preset-button`) toggles the preset menu (`#preset-menu`):
   PO-32…, import from PO-32…, AI drum generator…, setup… (pages, above).
 
 A load or save failure shows on a red alert; the display shows the loaded
-preset (`PRESET` / name) or `saved`. The menu follows the folder, recent
-files and clipboard while open. Bound addresses: `preset.name`, `.path`,
-`.files`, `.clipboard`, `pref.preset_folder`, `pref.recent_files`.
+preset (`PRESET` / name, `FACTORY PRESET` / name) or `saved`. The menu
+follows the folder, recent files, clipboard and factory state while open.
+Bound addresses: `preset.name`, `.path`, `.files`, `.clipboard`, `.factory`,
+`factory.presets`, `pref.preset_folder`, `pref.recent_files`.
 
 ## Pattern exports (`exports.js`)
 

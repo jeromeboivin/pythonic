@@ -144,3 +144,6 @@ pattern_dataset_cache.pt
 
 # Local research material
 /audio_transfer/
+
+# Factory preset build script (local MIDI sources)
+/tools/build_factory.py

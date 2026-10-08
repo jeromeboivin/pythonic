@@ -14,11 +14,16 @@ Addresses:
 - ``preset.files`` (read-only list): the preset files (``.mtpreset``,
   ``.json``) in the preset folder, sorted by name, for an in-panel list.
 - ``preset.clipboard`` (read-only bool): the preset clipboard holds a preset.
+- ``preset.factory`` (read-only bool): the preset was loaded from a factory
+  preset (read-only: a front-end saves it as another file).
+- ``factory.presets`` (read-only list): the file names of the factory presets
+  shipped with Pythonic, in machine order (``808 Beats.json``, ...).
 
 Verbs (results and errors arrive through ``poll`` as action events):
 
-- ``preset.load`` (path): load a preset, a .mtpreset or a JSON preset (told
-  apart by content). Everything is replaced: the sounds of the eight channels
+- ``preset.load`` (path=None, factory=None): load a preset, a .mtpreset or a
+  JSON preset (told apart by content), from a path or a factory preset by file
+  name or name (``factory='808 Beats'``). Everything is replaced: the sounds of the eight channels
   (what the file leaves out takes its default), the tempo, swing, step rate,
   fill rate, master, the patterns (patterns missing from the file are empty),
   the programs (a .mtpreset has none: the bank is emptied), the morph (a file
@@ -33,6 +38,7 @@ Verbs (results and errors arrive through ``poll`` as action events):
   replaced with ``overwrite=True``; otherwise nothing is written and the
   result is ``{'saved': False, 'exists': True, 'path'}`` so the front-end can
   ask and save again. Result ``{'saved': True, 'exists': bool, 'path'}``.
+  The factory presets folder is refused.
 - ``drum_patch.load`` (path, channel=None): load a .mtdrum drum patch into a
   channel (1..8, default the selected one); one undo step. Result
   ``{'channel', 'name', 'path'}``.
@@ -52,6 +58,7 @@ import copy
 import json
 import os
 
+from pythonic import factory
 from pythonic.pattern_manager import Pattern, PatternManager
 from pythonic.preset_manager import (DrumPatchParser, DrumPatchWriter, PythonicPresetParser,
                                      apply_drum_patch_to_channel, convert_drum_patch_data)
@@ -69,6 +76,9 @@ DRUM_PATCH_SUFFIX = '.mtdrum'
 def channel_addresses(channel):
     """Every address of one channel's drum patch (channel 1..8)."""
     return [f'ch{channel}.{suffix}' for suffix in sorted(SOUND_SUFFIXES)] + [f'ch{channel}.name']
+
+
+_factory_path = factory.preset_path  # the verb's ``factory`` argument shadows the module
 
 
 def _with_suffix(path, suffix):
@@ -113,6 +123,8 @@ class Presets:
         reg(Address('preset.path', get=lambda: self._path, kind='str'))
         reg(Address('preset.files', get=self.files, kind='list'))
         reg(Address('preset.clipboard', get=lambda: self._clipboard is not None, kind='bool'))
+        reg(Address('preset.factory', get=lambda: factory.is_factory_path(self._path), kind='bool'))
+        reg(Address('factory.presets', get=factory.preset_files, kind='list'))
 
     def verbs(self):
         return {
@@ -160,8 +172,10 @@ class Presets:
         return sound
 
     # ================================================================== preset load
-    def _verb_load(self, path):
-        path = self.resolve(path)
+    def _verb_load(self, path=None, factory=None):
+        if (path is None) == (factory is None):
+            raise ValueError('give a path or a factory preset')
+        path = str(_factory_path(factory)) if factory is not None else self.resolve(path)
         state, mutes, name, fmt = self.read_preset(path)
         self._install(state, mutes, 'load preset')
         prefs = self._core.preferences
@@ -295,7 +309,7 @@ class Presets:
 
     def _set_document(self, path, name, extra=()):
         self._path, self._name = path, name
-        self._core.note_changes(['preset.path', 'preset.name', 'preset.files',
+        self._core.note_changes(['preset.path', 'preset.name', 'preset.files', 'preset.factory',
                                  *[a for a in extra if a in self._core.registry]])
 
     # ================================================================== preset save
@@ -338,6 +352,8 @@ class Presets:
 
     def _verb_save(self, path, overwrite=False):
         path = _with_suffix(self.resolve(path), '.json')
+        if factory.is_factory_path(path):
+            raise ValueError('the factory presets are read-only: save the preset in another folder')
         exists = os.path.exists(path)
         if exists and not overwrite:
             return {'saved': False, 'exists': True, 'path': path}

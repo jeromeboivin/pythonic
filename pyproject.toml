@@ -40,6 +40,7 @@ include = ["pythonic*", "gui*"]
 
 [tool.setuptools.package-data]
 "pythonic.web" = ["static/**/*"]
+"pythonic.factory" = ["presets/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -24,6 +24,10 @@ _Avoid_: Instrument, role, slot
 One of sixteen stored sets of the eight channel sounds inside a preset, switched to change all sounds at once.
 _Avoid_: Kit, bank, slot
 
+**Factory preset**:
+A read-only preset shipped with Pythonic, one per drum machine (505, 707, 808, 909, DMX, LM2): that machine's sounds and patterns, with all six machines' sounds as programs 1 to 6. Saved only as another file.
+_Avoid_: Demo, template, kit
+
 **Pattern**:
 One of the twelve step sequences of a preset, A to L: a lane of steps for each channel, 1 to 64 steps long, played in a loop.
 _Avoid_: Sequence, bar, loop

@@ -73,13 +73,15 @@ action thread (modules finishing deferred actions).
 | `pattern.<P>.ch<N>.trig|acc|vel|fill|prob|sub` | list | a whole lane (one value per step of the length) |
 | `pattern.<P>.length` (1..64), `pattern.<P>.chained` (to the next; read-only on L), `pattern.<P>.empty` (read-only) | | pattern |
 | `pattern.selected` | enum A..L | the selected pattern (plain selection) |
-| `program.current` (1..16), `program.occupied` (16 bools) | read-only | program bank |
+| `program.current` (1..16), `program.occupied` (16 bools), `program.names` (16 strings) | read-only | program bank; a name is the words the program's channel names start with (`808`), `""` when empty or nothing in common, reported with any channel name |
 | `morph.position` (0..1) | float | morph position |
 | `morph.learning` (`off`, `a`, `b`), `morph.differs` | read-only | morph learn, endpoints differ |
 | `undo.can_undo`, `undo.can_redo` | read-only bool | journal state |
 | `preset.name`, `preset.path` (None before any load or save) | read-only | the current preset |
 | `preset.files` | read-only list | `.mtpreset` / `.json` file names in `pref.preset_folder`, sorted |
 | `preset.clipboard` | read-only bool | the preset clipboard is full |
+| `preset.factory` | read-only bool | the current preset is a factory preset (read-only file) |
+| `factory.presets` | read-only list | the factory presets' file names, in machine order (`505 Beats.json` .. `LM2 Beats.json`) |
 | `midi.device`, `midi.connected`, `midi.synced_tempo`, `midi.learning` | read-only | MIDI input state; `describe('midi.device')['labels']` lists the ports of the last scan |
 | `midi.base_note` (0..120), `midi.clock_sync`, `midi.cc_map` ({CC: target}), `midi.pitchbend_target` | settings | saved at once; a target is an address or `selected.<sound suffix>` (the selected channel) |
 | `audio.running|device|device_is_default|sample_rate|synth_rate|block_size|buffer_ms|mono` | read-only | the running stream |
@@ -134,9 +136,10 @@ pattern), `channel` 1..8.
 | `pattern.chain_prev`, `pattern.chain_next`, `pattern.chain_clear` | pattern | chains |
 | `undo`, `redo` | | `{'done', 'label'}` |
 | `program.select` | program 1..16 | `{'program', 'recalled'}` |
+| `program.restore_factory` | | `{'programs': [1..6]}`: the factory kits back into programs 1-6 (the current one plays at once when among them); one undo step |
 | `morph.learn` | endpoint `'a'`, `'b'` or None (stop) | `{'learning'}` |
 | `morph.capture` | endpoint | |
-| `preset.load` | path | `{'path', 'name', 'format'}` (`mtpreset` or `json`) |
+| `preset.load` | path, or factory (a `factory.presets` name, with or without `.json`) | `{'path', 'name', 'format'}` (`mtpreset` or `json`) |
 | `preset.load_last` | | as `preset.load`, plus `loaded`; `{'loaded': False}` without a last preset |
 | `preset.save` | path, overwrite=False | `{'saved', 'exists', 'path'}` |
 | `drum_patch.load` | path, channel (default selected) | `{'channel', 'name', 'path'}` |
@@ -167,7 +170,9 @@ the front-end asks, then sends the verb again with `overwrite=True`. The core
 adds `.json` / `.mtdrum` / `.mid` / `.wav` to a path without an extension
 before that check (native dialogs add the default suffix after their own
 check). File dialogs live in the front-ends and hand the chosen path to these
-verbs.
+verbs. The factory presets ship inside the package (`pythonic/factory/presets`,
+built locally, outside the repository); `preset.save` refuses a path in that
+folder.
 
 **Export.** The MIDI file has one note per triggered step on channel 10
 (GM drum notes 36, 38, 42, 46, 45, 41, 39, 37 for channels 1..8) at the step's

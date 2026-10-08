@@ -1,16 +1,19 @@
 // The PRESET buttons of the right column (map decisions #12, #13, #14):
-// ◀ ▶ load the previous / next file of the preset folder, PRESET opens the
-// preset menu: the folder's presets as an in-panel list (a click loads one),
-// the recent files, and the commands: open / save / save as (native dialogs,
-// a save asks before replacing a file), reload the last preset, the preset
-// clipboard, initialize, randomize all, the selected channel's drum patch
+// ◀ ▶ load the previous / next file of the preset folder (of the factory
+// presets while one of them is loaded), PRESET opens the preset menu: the
+// factory presets (read-only) and the folder's presets as in-panel lists (a
+// click loads one), the recent files, and the commands: open / save / save
+// as (native dialogs, a save asks before replacing a file; a factory preset
+// is only saved as another file), reload the last preset, the preset
+// clipboard, initialize, randomize all, restore the factory kits into
+// programs 1-6 (asks first), the selected channel's drum patch
 // (the edit rack's menu, also here so it works with the rack closed), every
 // drum as WAV files, the preset folder, and the pages (PO-32, AI drum
 // generator, setup) through panel.openPage.
 //
 // Bound addresses: preset.name, preset.path, preset.files, preset.clipboard,
-// pref.preset_folder (a folder dialog sets it; preset.files follows) and
-// pref.recent_files.
+// preset.factory, factory.presets, pref.preset_folder (a folder dialog sets
+// it; preset.files follows) and pref.recent_files.
 
 import { fileName, folderOf, samePath } from './files.js';
 
@@ -35,8 +38,11 @@ export function neighbourFile(files, path, folder, step) {
   return next >= 0 && next < list.length ? list[next] : null;
 }
 
-/** The preset can be saved over its own file (a JSON preset; .mtpreset files are only read). */
-export const canSaveInPlace = (path) => typeof path === 'string' && /\.json$/i.test(path);
+/** The preset can be saved over its own file (a JSON preset; .mtpreset files and factory presets are only read). */
+export const canSaveInPlace = (path, factory = false) => !factory && typeof path === 'string' && /\.json$/i.test(path);
+
+/** A preset's name in a list: the file name without its extension. */
+export const presetLabel = (name) => String(name).replace(/\.(mtpreset|json)$/i, '');
 
 function el(tag, cls, text) {
   const node = document.createElement(tag);
@@ -46,7 +52,7 @@ function el(tag, cls, text) {
 }
 
 export function mountPresets({ store, client, ctx, display, act, stage, slot, files, openPage, patchItems,
-  beforeLoad = async () => true }) {
+  ask = async () => true, beforeLoad = async () => true }) {
   const offs = [];
   const prev = slot('preset-prev');
   const next = slot('preset-next');
@@ -59,14 +65,20 @@ export function mountPresets({ store, client, ctx, display, act, stage, slot, fi
   const value = (address) => store.value(address);
   const folder = () => value('pref.preset_folder');
   const list = () => (Array.isArray(value('preset.files')) ? value('preset.files') : []);
+  const factoryList = () => (Array.isArray(value('factory.presets')) ? value('factory.presets') : []);
+  const isFactory = () => value('preset.factory') === true;
+  /** The list ◀ ▶ walk: the factory presets while one is loaded, else the folder. */
+  const walked = () => (isFactory() ? { files: factoryList(), folder: null } : { files: list(), folder: folder() });
 
   // ------------------------------------------------------------ load and save
-  async function load(path, label = 'PRESET') {
+  async function loadWith(args, label) {
     if (!(await beforeLoad())) return null;
-    const r = await files.run('preset.load', { path }, { label, failTitle: 'Could not load the preset' });
+    const r = await files.run('preset.load', args, { label, failTitle: 'Could not load the preset' });
     if (r) display.show(label, String(r.name || fileName(r.path)).toUpperCase());
     return r;
   }
+  const load = (path, label = 'PRESET') => loadWith({ path }, label);
+  const loadFactory = (name) => loadWith({ factory: name }, 'FACTORY PRESET');
 
   async function open() {
     const path = await client.openFile({ title: 'Open preset', filters: OPEN_FILTERS, folder: folder() });
@@ -83,17 +95,30 @@ export function mountPresets({ store, client, ctx, display, act, stage, slot, fi
   /** Save over the current file (the document you have open: no question); else save as. */
   async function save() {
     const path = value('preset.path');
-    if (!canSaveInPlace(path)) return saveAs();
+    if (!canSaveInPlace(path, isFactory())) return saveAs();
     return files.save('preset.save', { path, overwrite: true }, { label: 'SAVE PRESET', failTitle: 'Could not save the preset' });
   }
 
   async function step(direction) {
-    const name = neighbourFile(list(), value('preset.path'), folder(), direction);
+    const { files: names, folder: within } = walked();
+    const name = neighbourFile(names, value('preset.path'), within, direction);
     if (!name) {
-      display.show('PRESET', list().length ? (direction < 0 ? 'first preset' : 'last preset') : 'no presets in the folder');
+      display.show('PRESET', names.length ? (direction < 0 ? 'first preset' : 'last preset') : 'no presets in the folder');
       return;
     }
-    await load(name);
+    await (isFactory() ? loadFactory(name) : load(name));
+  }
+
+  async function restoreKits() {
+    const current = Number(value('program.current')) || 1;
+    const playing = current <= 6
+      ? ` Program ${current} is one of them: the sounds playing change too (undo brings them back).` : '';
+    const sure = await ask('Restore the factory kits?',
+      `Programs 1-6 get the 505, 707, 808, 909, DMX and LM2 kits back; the other programs and the patterns stay.${playing}`,
+      { yes: 'restore', no: 'cancel' });
+    if (!sure) return;
+    const event = await act('program.restore_factory');
+    if (event.status === 'done') display.show('PROGRAMS 1-6', 'factory kits');
   }
 
   async function chooseFolder() {
@@ -132,7 +157,7 @@ export function mountPresets({ store, client, ctx, display, act, stage, slot, fi
     const path = value('preset.path');
     return [
       ['open preset…', open],
-      [canSaveInPlace(path) ? `save “${fileName(path)}”` : 'save preset', save],
+      [canSaveInPlace(path, isFactory()) ? `save “${fileName(path)}”` : 'save preset', save],
       ['save preset as…', saveAs],
       ['reload last preset', loadLast],
       null,
@@ -141,6 +166,7 @@ export function mountPresets({ store, client, ctx, display, act, stage, slot, fi
       ['paste preset', value('preset.clipboard') ? quick('preset.paste', 'pasted') : null],
       ['initialize preset', quick('preset.initialize', 'initialized')],
       ['randomize all', quick('preset.randomize_all', 'randomized')],
+      ['restore factory kits…', restoreKits],
       null,
       ...patchItems(),
       ['export every drum as WAV…', exportDrums],
@@ -179,9 +205,16 @@ export function mountPresets({ store, client, ctx, display, act, stage, slot, fi
     head.title = folder() || '';
     const filesBox = el('div', 'pm-files');
     const path = value('preset.path');
+    const factoryBox = el('div', 'pm-factory');
+    for (const name of factoryList()) {
+      factoryBox.append(item(presetLabel(name), () => loadFactory(name),
+        isFactory() && fileName(path) === name ? 'cur' : ''));
+    }
+    const factoryHead = el('div', 'pm-h', 'factory');
+    factoryHead.append(el('span', 'pm-lock', 'read-only'));
     for (const name of list()) {
-      filesBox.append(item(name.replace(/\.(mtpreset|json)$/i, ''), () => load(name),
-        isCurrent(path, folder(), name) ? 'cur' : ''));
+      filesBox.append(item(presetLabel(name), () => load(name),
+        !isFactory() && isCurrent(path, folder(), name) ? 'cur' : ''));
     }
     if (!list().length) filesBox.append(el('div', 'pm-empty', 'no presets in this folder'));
     const recent = el('div', 'pm-recent');
@@ -192,6 +225,7 @@ export function mountPresets({ store, client, ctx, display, act, stage, slot, fi
       recent.append(row);
     }
     if (!recent.childElementCount) recent.append(el('div', 'pm-empty', 'none yet'));
+    if (factoryList().length) side.append(factoryHead, factoryBox);
     side.append(head, filesBox, el('div', 'pm-h', 'recent'), recent);
     const cmds = el('div', 'pm-cmds');
     for (const entry of commands()) {
@@ -216,7 +250,7 @@ export function mountPresets({ store, client, ctx, display, act, stage, slot, fi
     const y = (r.bottom - s.top) / scale + 4;
     menu.style.left = `${Math.max(4, Math.min(x, stage.offsetWidth - w - 4))}px`;
     menu.style.top = `${Math.max(4, Math.min(y, stage.offsetHeight - h - 4))}px`;
-    menu.querySelector('.pm-files .cur')?.scrollIntoView({ block: 'nearest' });
+    menu.querySelector('.pm-files .cur, .pm-factory .cur')?.scrollIntoView({ block: 'nearest' });
     return menu;
   }
   const isOpen = () => !!stage.querySelector(':scope > #preset-menu');
@@ -225,13 +259,15 @@ export function mountPresets({ store, client, ctx, display, act, stage, slot, fi
 
   // ------------------------------------------------------------ buttons
   const showButtons = () => {
-    prev.disabled = !neighbourFile(list(), value('preset.path'), folder(), -1);
-    next.disabled = !neighbourFile(list(), value('preset.path'), folder(), 1);
+    const { files: names, folder: within } = walked();
+    prev.disabled = !neighbourFile(names, value('preset.path'), within, -1);
+    next.disabled = !neighbourFile(names, value('preset.path'), within, 1);
   };
-  for (const address of ['preset.files', 'preset.path', 'pref.preset_folder']) {
+  for (const address of ['preset.files', 'preset.path', 'pref.preset_folder', 'preset.factory', 'factory.presets']) {
     offs.push(store.watch(address, showButtons));
   }
-  for (const address of ['preset.files', 'pref.recent_files', 'preset.clipboard', 'pref.preset_folder']) {
+  for (const address of ['preset.files', 'pref.recent_files', 'preset.clipboard', 'pref.preset_folder',
+    'preset.factory', 'factory.presets']) {
     offs.push(store.watch(address, refreshOpen, { now: false }));
   }
   prev.addEventListener('click', () => step(-1));
@@ -251,6 +287,8 @@ export function mountPresets({ store, client, ctx, display, act, stage, slot, fi
   return {
     openMenu,
     load,
+    loadFactory,
+    restoreKits,
     save,
     saveAs,
     open,

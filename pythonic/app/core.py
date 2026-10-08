@@ -420,8 +420,17 @@ class AppCore:
             self._version += 1
             self._changes[address] = (self._version, value)
 
+    def _derived(self, names):
+        """Values that follow from changed addresses: the program names
+        follow the channel names."""
+        if any(n.startswith('ch') and n.endswith('.name') for n in names) \
+                and 'program.names' in self.registry:
+            return {'program.names': self.registry['program.names'].get()}
+        return {}
+
     def note_values(self, values):
         """Report addresses with the given values as one change."""
+        values = {**values, **self._derived(values)}
         with self._cond:
             self._promote_applied()
             self._version += 1
@@ -433,6 +442,7 @@ class AppCore:
         if not addresses:
             return
         values = {name: self.registry[name].get() for name in addresses}
+        values.update(self._derived(values))
         with self._cond:
             self._promote_applied()
             self._version += 1

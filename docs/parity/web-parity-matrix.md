@@ -24,7 +24,7 @@ run (section 1.13).
 
 | tkinter | Web | Status |
 |---|---|---|
-| `program:` combobox 1-16 | left column programs 1-16 grid (`program.select`, `program.current`, `program.occupied`) | done W2 |
+| `program:` combobox 1-16 | left column programs 1-16 grid (`program.select`, `program.current`, `program.occupied`; kit names from `program.names` in the tooltip and on the display) | done W2 |
 | Morph learn A / B | right column learn a / learn b (`morph.learn`); right-click: capture (`morph.capture`) | done W2 |
 | `sound morph` slider | right column sound morph knob (`morph.position`), dims while A = B (`morph.differs`) | done W2 |
 | Undo ↶ / Redo ↷ | left column undo / redo (`undo`, `redo`, `undo.can_*`) | done W2 |
@@ -103,6 +103,7 @@ run (section 1.13).
 | Audio / MIDI / Synthesis / AI Settings... | setup… → `openPage('setup')` (one sheet with tabs, #22) | done W5 / W6 |
 | (recent files, never shown in tkinter) | recent files in the preset menu (`pref.recent_files`) | done W5 (new) |
 | (last preset, loaded at start-up) | reload last preset (`preset.load_last`) | done W5 (new) |
+| (factory presets, not in tkinter) | factory section of the preset menu (`factory.presets`, `preset.load({factory})`), ◀ ▶ walk it while one is loaded (`preset.factory`), saved only as another file; restore factory kits… (`program.restore_factory`) | done (new, web only) |
 
 ### 1.6.2 Pattern menu (MENU or right-click a pattern)
 

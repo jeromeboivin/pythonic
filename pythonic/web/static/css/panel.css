@@ -370,9 +370,10 @@ px-target.armed .btn.dest { background: var(--src); color: #000; text-shadow: no
 .preset-menu .pm-list { width: 270px; display: flex; flex-direction: column; gap: 3px; border-right: 1px solid #2a2a2d; padding-right: 6px; }
 .preset-menu .pm-h { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; padding: 3px 6px 1px; }
 .preset-menu .pm-h .pm-folder { flex: 1; color: var(--button-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: none; letter-spacing: 0; font-size: 12px; }
-.preset-menu .pm-files { max-height: 300px; overflow-y: auto; }
+.preset-menu .pm-files { max-height: 240px; overflow-y: auto; }
+.preset-menu .pm-h .pm-lock { margin-left: auto; color: #55575b; text-transform: none; letter-spacing: 0; font-weight: 400; }
 .preset-menu .pm-recent { max-height: 132px; overflow-y: auto; }
-.preset-menu .pm-files .it, .preset-menu .pm-recent .it { overflow: hidden; text-overflow: ellipsis; padding: 3px 8px; font-size: 13px; }
+.preset-menu .pm-files .it, .preset-menu .pm-factory .it, .preset-menu .pm-recent .it { overflow: hidden; text-overflow: ellipsis; padding: 3px 8px; font-size: 13px; }
 .preset-menu .pm-recent .it small { color: #6c6e72; margin-left: 6px; font-size: 11px; }
 .preset-menu .pm-empty { color: #55575b; font-size: 12px; padding: 3px 8px; }
 .preset-menu .pm-cmds { min-width: 230px; }
