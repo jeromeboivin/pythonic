@@ -1,11 +1,16 @@
 """The bridge's slots and frames, called from Python over the fake core."""
 
 import json
+import re
+import sys
+from pathlib import Path
 
 from PySide6.QtWidgets import QFileDialog, QWidget
 
-from pythonic.web.bridge import FRAME_BUDGET_MS, Bridge
+from pythonic.web.bridge import FRAME_BUDGET_MS, Bridge, to_json
 from tests.web.page import choose_in_dialog, same_path
+
+ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 def call(bridge, slot, payload):
@@ -160,3 +165,37 @@ def test_trigger_hits_a_channel_now(fake_core):
     for bad in ({'channel': 0}, {'channel': 9}, {'channel': 1, 'velocity': 0}, {'velocity': 3},
                 {'channel': True}):
         assert 'error' in call(bridge, 'trigger', bad)
+
+
+def test_to_json_makes_infinity_and_nan_valid_json():
+    # A pitch mod rate of "inf" is a real preset value; JSON has no Infinity
+    text = to_json({'osc.mod_rate': float('inf'), 'low': -float('inf'), 'nan': float('nan'),
+                    'list': [float('inf'), 1.5]})
+    assert 'Infinity' not in text and 'NaN' not in text
+    data = json.loads(text)
+    assert data['osc.mod_rate'] == sys.float_info.max
+    assert data['low'] == -sys.float_info.max
+    assert data['nan'] is None
+    assert data['list'] == [sys.float_info.max, 1.5]
+
+
+def test_frame_after_loading_a_preset_with_an_infinite_pitch_rate_is_valid_json(real_core, tmp_path):
+    text = (ROOT / 'tests' / '505.mtpreset').read_text()
+    assert 'ModRate: ' in text
+    path = tmp_path / 'inf.mtpreset'
+    path.write_text(re.sub(r'ModRate: [^\n]*', 'ModRate: inf ms', text, count=1))
+    action = real_core.act('preset.load', path=str(path))
+    while True:
+        try:
+            real_core.wait(action, timeout=0.05)
+            break
+        except TimeoutError:
+            real_core.backend.stream.pull()
+    frames = []
+    bridge = Bridge(real_core)
+    bridge.frame.connect(frames.append)
+    bridge.tick()
+    assert frames
+    assert 'Infinity' not in frames[0]
+    state = json.loads(frames[0])
+    assert any(v == sys.float_info.max for v in state['changes'].values())

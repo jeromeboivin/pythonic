@@ -34,6 +34,8 @@ Malformed requests answer ``{"error": message}``.
 
 import itertools
 import json
+import math
+import sys
 import time
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal, Slot
@@ -55,8 +57,29 @@ def _json_default(value):
     return str(value)
 
 
+def _finite(value):
+    """The value with non-finite floats made valid JSON, which has no Infinity
+    or NaN: an infinity (a pitch mod rate of ``inf``) becomes the largest
+    float, which a page clamps to the end of the range; NaN becomes null."""
+    if isinstance(value, float):
+        if math.isnan(value):
+            return None
+        if math.isinf(value):
+            return math.copysign(sys.float_info.max, value)
+        return value
+    if isinstance(value, dict):
+        return {key: _finite(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_finite(item) for item in value]
+    item = getattr(value, 'item', None)  # numpy scalar
+    if callable(item) and not isinstance(value, (str, bytes)):
+        return _finite(item())
+    return value
+
+
 def to_json(value):
-    return json.dumps(value, separators=(',', ':'), default=_json_default)
+    return json.dumps(_finite(value), separators=(',', ':'), default=_json_default,
+                      allow_nan=False)
 
 
 class FrameStats:

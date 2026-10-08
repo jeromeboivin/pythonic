@@ -139,6 +139,8 @@ export function formatValue(meta, value) {
     default: return String(value);
   }
   const v = Number(value);
+  // The core's infinity reaches the page as the largest float (a pitch rate of inf)
+  if (Math.abs(v) >= 1e300) return v > 0 ? '∞' : '−∞';
   switch (meta.unit) {
     case 'Hz':
       if (v >= 10000) return `${(v / 1000).toFixed(1)} kHz`;
