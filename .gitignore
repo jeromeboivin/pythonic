@@ -139,6 +139,7 @@ Thumbs.db
 drum_dataset_cache.pt
 drum_cvae_final.pt
 pattern_dataset_cache.pt
+fit_prior_data.npz
 # Local analysis toolkit
 /tools/local_analysis/
 

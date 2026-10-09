@@ -310,6 +310,7 @@ The repository includes these pre-trained checkpoints, used by default:
 |------|-------------|
 | `drum_cvae_best.pt` | Bundled drum-patch CVAE checkpoint used by the AI Drum Generator |
 | `drum_patterns/pattern_cvae_best.pt` | Bundled pattern CVAE checkpoint used for AI pattern generation |
+| `fit_prior.pt` | Starting-patch model of `tools/fit_samples.py` (see below) |
 
 Other checkpoints can be chosen with **load…** on the AI page or in setup ▸ ai (tkinter: **Load Model...** and Preset menu → **AI Settings**). The chosen paths are saved in preferences.
 
@@ -323,6 +324,30 @@ Other checkpoints can be chosen with **load…** on the AI page or in setup ▸ 
 6. On the right, keep the current patterns or generate new ones, preview them (**▶ loop**, **▶ bank A→L**) and **replace patterns**
 
 In the tkinter dialog, candidates are previewed per slot and **Apply Selected** copies the checked slots into the preset.
+
+### Drum Patches from Samples
+
+`tools/fit_samples.py` turns a folder of one-shot samples (WAV, AIFF or FLAC) into
+`.mtdrum` drum patches, one per sample, named after it:
+
+```bash
+pip install -e ".[ml,dev]"    # PyTorch for the starting-patch model, soundfile to read samples
+python tools/fit_samples.py path/to/samples path/to/patches --wav
+```
+
+For each sample it builds starting patches from the partials it finds and from
+the predictions of `fit_prior.pt`, then refines them with CMA-ES against the
+sample's spectrogram, its pitch below 2 kHz and its envelope. Level is set so
+every patch peaks at -10 dBFS (`--peak-db`); hi-hats get choke. `--wav` also writes
+`<name>.fit.wav`, the sample on the left and the patch on the right, to compare
+them by ear; `fit_report.csv` lists the scores (lower is closer). A sample takes
+from one minute (a short rim shot) to half an hour (a long crash) per CPU core;
+`--jobs` sets how many are fitted in parallel, `--evals` and `--screen-evals`
+trade time for accuracy. One oscillator and one filtered noise match kicks, toms,
+snares and other pitched drums closely, cymbals and metallic sounds less so.
+
+`tools/fit_prior.py <patches dir>` retrains the starting-patch model on your own
+`.mtdrum` patches (one to two hours on 8 CPU cores for the default 60,000).
 
 ## ⚙️ Technical Specifications
 
