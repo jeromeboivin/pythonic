@@ -19,8 +19,9 @@ Addresses:
 - ``factory.presets`` (read-only list): the file names of the factory presets
   shipped with Pythonic, in machine order (``808 Beats.json``, ...).
 - ``factory.patches`` (read-only list): the names of the factory drum patches,
-  the channel sounds of the six factory kits, in machine order (``505 BD``,
-  ..., ``LM2 OH``); each name starts with its machine.
+  the channel sounds of the seven factory kits, in machine order (``505 BD``,
+  ..., ``TR-8 Closed Hat 01``), then the other drum patches fitted to TR-8
+  samples (``TR-8 Clap 02``, ...); each name starts with its machine.
 
 Verbs (results and errors arrive through ``poll`` as action events):
 

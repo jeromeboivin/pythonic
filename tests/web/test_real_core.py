@@ -338,7 +338,9 @@ def test_inst_mode_loads_a_factory_sound_into_the_selected_channel(open_panel, r
     page.wait_js("document.querySelector('.kits .kit.cur') &&"
                  " document.querySelector('.kits .kit.cur').dataset.patch === '808 SD'", pump=pump)
     offered = page.js("[...document.querySelectorAll('.kits .kit.on')].map((k) => k.dataset.patch)")
-    assert offered == ['505 SD', '707 SD 1', '707 SD 2', '808 SD', '909 SD', 'DMX SD', 'LM2 SD']
+    assert offered == ['505 SD', '707 SD 1', '707 SD 2', '808 SD', '909 SD', 'DMX SD', 'LM2 SD',
+                       'TR-8 Snare 01', 'TR-8 Snare 02', 'TR-8 Snare 03', 'TR-8 Snare 04',
+                       'TR-8 Snare 05', 'TR-8 Snare 06']
 
     page.click('.kits .kit[data-patch="909 SD"]')
     page.wait_js("document.querySelector('.kits .kit.cur').dataset.patch === '909 SD'", pump=pump)

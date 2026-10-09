@@ -81,8 +81,8 @@ action thread (modules finishing deferred actions).
 | `preset.files` | read-only list | `.mtpreset` / `.json` file names in `pref.preset_folder`, sorted |
 | `preset.clipboard` | read-only bool | the preset clipboard is full |
 | `preset.factory` | read-only bool | the current preset is a factory preset (read-only file) |
-| `factory.presets` | read-only list | the factory presets' file names, in machine order (`505 Beats.json` .. `LM2 Beats.json`) |
-| `factory.patches` | read-only list | the factory drum patches: the 48 channel sounds of the six factory kits, in machine order (`505 BD` .. `LM2 OH`); each name starts with its machine |
+| `factory.presets` | read-only list | the factory presets' file names, in machine order (`505 Beats.json` .. `TR-8 Beats.json`) |
+| `factory.patches` | read-only list | the factory drum patches: the 56 channel sounds of the seven factory kits, in machine order (`505 BD` .. `TR-8 Closed Hat 01`), then the 33 other drum patches fitted to TR-8 samples, by name; each name starts with its machine |
 | `midi.device`, `midi.connected`, `midi.synced_tempo`, `midi.learning` | read-only | MIDI input state; `describe('midi.device')['labels']` lists the ports of the last scan |
 | `midi.base_note` (0..120), `midi.clock_sync`, `midi.cc_map` ({CC: target}), `midi.pitchbend_target` | settings | saved at once; a target is an address or `selected.<sound suffix>` (the selected channel) |
 | `audio.running|device|device_is_default|sample_rate|synth_rate|block_size|buffer_ms|mono` | read-only | the running stream |
@@ -137,7 +137,7 @@ pattern), `channel` 1..8.
 | `pattern.chain_prev`, `pattern.chain_next`, `pattern.chain_clear` | pattern | chains |
 | `undo`, `redo` | | `{'done', 'label'}` |
 | `program.select` | program 1..16 | `{'program', 'recalled'}` |
-| `program.restore_factory` | | `{'programs': [1..6]}`: the factory kits back into programs 1-6 (the current one plays at once when among them); one undo step |
+| `program.restore_factory` | | `{'programs': [1..7]}`: the factory kits back into programs 1-7 (the current one plays at once when among them); one undo step |
 | `morph.learn` | endpoint `'a'`, `'b'` or None (stop) | `{'learning'}` |
 | `morph.capture` | endpoint | |
 | `preset.load` | path, or factory (a `factory.presets` name, with or without `.json`) | `{'path', 'name', 'format'}` (`mtpreset` or `json`) |

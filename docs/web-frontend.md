@@ -418,7 +418,7 @@ ends); while a factory preset is loaded (`preset.factory`) they walk
   the replace question), reload last preset (`preset.load_last`), copy /
   cut / paste preset (paste off while `preset.clipboard` is false),
   initialize preset, randomize all, restore factory kits… (asks on the alert
-  sheet, saying so when the current program is among 1-6, then
+  sheet, saying so when the current program is among 1-7, then
   `program.restore_factory`); the selected channel's drum patch
   entries (`panel.rack.patchItems()`, the rack header's menu, so they work
   with the rack closed), export every drum as WAV… (folder dialog,

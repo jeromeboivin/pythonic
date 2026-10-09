@@ -13,8 +13,8 @@ of the eight channel sounds inside the preset.
   program, then recall the new one; an empty program gets a copy of the
   current sounds. Applied at block start; one undo step. Patterns are not
   part of a program.
-- ``program.restore_factory``: put the factory kits back into programs 1-6
-  (505, 707, 808, 909, DMX, LM2); when the current program is one of them its
+- ``program.restore_factory``: put the factory kits back into programs 1-7
+  (505, 707, 808, 909, DMX, LM2, TR-8); when the current program is one of them its
   kit plays at once. Other programs and the patterns stay. One undo step.
 """
 

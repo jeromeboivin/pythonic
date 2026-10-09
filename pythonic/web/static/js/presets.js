@@ -6,7 +6,7 @@
 // as (native dialogs, a save asks before replacing a file; a factory preset
 // is only saved as another file), reload the last preset, the preset
 // clipboard, initialize, randomize all, restore the factory kits into
-// programs 1-6 (asks first), the selected channel's drum patch
+// programs 1-7 (asks first), the selected channel's drum patch
 // (the edit rack's menu, also here so it works with the rack closed), every
 // drum as WAV files, the preset folder, and the pages (PO-32, AI drum
 // generator, setup) through panel.openPage.
@@ -111,14 +111,14 @@ export function mountPresets({ store, client, ctx, display, act, stage, slot, fi
 
   async function restoreKits() {
     const current = Number(value('program.current')) || 1;
-    const playing = current <= 6
+    const playing = current <= 7
       ? ` Program ${current} is one of them: the sounds playing change too (undo brings them back).` : '';
     const sure = await ask('Restore the factory kits?',
-      `Programs 1-6 get the 505, 707, 808, 909, DMX and LM2 kits back; the other programs and the patterns stay.${playing}`,
+      `Programs 1-7 get the 505, 707, 808, 909, DMX, LM2 and TR-8 kits back; the other programs and the patterns stay.${playing}`,
       { yes: 'restore', no: 'cancel' });
     if (!sure) return;
     const event = await act('program.restore_factory');
-    if (event.status === 'done') display.show('PROGRAMS 1-6', 'factory kits');
+    if (event.status === 'done') display.show('PROGRAMS 1-7', 'factory kits');
   }
 
   async function chooseFolder() {

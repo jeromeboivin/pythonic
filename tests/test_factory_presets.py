@@ -1,17 +1,30 @@
 """
 The factory presets (pythonic/factory/presets): each loads through the core
-with its machine's drum patches as they are in tests/<machine>.mtpreset,
-twelve patterns of its own, and all six machines in programs 1-6 in the same
+with its machine's drum patches as they are in tests/<machine>.mtpreset (the
+TR-8's: eight of the fitted drum patches of pythonic/factory/drum_patches.json),
+twelve patterns of its own, and all seven machines in programs 1-7 in the same
 order, opening on its own.
 """
 
+import copy
+import json
+
 import pytest
 
-from pythonic.factory import MACHINES, PRESETS_DIR
+from pythonic.factory import MACHINES, PATCHES_FILE, PRESETS_DIR
 from pythonic.pattern_manager import PatternManager
 from tests.test_preset_io_core import TESTS, make_core, run, sounds  # noqa: F401 (fixture)
 
 FACTORY_PRESETS = [PRESETS_DIR / f'{machine} Beats.json' for machine in MACHINES]
+# The TR-8 kit, in the 909's channel layout
+TR8_KIT = ['TR-8 Kick 01', 'TR-8 Tom 01', 'TR-8 Tom 02', 'TR-8 Clap 01', 'TR-8 Snare 01',
+           'TR-8 Tom 05', 'TR-8 Rim 01', 'TR-8 Closed Hat 01']
+
+
+def fitted_patches():
+    """The drum patches of drum_patches.json, by name."""
+    with open(PATCHES_FILE, encoding='utf-8') as f:
+        return {sound['name']: sound for sound in json.load(f)['patches']}
 
 
 @pytest.fixture
@@ -20,7 +33,12 @@ def machine_sounds(make_core):
     core = make_core()
     result = {}
     for machine in MACHINES:
-        run(core, 'preset.load', path=str(TESTS / f'{machine}.mtpreset'))
+        if machine == 'TR-8':
+            fitted = fitted_patches()
+            for channel, name in zip(core.synth.channels, TR8_KIT):
+                channel.set_parameters({**copy.deepcopy(core.init_sound), **copy.deepcopy(fitted[name])})
+        else:
+            run(core, 'preset.load', path=str(TESTS / f'{machine}.mtpreset'))
         result[machine] = sounds(core)
     return result
 
@@ -46,11 +64,11 @@ def test_a_factory_preset_plays_its_machine(make_core, machine_sounds, machine):
 
 
 @pytest.mark.parametrize('machine', MACHINES)
-def test_programs_1_to_6_are_the_six_machines(make_core, machine_sounds, machine):
+def test_programs_1_to_7_are_the_seven_machines(make_core, machine_sounds, machine):
     core = make_core()
     run(core, 'preset.load', path=str(PRESETS_DIR / f'{machine} Beats.json'))
 
-    assert core.get('program.occupied') == [True] * 6 + [False] * 10
+    assert core.get('program.occupied') == [True] * 7 + [False] * 9
     for program, kit in enumerate(MACHINES, start=1):
         run(core, 'program.select', program=program)
         assert sounds(core) == machine_sounds[kit], (program, kit)
@@ -88,7 +106,7 @@ def test_a_factory_preset_loads_by_name(make_core, machine_sounds, name):
 
 def test_a_load_needs_a_path_or_a_known_factory_preset(make_core):
     core = make_core()
-    assert 'not a factory preset' in act(core, 'preset.load', factory='TR-8 Beats')['error']
+    assert 'not a factory preset' in act(core, 'preset.load', factory='606 Beats')['error']
     assert act(core, 'preset.load')['status'] == 'error'
     both = act(core, 'preset.load', path=str(TESTS / '808.mtpreset'), factory='808 Beats')
     assert both['status'] == 'error'
@@ -111,7 +129,7 @@ def test_program_names_are_the_kits_and_follow_the_channel_names(make_core, tmp_
     core = make_core()
     assert core.get('program.names') == [''] * 16
     run(core, 'preset.load', factory='DMX Beats')
-    assert core.get('program.names') == list(MACHINES) + [''] * 10
+    assert core.get('program.names') == list(MACHINES) + [''] * 9
 
     # a drum patch from another machine: the current program's channels have nothing in common
     run(core, 'preset.load', path=str(TESTS / '808.mtpreset'))
@@ -124,16 +142,16 @@ def test_program_names_are_the_kits_and_follow_the_channel_names(make_core, tmp_
     assert core.poll(version)['changes']['program.names'][4] == ''
 
 
-def test_restoring_the_factory_kits_refills_programs_1_to_6(make_core, machine_sounds):
+def test_restoring_the_factory_kits_refills_programs_1_to_7(make_core, machine_sounds):
     core = make_core()
     run(core, 'preset.load', path=str(TESTS / 'LM2.mtpreset'))  # an empty bank
     run(core, 'program.select', program=10)  # a program of the user's own
     lm2 = sounds(core)
 
-    assert run(core, 'program.restore_factory') == {'programs': [1, 2, 3, 4, 5, 6]}
+    assert run(core, 'program.restore_factory') == {'programs': [1, 2, 3, 4, 5, 6, 7]}
 
     assert sounds(core) == lm2  # program 10 plays on
-    assert core.get('program.occupied')[:6] == [True] * 6
+    assert core.get('program.occupied')[:7] == [True] * 7
     run(core, 'program.select', program=4)
     assert sounds(core) == machine_sounds['909']
 
@@ -151,12 +169,22 @@ def test_restoring_brings_back_the_current_kit_in_one_undo_step(make_core, machi
     assert sounds(core) == edited
 
 
-def test_the_factory_drum_patches_are_every_kit_sound(make_core, machine_sounds):
+def test_the_factory_drum_patches_are_every_kit_sound_then_the_fitted_ones(make_core, machine_sounds):
     core = make_core()
     names = core.get('factory.patches')
-    assert names == [sound['name'] for m in MACHINES for sound in machine_sounds[m]]
-    assert len(names) == 48 and names[0] == '505 BD' and names[-1] == 'LM2 OH'
+    kit_names = [sound['name'] for m in MACHINES for sound in machine_sounds[m]]
+    others = sorted(set(fitted_patches()) - set(TR8_KIT))
+    assert names == kit_names + others
+    assert len(names) == 56 + 33 and names[0] == '505 BD' and names[55] == 'TR-8 Closed Hat 01'
     assert all(name.split()[0] in MACHINES for name in names)
+
+
+def test_a_fitted_drum_patch_outside_the_kit_loads_by_name(make_core):
+    core = make_core()
+    fitted = fitted_patches()['TR-8 Cowbell']
+
+    assert run(core, 'drum_patch.load', factory='TR-8 Cowbell', channel=6)['name'] == 'TR-8 Cowbell'
+    assert sounds(core)[5] == {**core.init_sound, **fitted}
 
 
 def test_a_factory_drum_patch_loads_into_a_channel_in_one_undo_step(make_core, machine_sounds):

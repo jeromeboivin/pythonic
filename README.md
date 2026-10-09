@@ -266,6 +266,12 @@ MIDI/Key Input
 
 ## 🎯 Factory Presets
 
+The PRESET menu lists seven read-only factory presets, one per drum machine:
+505, 707, 808, 909, DMX, LM2 and TR-8 Beats. Each has its machine's kit and
+twelve patterns, and all seven kits in programs 1-7. The TR-8 kit is made of
+drum patches fitted to TR-8 samples with `tools/fit_samples.py` (see below);
+all 41 of them are factory drum patches, offered by the panel's inst mode.
+
 Pythonic includes 8 built-in drum sounds:
 
 1. **Kick** - Deep bass drum with exponential pitch sweep
