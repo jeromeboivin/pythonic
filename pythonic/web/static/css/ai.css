@@ -30,12 +30,14 @@
 .ai-model .btn.sq { padding: 3px 7px; font-size: 11px; }
 .ai-models { display: flex; flex-direction: column; gap: 5px; }
 .ai-settings { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
-.ai-pickers { display: flex; flex-direction: column; gap: 6px; }
+.ai-pickers { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .ai-left .fl { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
-.ai-left .fl .k { min-width: 50px; }
+/* A wider fallback font (no bundled fonts) shortens the label and the seed, not the buttons */
+.ai-left .fl .k { min-width: 50px; flex-shrink: 1; overflow: hidden; text-overflow: ellipsis; }
+.ai-left .fl > :not(.k, .ai-seed) { flex-shrink: 0; }
 .ai-cands { min-width: 22px; text-align: center; font-weight: 700; font-size: 14px; cursor: ns-resize; }
 .ai-seed {
-  width: 62px; font: 700 12px var(--font-label); background: #0b0b0c; color: var(--label);
+  width: 62px; min-width: 40px; font: 700 12px var(--font-label); background: #0b0b0c; color: var(--label);
   border: 1px solid #2f3034; border-radius: 3px; padding: 3px 6px; outline: none; user-select: text;
 }
 .ai-seed:focus { border-color: var(--accent); }
