@@ -55,7 +55,7 @@ and start it.
 | Linux (64-bit) | `Pythonic-…-linux-x86_64.tar.gz` | extract, run `Pythonic/Pythonic` |
 
 Each comes in two editions: **Pythonic**, and **Pythonic + AI** (the `-ai`
-files, about 1 GB), which adds the AI drum generator. The apps are not
+files, 600 to 750 MB instead of 250 to 300 MB), which adds the AI drum generator. The apps are not
 signed yet, so the first start asks once: on Windows click **More info ▸ Run
 anyway**; on macOS open **System Settings ▸ Privacy & Security** and click
 **Open Anyway**.

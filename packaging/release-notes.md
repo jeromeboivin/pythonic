@@ -9,8 +9,8 @@ everything Pythonic needs are inside.
 | macOS 14+ (Apple Silicon) | `…-macos-arm64.dmg` | `…-macos-arm64-ai.dmg` |
 | Linux (64-bit) | `…-linux-x86_64.tar.gz` | `…-linux-x86_64-ai.tar.gz` |
 
-**Pythonic + AI** adds the AI drum generator (a larger download, about
-1 GB). Without it everything else works the same.
+**Pythonic + AI** adds the AI drum generator (a larger download: 600 to
+750 MB instead of 250 to 300 MB). Without it everything else works the same.
 
 ### Windows
 Unzip, open the `Pythonic` folder and double-click **Pythonic.exe**. The
