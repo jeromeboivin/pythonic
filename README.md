@@ -56,49 +56,47 @@ Perfect for producers, sound designers, and developers interested in audio synth
 cd pythonic
 ```
 
-2. **Create a virtual environment (recommended)**
+2. **Start it**
+
+On Linux and macOS, one command sets everything up on the first launch and
+starts the app:
+
+```bash
+./run.sh
+```
+
+The first launch takes a few minutes (about 1 GB to download, 2 GB on disk):
+it creates a virtual environment in `venv/`, installs the app with both
+interfaces and the AI drum generator (the CPU build of PyTorch on Linux),
+downloads the panel's fonts and, with Git LFS installed, the generator's
+models. Later launches start straight away; after an update that changes the
+dependencies, the next launch installs them first.
+
+> **Note**: The drum voice engine is compiled with `numba`. The first launch takes a few extra seconds while it compiles; the result is cached for later runs.
+
+**Setting it up by hand** (Windows, or to choose what to install):
 
 ```bash
 python -m venv venv
-
-# On Windows:
-venv\Scripts\activate
-
-# On macOS/Linux:
-source venv/bin/activate
-```
-
-3. **Install the app**
-
-```bash
+venv\Scripts\activate       # Windows; on macOS/Linux: source venv/bin/activate
 pip install -e .            # the app and both interfaces
-pip install -e ".[dev]"     # plus the test tools (pytest, pytest-qt, soundfile)
 pip install -e ".[ml]"      # plus PyTorch for the AI drum generator
+pip install -e ".[dev]"     # plus the test tools (pytest, pytest-qt, soundfile)
+python tools/fetch_fonts.py # the panel's fonts (optional)
 ```
 
 The base install brings PySide6 with QtWebEngine for the web interface
 (about 650 MB), except on Windows ARM64, where no QtWebEngine exists and the
 tkinter interface is used.
 
-> **Note**: If you encounter issues with `mido` or `python-rtmidi`, they're only required for MIDI functionality. The synth works without them.
-
-> **Note**: The drum voice engine is compiled with `numba`. The first launch takes a few extra seconds while it compiles; the result is cached for later runs.
-
-4. **Optional: the panel's fonts**
-
 The web panel is designed for three SIL OFL fonts (Barlow Condensed for
 labels, Doto for the green display, DSEG7 for the tempo). They are not in the
-repository; without them the panel uses system fonts (DejaVu Sans Condensed
-and DejaVu Sans Mono, or the platform's equivalents), which work but look
-less like the hardware. To fetch them once:
-
-```bash
-python tools/fetch_fonts.py
-```
-
-It downloads the four `.woff2` files and their licences into
+repository; `tools/fetch_fonts.py` downloads them into
 `pythonic/web/static/fonts/` (sources and licences are listed in
-`pythonic/web/static/fonts/SOURCES.txt`); restart the app to use them.
+`SOURCES.txt` there). Without them the panel uses system fonts (DejaVu Sans
+Condensed and DejaVu Sans Mono, or the platform's equivalents).
+
+> **Note**: If you encounter issues with `mido` or `python-rtmidi`, they're only required for MIDI functionality. The synth works without them.
 
 ### Run the Application
 
@@ -112,9 +110,10 @@ pythonic --help
 
 `python run.py`, `python -m pythonic` and `./run.sh` take the same arguments.
 One interface runs per launch; no interface preference is stored, only the
-flag picks it. If the web interface is asked for but PySide6 with
-QtWebEngine is missing, the tkinter interface starts and offers to install it
-(on Windows ARM64 it only explains why).
+flag picks it. If the web interface cannot load (a broken install, or
+Windows ARM64 where no QtWebEngine exists), the tkinter interface starts
+instead and the terminal says why; `./run.sh` or `pip install -e .` repairs
+the install.
 
 On first launch, Pythonic automatically creates:
 - Configuration directory for preferences
@@ -310,9 +309,9 @@ Pythonic includes an optional AI-powered drum generator that uses a Conditional 
 
 ### Optional ML Installation
 
-The generator requires PyTorch, which is **not** included in the base install to keep the app lightweight. It runs in a separate worker process, so the interface never imports PyTorch.
+The generator requires PyTorch. `./run.sh` installs it; a hand-made install (`pip install -e .`) leaves it out to stay lighter. It runs in a separate worker process, so the interface never imports PyTorch.
 
-Pre-trained checkpoint files in this repository are stored with Git LFS. If you cloned without LFS enabled, install it and fetch the model payloads before using AI features:
+Pre-trained checkpoint files in this repository are stored with Git LFS. `./run.sh` fetches them when Git LFS is installed; otherwise install it and fetch the model payloads before using AI features:
 
 ```bash
 git lfs install
@@ -425,7 +424,7 @@ The test suite includes:
 
 ### The web interface does not start
 
-- Check that PySide6 with QtWebEngine imports: `python -c "import PySide6.QtWebEngineWidgets"`; `pythonic --ui tk` always works.
+- Check that PySide6 with QtWebEngine imports: `python -c "import PySide6.QtWebEngineWidgets"`; if not, `./run.sh` or `pip install -e .` installs it (from PySide6 6.12 it is the separate `PySide6_WebEngine` wheel). `pythonic --ui tk` always works.
 - Linux: on a locked-down distribution, in a container or as root, Chromium's sandbox may refuse to start; `QTWEBENGINE_DISABLE_SANDBOX=1 pythonic` is the fallback.
 - `pythonic --devtools` opens the Chromium DevTools on `http://127.0.0.1:9222` to inspect the page.
 - Windows: the panel renders without the GPU, because QtWebEngine 6.11's GPU path crashes the app after a minute or two of playing. SETUP ▸ display ▸ use the GPU turns it back on at the next start (to try a newer PySide6, say); turn it off there if the panel crashes on another system.

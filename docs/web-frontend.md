@@ -15,8 +15,8 @@ pythonic --devtools [PORT]         # Chromium DevTools on http://127.0.0.1:9222 
 pythonic --quit-after 5            # close after 5 s; prints the frame timings; non-zero exit if the page did not boot
 ```
 
-Without QtWebEngine, `--ui web` starts tkinter with a dialog that explains
-why and offers to install PySide6 (on Windows ARM64 it only explains).
+Without QtWebEngine, `--ui web` starts tkinter and prints why in the
+terminal; `./run.sh` or `pip install -e .` repairs the install.
 `pythonic/web/static/index.html` also opens in a plain browser served over
 HTTP (`python -m http.server -d pythonic/web/static`): a fake bridge then
 stands in for the core (tempo and START/STOP work).

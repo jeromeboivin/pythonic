@@ -6,8 +6,8 @@ The ``pythonic`` command: starts one interface per launch.
 ``--ui web`` (the default) opens the HTML panel in a QtWebEngine window;
 ``--ui tk`` the tkinter window. No interface preference is stored: only the
 flag picks the GUI. When the web interface is asked for but PySide6 with
-QtWebEngine is missing, tkinter starts and explains why, offering to install
-it (except on Windows ARM64, where no QtWebEngine exists).
+QtWebEngine cannot load (a broken install, or Windows ARM64 where no
+QtWebEngine exists), tkinter starts instead and the terminal says why.
 """
 
 import argparse
@@ -47,13 +47,10 @@ def web_unavailable_reason():
     return None
 
 
-def run_tk(args, qt_missing=None):
+def run_tk(args):
     from gui.main_window import PythonicGUI
 
     gui = PythonicGUI()
-    if qt_missing is not None:
-        from gui.qt_missing_dialog import show_qt_missing
-        gui.root.after(300, lambda: show_qt_missing(gui.root, qt_missing))
     if args.quit_after is not None:
         gui.root.after(int(args.quit_after * 1000), gui.root.destroy)
     gui.run()
@@ -72,9 +69,10 @@ def main(argv=None):
         if reason is None:
             configure_environment(args)
             return run_web(args)
-        print(f'The web interface needs PySide6 with QtWebEngine ({reason}); '
-              f'starting the tkinter interface.', file=sys.stderr)
-        return run_tk(args, qt_missing=reason)
+        print(f'The web interface could not start ({reason}); starting the '
+              f'classic interface. ./run.sh or pip install -e . repairs the install.',
+              file=sys.stderr)
+        return run_tk(args)
     return run_tk(args)
 
 

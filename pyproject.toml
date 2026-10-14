@@ -17,10 +17,11 @@ dependencies = [
     "python-rtmidi>=1.4.9",
     "platformdirs>=3.0.0",
     "cma>=3.3.0",
-    # The web interface (QtWebEngine). No QtWebEngine wheels exist for
+    # The web interface (QtWebEngine). From PySide6 6.12 QtWebEngine is its own
+    # wheel, pulled in by the webengine extra. No QtWebEngine wheels exist for
     # Windows ARM64: those machines run the tkinter interface.
     "PySide6-Essentials>=6.8; sys_platform != 'win32' or platform_machine != 'ARM64'",
-    "PySide6-Addons>=6.8; sys_platform != 'win32' or platform_machine != 'ARM64'",
+    "PySide6-Addons[webengine]>=6.8; sys_platform != 'win32' or platform_machine != 'ARM64'",
 ]
 
 [project.optional-dependencies]

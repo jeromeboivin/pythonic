@@ -3,14 +3,22 @@
 ## Install and start
 
 ```bash
-python -m venv venv && source venv/bin/activate   # Windows: venv\Scripts\activate
-pip install -e .                                  # add ".[ml]" for the AI drum generator
-pythonic                                          # the web interface; pythonic --ui tk for tkinter
+./run.sh                # Linux and macOS: the first launch sets everything up, then starts the app
+./run.sh --ui tk        # the tkinter interface
 ```
 
-Optional, for the panel's intended look: `python tools/fetch_fonts.py`
-downloads its three OFL fonts into `pythonic/web/static/fonts/` (see
-`SOURCES.txt` there); without them it uses system fonts.
+The first launch takes a few minutes: it creates `venv/`, installs the app,
+both interfaces and the AI drum generator, and downloads the panel's fonts.
+Later launches start straight away.
+
+By hand (Windows, or to pick what to install):
+
+```bash
+python -m venv venv && source venv/bin/activate   # Windows: venv\Scripts\activate
+pip install -e .                                  # add ".[ml]" for the AI drum generator
+python tools/fetch_fonts.py                       # optional: the panel's fonts
+pythonic                                          # the web interface; pythonic --ui tk for tkinter
+```
 
 ## First time
 
