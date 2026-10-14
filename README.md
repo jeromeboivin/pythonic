@@ -51,7 +51,7 @@ and start it.
 | System | Download | Start |
 |---|---|---|
 | Windows 10/11 (64-bit) | `Pythonic-…-windows-x64.zip` | unzip, double-click `Pythonic.exe` |
-| macOS 12+ (Apple Silicon) | `Pythonic-…-macos-arm64.dmg` | drag Pythonic to Applications |
+| macOS 14+ (Apple Silicon) | `Pythonic-…-macos-arm64.dmg` | drag Pythonic to Applications |
 | Linux (64-bit) | `Pythonic-…-linux-x86_64.tar.gz` | extract, run `Pythonic/Pythonic` |
 
 Each comes in two editions: **Pythonic**, and **Pythonic + AI** (the `-ai`
@@ -109,8 +109,8 @@ python tools/fetch_fonts.py # the panel's fonts (optional)
 ```
 
 The base install brings PySide6 with QtWebEngine for the web interface
-(about 650 MB), except on Windows ARM64, where no QtWebEngine exists and the
-tkinter interface is used.
+(about 650 MB), except on Windows ARM64 and macOS before 14, where no
+QtWebEngine exists and the tkinter interface is used.
 
 The web panel is designed for three SIL OFL fonts (Barlow Condensed for
 labels, Doto for the green display, DSEG7 for the tempo). They are not in the

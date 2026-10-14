@@ -7,7 +7,8 @@ The ``pythonic`` command: starts one interface per launch.
 ``--ui tk`` the tkinter window. No interface preference is stored: only the
 flag picks the GUI. When the web interface is asked for but PySide6 with
 QtWebEngine cannot load (a broken install, or Windows ARM64 where no
-QtWebEngine exists), tkinter starts instead and the terminal says why.
+QtWebEngine exists), tkinter starts instead and the terminal says why; a
+start-up check (``--quit-after``) exits with 1 instead.
 """
 
 import argparse
@@ -69,6 +70,9 @@ def main(argv=None):
         if reason is None:
             configure_environment(args)
             return run_web(args)
+        if args.quit_after is not None:  # a start-up check of the web interface fails
+            print(f'The web interface could not start ({reason}).', file=sys.stderr)
+            return 1
         print(f'The web interface could not start ({reason}); starting the '
               f'classic interface. ./run.sh or pip install -e . repairs the install.',
               file=sys.stderr)

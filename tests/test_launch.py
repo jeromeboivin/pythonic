@@ -48,6 +48,14 @@ def test_missing_qt_starts_tkinter(monkeypatch):
     assert started == ['tk', 'tk']
 
 
+def test_a_start_up_check_fails_without_qt_instead_of_starting_tkinter(monkeypatch):
+    started = []
+    monkeypatch.setattr(launch, 'web_unavailable_reason', lambda: 'No module named PySide6')
+    monkeypatch.setattr(launch, 'run_tk', lambda args: started.append('tk') or 0)
+    assert launch.main(['--quit-after', '5']) == 1
+    assert started == []
+
+
 def test_the_ml_install_command_names_the_extras_packages():
     assert pip_command('ml')[1:4] == ['-m', 'pip', 'install']
     assert pip_command('ml')[4:] == EXTRAS['ml']
@@ -67,9 +75,9 @@ def test_the_dependencies_bring_qtwebengine_and_mirror_the_installer():
 
     project = tomllib.loads((ROOT / 'pyproject.toml').read_text())['project']
     assert project['optional-dependencies']['ml'] == EXTRAS['ml']
-    # From PySide6 6.12 QtWebEngine is its own wheel, only pulled in by the
-    # Addons webengine extra: without it the web interface cannot load
+    # From PySide6 6.12 QtWebEngine is its own wheel, which only the Linux
+    # Addons wheel pulls in: without it the web interface cannot load
     qt = [d.split(';')[0].strip() for d in project['dependencies'] if d.startswith('PySide6')]
-    assert 'PySide6-Addons[webengine]>=6.8' in qt
+    assert 'PySide6-WebEngine>=6.12' in qt
     assert project['scripts']['pythonic'] == 'pythonic.launch:main'
     assert re.match(r'>=\s*3\.10', project['requires-python'])

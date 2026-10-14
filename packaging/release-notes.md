@@ -6,7 +6,7 @@ everything Pythonic needs are inside.
 | System | Pythonic | Pythonic + AI |
 |---|---|---|
 | Windows 10/11 (64-bit) | `…-windows-x64.zip` | `…-windows-x64-ai.zip` |
-| macOS 12+ (Apple Silicon) | `…-macos-arm64.dmg` | `…-macos-arm64-ai.dmg` |
+| macOS 14+ (Apple Silicon) | `…-macos-arm64.dmg` | `…-macos-arm64-ai.dmg` |
 | Linux (64-bit) | `…-linux-x86_64.tar.gz` | `…-linux-x86_64-ai.tar.gz` |
 
 **Pythonic + AI** adds the AI drum generator (a larger download, about
