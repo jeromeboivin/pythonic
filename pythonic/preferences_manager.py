@@ -6,6 +6,9 @@ Cross-platform support using platformdirs
 
 import json
 import os
+import tempfile
+import threading
+import time
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -65,6 +68,8 @@ class PreferencesManager:
     
     def __init__(self):
         """Initialize the preferences manager"""
+        # Threads of the app core save too: one save at a time
+        self._lock = threading.RLock()
         self.prefs_dir = self._get_config_dir()
         self.prefs_file = os.path.join(self.prefs_dir, self.PREFS_FILENAME)
         self.preferences = self._load_preferences()
@@ -149,24 +154,55 @@ class PreferencesManager:
             return self.DEFAULT_PREFERENCES.copy()
     
     def _save_preferences(self) -> bool:
-        """Save preferences to file"""
+        """Save preferences to file.
+
+        The file is written beside the old one and moved over it, so a reader
+        (another thread, another process) sees the old file or the new one,
+        never a half-written one.
+        """
         try:
-            os.makedirs(os.path.dirname(self.prefs_file), exist_ok=True)
-            with open(self.prefs_file, 'w', encoding='utf-8') as f:
-                json.dump(self.preferences, f, indent=2)
+            with self._lock:
+                text = json.dumps(self.preferences, indent=2)
+                os.makedirs(os.path.dirname(self.prefs_file), exist_ok=True)
+                fd, temp = tempfile.mkstemp(prefix='.preferences-', suffix='.tmp',
+                                            dir=os.path.dirname(self.prefs_file))
+                try:
+                    with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                        f.write(text)
+                    self._replace(temp, self.prefs_file)
+                except BaseException:
+                    try:
+                        os.remove(temp)
+                    except OSError:
+                        pass
+                    raise
             return True
         except Exception as e:
             print(f"Error saving preferences: {e}")
             return False
-    
+
+    @staticmethod
+    def _replace(source, target, attempts=50):
+        """os.replace, retried while Windows refuses to replace a file that
+        another handle has open (a reader holds it for a moment)."""
+        for attempt in range(attempts):
+            try:
+                os.replace(source, target)
+                return
+            except PermissionError:
+                if attempt == attempts - 1:
+                    raise
+                time.sleep(0.02)
+
     def get(self, key: str, default: Any = None) -> Any:
         """Get a preference value"""
         return self.preferences.get(key, default)
     
     def set(self, key: str, value: Any) -> bool:
         """Set a preference value and save"""
-        self.preferences[key] = value
-        return self._save_preferences()
+        with self._lock:
+            self.preferences[key] = value
+            return self._save_preferences()
     
     def get_preset_folder(self) -> str:
         """Get the current preset folder path"""
@@ -176,7 +212,8 @@ class PreferencesManager:
         else:
             # Reset to default if path doesn't exist
             default_folder = self._get_default_preset_folder()
-            self.set('preset_folder', default_folder)
+            if folder != default_folder:
+                self.set('preset_folder', default_folder)
             return default_folder
     
     def set_preset_folder(self, folder_path: str) -> bool:
@@ -187,24 +224,25 @@ class PreferencesManager:
     
     def add_recent_file(self, filepath: str) -> bool:
         """Add a file to the recent files list"""
-        recent = self.preferences.get('recent_files', [])
+        with self._lock:
+            recent = self.preferences.get('recent_files', [])
         
-        # Remove if already exists
-        if filepath in recent:
-            recent.remove(filepath)
+            # Remove if already exists
+            if filepath in recent:
+                recent.remove(filepath)
         
-        # Add to front
-        recent.insert(0, filepath)
+            # Add to front
+            recent.insert(0, filepath)
         
-        # Trim to max length
-        max_files = self.preferences.get('max_recent_files', 10)
-        recent = recent[:max_files]
+            # Trim to max length
+            max_files = self.preferences.get('max_recent_files', 10)
+            recent = recent[:max_files]
         
-        # Filter out files that no longer exist
-        recent = [f for f in recent if os.path.exists(f)]
+            # Filter out files that no longer exist
+            recent = [f for f in recent if os.path.exists(f)]
         
-        self.preferences['recent_files'] = recent
-        return self._save_preferences()
+            self.preferences['recent_files'] = recent
+            return self._save_preferences()
     
     def get_recent_files(self) -> list:
         """Get the list of recent files"""
@@ -216,14 +254,16 @@ class PreferencesManager:
     
     def clear_recent_files(self) -> bool:
         """Clear the recent files list"""
-        self.preferences['recent_files'] = []
-        return self._save_preferences()
+        with self._lock:
+            self.preferences['recent_files'] = []
+            return self._save_preferences()
     
     def reset_to_defaults(self) -> bool:
         """Reset all preferences to defaults"""
-        self.preferences = self.DEFAULT_PREFERENCES.copy()
-        self.preferences['preset_folder'] = self._get_default_preset_folder()
-        return self._save_preferences()
+        with self._lock:
+            self.preferences = self.DEFAULT_PREFERENCES.copy()
+            self.preferences['preset_folder'] = self._get_default_preset_folder()
+            return self._save_preferences()
     
     def get_all_preferences(self) -> Dict[str, Any]:
         """Get all preferences"""

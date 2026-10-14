@@ -6,6 +6,8 @@ older version is read. Every test uses a temporary preferences folder.
 """
 
 import json
+import pathlib
+import threading
 import time
 
 import pytest
@@ -273,6 +275,32 @@ def test_preferences_round_trip_through_the_file(make_core, prefs):
     assert other.get('pref.audio.sample_rate') == 48000
     assert other.synth.mono is True and other.get('audio.synth_rate') == 48000
     assert other.synth.channels[0].get_smoothing_time() == 40.0
+
+
+def test_a_reader_never_sees_a_half_written_file(prefs):
+    # The core's action thread saves too (a library scan at start-up)
+    stop = threading.Event()
+
+    def save_forever():
+        n = 0
+        while not stop.is_set():
+            n += 1
+            prefs.set('window_width', n)
+            prefs.get_preset_folder()
+
+    writers = [threading.Thread(target=save_forever) for _ in range(2)]
+    for writer in writers:
+        writer.start()
+    try:
+        end = time.monotonic() + 1.0
+        while time.monotonic() < end:
+            assert 'window_width' in saved(prefs)
+    finally:
+        stop.set()
+        for writer in writers:
+            writer.join()
+    assert saved(prefs) == prefs.get_all_preferences()
+    assert [p.name for p in pathlib.Path(prefs.prefs_dir).glob('.preferences-*')] == []
 
 
 def test_a_file_from_an_older_version_is_read(make_core, prefs, tmp_path):
