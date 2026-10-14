@@ -8,6 +8,7 @@ Existing files are kept. Commit the results.
 """
 
 import sys
+import time
 import urllib.request
 from pathlib import Path
 
@@ -26,6 +27,19 @@ FILES = {
 }
 
 
+def download(url, attempts=4):
+    """The file's bytes; the CDN answers 503 now and then, so try again a
+    few times, waiting longer each time."""
+    for attempt in range(attempts):
+        try:
+            with urllib.request.urlopen(url, timeout=30) as response:
+                return response.read()
+        except Exception:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(2 ** attempt * 3)
+
+
 def main():
     failed = 0
     for name, url in FILES.items():
@@ -34,8 +48,7 @@ def main():
             print(f'kept     {name}')
             continue
         try:
-            with urllib.request.urlopen(url, timeout=30) as response:
-                data = response.read()
+            data = download(url)
         except Exception as exc:  # report and go on with the others
             print(f'FAILED   {name}: {exc} ({url})')
             failed += 1
