@@ -6,6 +6,7 @@ pattern's kit from the pattern menu; the PRESET menu's drum patch folder."""
 
 from PySide6.QtCore import Qt
 
+from tests.web.page import same_path
 from tests.web.test_menus_page import (acts, alert_up, answer_alert, click_item, display, items,
                                        wait_act)
 
@@ -138,6 +139,7 @@ def test_a_channel_button_changes_the_channel_inst_chooses_for(panel):
     core = panel.core
     inst_state(panel, channel=1)
     core.post_change('ch4.name', 'Hat')
+    panel.wait_js("pythonic.store.value('ch4.name') === 'Hat'")
     panel.click('#inst-button')
     panel.wait_js("pythonic.panel.display.text()[0] === 'INST 1 BD 2/3'")
     panel.click('.strip[data-channel="4"] .chb')
@@ -222,4 +224,5 @@ def test_the_preset_menu_sets_the_drum_patch_folder(panel, tmp_path):
     assert 'drum patch folder…' in labels and 'restore factory kits…' not in labels
     click_item(panel, 'drum patch folder…', '#preset-menu .it')
     panel.answer_dialog(tmp_path)
-    panel.qtbot.waitUntil(lambda: ('pref.patch_folder', str(tmp_path)) in panel.core.sets())
+    panel.qtbot.waitUntil(lambda: any(name == 'pref.patch_folder' and same_path(value, tmp_path)
+                                      for name, value in panel.core.sets()))
