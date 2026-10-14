@@ -46,9 +46,18 @@ def run(core, verb, **args):
 
 
 def saved(prefs):
-    """The preferences file as another process would read it."""
-    with open(prefs.prefs_file, encoding='utf-8') as f:
-        return json.load(f)
+    """The preferences file as another process would read it.
+
+    Windows refuses to open a file for the moment it is being replaced: a
+    reader there tries again."""
+    for attempt in range(50):
+        try:
+            with open(prefs.prefs_file, encoding='utf-8') as f:
+                return json.load(f)
+        except PermissionError:
+            if attempt == 49:
+                raise
+            time.sleep(0.01)
 
 
 def pull_until(core, stream, predicate):
