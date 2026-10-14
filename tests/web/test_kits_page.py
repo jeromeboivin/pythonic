@@ -188,11 +188,15 @@ def test_write_over_a_user_kit_asks_first(panel):
 
 
 def test_write_offers_the_programs_of_an_old_preset_as_kits(panel):
+    # The core answers with the kits it wrote, like the real one
+    panel.core.verbs['kit.from_programs'] = lambda: {'kits': ['Beats 1', 'Beats 2']}
     panel.core.post_change('program.occupied', [True, True] + [False] * 14)
     panel.wait_js("(pythonic.store.value('program.occupied') || [])[0] === true")
     panel.click('#write-button')
     click_item(panel, 'programs as kits')
     assert wait_act(panel, 'kit.from_programs') == [{}]
+    panel.wait_js("pythonic.panel.display.text()[0] === 'WRITE KITS'")
+    assert display(panel) == ['WRITE KITS', '2 kits from programs']
 
 
 # ---------------------------------------------------------------- patterns and the preset menu
