@@ -2,6 +2,12 @@
 
 ## Install and start
 
+The easiest way: download the app for Windows, macOS or Linux from the
+[latest release](https://github.com/jeromeboivin/pythonic/releases/latest)
+(see the [README](README.md)); nothing else to install.
+
+From the source code:
+
 ```bash
 ./run.sh                # Linux and macOS: the first launch sets everything up, then starts the app
 ./run.sh --ui tk        # the tkinter interface

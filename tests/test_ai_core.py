@@ -98,6 +98,14 @@ def test_without_the_ml_extras_the_ai_is_unavailable_and_says_how_to_install(mak
     assert event['status'] == 'error' and 'pip install' in event['error']
 
 
+def test_without_an_install_command_the_ai_points_to_the_ai_edition(make_core):
+    core = make_core(worker=False, ai_worker=None, ai_install=[])  # the standalone app
+    assert core.get('ai.install_command') == ''
+    for verb, args in (('ai.generate', {'channel': 1}), ('ai.install', {})):
+        event = act(core, verb, **args)
+        assert event['status'] == 'error' and 'Pythonic + AI edition' in event['error']
+
+
 def test_the_default_worker_is_available_when_torch_is_installed(prefs):
     core = AppCore(preferences=prefs, audio_backend=None, stall_timeout=None, midi_backend=None)
     try:

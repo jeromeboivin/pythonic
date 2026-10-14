@@ -478,6 +478,13 @@ class DrumGeneratorDialog:
                                 "PyTorch is already available.",
                                 parent=self.dialog)
             return
+        if not self.core.get('ai.install_command'):  # the standalone app: no pip
+            messagebox.showinfo("No AI Generator",
+                                "This edition of Pythonic has no AI generator.\n"
+                                "Download the Pythonic + AI edition from\n"
+                                "https://github.com/jeromeboivin/pythonic/releases",
+                                parent=self.dialog)
+            return
 
         if not messagebox.askyesno(
             "Install ML Dependencies",

@@ -29,6 +29,7 @@ import {
   freeCc, modelText, noteName, parseCc, pendingFields, rateChoices, ratesNote, rateText, SETUP_TABS, streamText,
   TAB_WIDTHS, tabOf, targetGroups, targetLabel, withoutCc, withRow,
 } from './setup-logic.js';
+import { AI_EDITION_TEXT } from './ai-logic.js';
 
 const STREAM_ADDRESSES = ['audio.running', 'audio.device', 'audio.device_is_default', 'audio.sample_rate',
   'audio.synth_rate', 'audio.block_size', 'audio.buffer_ms', 'audio.mono'];
@@ -527,9 +528,10 @@ export function mountSetup({ panel, store, client, meta = {} }) {
     watchAll(['ai.available', 'ai.install_command'], () => {
       const available = value('ai.available');
       extras.hidden = available !== false;
-      extras.textContent = available === false
-        ? `The ML extras are not installed, so the AI generators are off. Install them from the AI drum generator page (${value('ai.install_command') || 'pip install'}).`
-        : '';
+      const cmd = value('ai.install_command');
+      extras.textContent = available !== false ? ''
+        : cmd === '' ? `This edition of Pythonic has no AI generator. ${AI_EDITION_TEXT}`
+          : `The ML extras are not installed, so the AI generators are off. Install them from the AI drum generator page (${cmd || 'pip install'}).`;
     });
     const model = (kind, title, temperatureLabel) => {
       const address = `pref.ai.${kind}_model`;

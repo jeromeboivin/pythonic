@@ -24,7 +24,7 @@
 //   ai.open() / ai.leave() / ai.element / ai.patternMode / ai.destroy()
 
 import {
-  bankText, canReplacePatterns, CHANNELS, clampCandidates, DEFAULT_CANDIDATES, fileName,
+  AI_EDITION_TEXT, bankText, canReplacePatterns, CHANNELS, clampCandidates, DEFAULT_CANDIDATES, fileName,
   keptText, laneAddress, laneView, LANE_FIELDS, leaveQuestion, modelView, parseSeed, previewArgs,
   randomSeed, stateText,
 } from './ai-logic.js';
@@ -186,8 +186,8 @@ export function mountAiPage({ panel, store, client, stage }) {
   const installRow = el('div', 'row');
   installRow.append(copy, installNow, installNote);
   const installText = el('div', 'note');
-  installText.append('Install them with ', command, ' (PyTorch, a large download).');
-  install.append(el('div', 'ai-install-title', 'The AI generator needs the machine-learning extras'), installText, installRow);
+  const installTitle = el('div', 'ai-install-title');
+  install.append(installTitle, installText, installRow);
   middle.append(el('h4', '', 'lanes: tried sounds play on the face'), lanesBox, install);
 
   // right: patterns and apply
@@ -291,7 +291,16 @@ export function mountAiPage({ panel, store, client, stage }) {
   watch('ai.available', renderAvailable);
   watch('ai.installing', renderAvailable);
   watch('ai.models', renderModels);
-  watch('ai.install_command', (cmd) => { command.textContent = cmd || 'pip install "pythonic[ml]"'; });
+  watch('ai.install_command', (cmd) => {
+    // Empty in the standalone app: no pip there, the AI comes with its own edition
+    const edition = cmd === '';
+    command.textContent = cmd || 'pip install "pythonic[ml]"';
+    installTitle.textContent = edition ? 'This edition of Pythonic has no AI generator'
+      : 'The AI generator needs the machine-learning extras';
+    installText.replaceChildren(...(edition ? [AI_EDITION_TEXT]
+      : ['Install them with ', command, ' (PyTorch, a large download).']));
+    installRow.style.display = edition ? 'none' : '';
+  });
   watch('ai.state', renderState);
   watch('ai.tried', renderTried);
   watch('ai.bank', renderPatterns);
@@ -301,7 +310,8 @@ export function mountAiPage({ panel, store, client, stage }) {
   // ------------------------------------------------------------ models
   async function loadModel(kind, title) {
     if (!value('ai.available')) {
-      sheets.alert({ title: 'The ML extras are missing', text: `Install them first: ${value('ai.install_command') || ''}`, tone: 'error' });
+      const cmd = value('ai.install_command');
+      sheets.alert({ title: 'The ML extras are missing', text: cmd === '' ? AI_EDITION_TEXT : `Install them first: ${cmd || ''}`, tone: 'error' });
       return;
     }
     const current = (value('ai.models') || {})[kind];

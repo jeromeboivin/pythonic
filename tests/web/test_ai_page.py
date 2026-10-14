@@ -167,6 +167,16 @@ def test_without_the_ml_extras_the_lanes_show_the_install_command(panel):
     wait_act(panel, 'ai.load_model', 2)  # the models load once the extras are there
 
 
+def test_the_standalone_app_points_to_the_ai_edition_instead_of_pip(panel):
+    core = panel.core
+    core.post_change('ai.install_command', '')
+    open_ai(panel, available=False)
+    panel.wait_js("getComputedStyle(document.querySelector('.ai-install')).display === 'flex'")
+    assert text(panel, '.ai-install-title') == 'This edition of Pythonic has no AI generator'
+    assert 'Pythonic + AI edition' in text(panel, '.ai-install .note')
+    assert panel.js("document.querySelector('#ai-install').offsetParent === null")  # hidden
+
+
 def test_a_failed_install_says_why(panel):
     core = panel.core
     open_ai(panel, available=False)

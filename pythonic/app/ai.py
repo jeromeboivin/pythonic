@@ -51,7 +51,8 @@ with an AI pattern at once (one undo step).
 Addresses (read-only unless noted):
 
 - ``ai.available``: the ML extras are installed (checked without importing
-  torch). ``ai.install_command``: the command that installs them.
+  torch). ``ai.install_command``: the command that installs them (empty in
+  the standalone app, where ``ai.install`` says to get the AI edition).
   ``ai.installing``.
 - ``ai.state``: ``unavailable``, ``idle``, ``installing``, ``loading``
   (a model) or ``generating``.
@@ -128,6 +129,8 @@ BUNDLED_MODELS = {
 WORKER_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ai_worker.py')
 NO_EXTRAS = ('the ML extras are not installed (torch): install them with '
              'ai.install, or run: {command}')
+NO_AI_EDITION = ('this edition of Pythonic has no AI generator: download the '
+                 'Pythonic + AI edition from https://github.com/jeromeboivin/pythonic/releases')
 NO_PATTERN_MODEL = ("No AI pattern model is available. Set one in the AI settings, "
                     "or place 'pattern_cvae_best.pt' in the drum_patterns/ folder.")
 NO_PATCH_MODEL = ("No drum patch model is available. Load one, "
@@ -138,6 +141,14 @@ _LABEL_TYPES = {'BD': 'bd', 'SD': 'sd', 'CH': 'ch', 'OH': 'oh', 'TOM': 'tom',
                 'CLAP': 'clap', 'CY': 'cy', 'PERC': 'perc', 'FX': 'fx'}
 LANE_FIELDS = ('type', 'candidates', 'candidate', 'name', 'trying', 'generating', 'error')
 _DEFAULT = object()
+
+
+def worker_command():
+    """The command line that starts the worker. The standalone app's
+    executable runs it when given ``--ai-worker`` (packaging/pythonic_app.py)."""
+    if getattr(sys, 'frozen', False):
+        return [sys.executable, '--ai-worker']
+    return [sys.executable, '-u', WORKER_SCRIPT]
 
 
 def torch_installed():
@@ -269,7 +280,7 @@ class Ai:
         self._core = core
         if worker is _DEFAULT:
             self._extras = torch_installed
-            worker = [sys.executable, '-u', WORKER_SCRIPT]
+            worker = worker_command()
         else:
             self._extras = lambda: True  # a given worker brings its own
         self._worker = (WorkerProcess(worker, on_exit=self._on_worker_exit)
@@ -448,7 +459,8 @@ class Ai:
     # ================================================================== worker requests
     def _require(self):
         if not self._available:
-            raise RuntimeError(NO_EXTRAS.format(command=self.install_command()))
+            command = self.install_command()
+            raise RuntimeError(NO_EXTRAS.format(command=command) if command else NO_AI_EDITION)
 
     def _send(self, op, model_kind, path, handler, **args):
         """Send a request; handler(reply) later runs on the action thread."""
@@ -960,6 +972,8 @@ class Ai:
     def _verb_install(self):
         if self._installing:
             raise RuntimeError('the ML extras are already being installed')
+        if not self._install_command:
+            raise RuntimeError(NO_AI_EDITION)
         core = self._core
         action_id = core._running_action
         command = list(self._install_command)

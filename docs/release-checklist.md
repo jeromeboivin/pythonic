@@ -19,6 +19,17 @@ creates `Pythonic/preferences.json` there).
 - [ ] Windows ARM64 (if available): installs without PySide6, `pythonic` starts tkinter with the explanation and no Install button.
 - [ ] Linux only if needed: on a locked-down distro, container or as root, `QTWEBENGINE_DISABLE_SANDBOX=1` is the documented fallback.
 
+## Standalone app
+
+The release workflow builds and smoke-tests each download (see
+[releasing.md](releasing.md)); check by hand what it cannot, on a machine
+without Python or a checkout.
+
+- [ ] Each download starts by double-click (Windows: after **More info ▸ Run anyway**; macOS: after **Open Anyway** in Privacy & Security); the window shows the panel with its fonts.
+- [ ] Sound plays and a MIDI controller triggers channels.
+- [ ] The light edition's AI page says this edition has no AI generator and links the releases; the AI edition loads the bundled models and generates.
+- [ ] macOS: the app runs from /Applications (a read-only bundle): the second start is quick (the compiled engine is cached in the user's cache folder).
+
 ## A session in the web interface
 
 - [ ] **Audio out:** PRESET ▸ a preset from the folder list loads (display: `PRESET` / its name); START/STOP plays it audibly with the playhead on the pads, no underrun messages on stderr while editing; changing the output device and buffer in setup ▸ audio and *restart audio* restarts the stream.

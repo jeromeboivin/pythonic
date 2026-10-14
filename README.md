@@ -40,7 +40,28 @@ Perfect for producers, sound designers, and developers interested in audio synth
 - **Exports** - Patterns to MIDI or audio, drums to WAV, transfers to and from a PO-32
 - **Real-time Audio** - Low-latency playback via `sounddevice`
 
-## 🚀 Quick Start
+## ⬇️ Download
+
+No Python or terminal needed: download the app for your system from the
+[latest release](https://github.com/jeromeboivin/pythonic/releases/latest)
+and start it.
+
+| System | Download | Start |
+|---|---|---|
+| Windows 10/11 (64-bit) | `Pythonic-…-windows-x64.zip` | unzip, double-click `Pythonic.exe` |
+| macOS 12+ (Apple Silicon) | `Pythonic-…-macos-arm64.dmg` | drag Pythonic to Applications |
+| Linux (64-bit) | `Pythonic-…-linux-x86_64.tar.gz` | extract, run `Pythonic/Pythonic` |
+
+Each comes in two editions: **Pythonic**, and **Pythonic + AI** (the `-ai`
+files, about 1 GB), which adds the AI drum generator. The apps are not
+signed yet, so the first start asks once: on Windows click **More info ▸ Run
+anyway**; on macOS open **System Settings ▸ Privacy & Security** and click
+**Open Anyway**.
+
+To run from the source code instead (to change it, or on another system),
+read on.
+
+## 🚀 Quick Start (from source)
 
 ### Prerequisites
 

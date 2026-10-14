@@ -53,6 +53,14 @@ def test_the_ml_install_command_names_the_extras_packages():
     assert pip_command('ml')[4:] == EXTRAS['ml']
 
 
+def test_the_standalone_app_has_no_install_command_and_runs_the_worker_itself(monkeypatch):
+    from pythonic.app.ai import worker_command
+    assert worker_command()[1:] == ['-u', str(ROOT / 'pythonic' / 'app' / 'ai_worker.py')]
+    monkeypatch.setattr(sys, 'frozen', True, raising=False)
+    assert pip_command('ml') == []
+    assert worker_command() == [sys.executable, '--ai-worker']
+
+
 @pytest.mark.skipif(sys.version_info < (3, 11), reason='tomllib needs Python 3.11')
 def test_the_dependencies_bring_qtwebengine_and_mirror_the_installer():
     import tomllib

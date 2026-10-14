@@ -9,6 +9,10 @@ export const MAX_CANDIDATES = 32;
 export const DEFAULT_CANDIDATES = 8;
 export const MAX_SEED = 2 ** 31 - 1;
 
+/** What the standalone app (no pip, ai.install_command empty) says instead of the install command. */
+export const AI_EDITION_TEXT = 'Download the Pythonic + AI edition from the releases page: '
+  + 'https://github.com/jeromeboivin/pythonic/releases';
+
 /** The address of a lane field: ai.ch<N>.<field>. */
 export const laneAddress = (channel, field) => `ai.ch${channel}.${field}`;
 
