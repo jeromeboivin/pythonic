@@ -21,6 +21,7 @@ import pytest
 
 from pythonic.app import AppCore
 from pythonic.app.ai import BUNDLED_MODELS, torch_installed
+from tests.fake_audio import FakeAudioBackend
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 FAKE_WORKER = str(ROOT / 'tests' / 'fake_ai_worker.py')
@@ -197,6 +198,28 @@ def test_generating_a_lane_shows_generating_then_tries_candidate_1(make_core, tm
     assert core.get('undo.can_undo') is False  # trying is not an undo step
     changes = core.poll()['changes']
     assert changes['ch1.name'] == 'BD 1' and changes['ai.ch1.trying'] is True
+
+
+def test_a_lane_shows_its_candidates_only_once_candidate_1_plays(make_core):
+    # With a stream, candidate 1 goes on the channel at the next block start:
+    # until then the lane still shows no candidates
+    backend = FakeAudioBackend()
+    core = make_core(audio_backend=backend)
+    run(core, 'audio.start')
+    before = core.get('ch1.name')
+    action = core.act('ai.generate', channel=1, candidates=4)
+    end = time.monotonic() + 1.0  # the fake worker answers at once; no block pulled
+    while time.monotonic() < end:
+        assert core.get('ai.ch1.candidates') == 0
+        time.sleep(0.005)
+    assert core.get('ch1.name') == before
+    end = time.monotonic() + 10
+    while action not in core._results and time.monotonic() < end:
+        backend.stream.pull()
+    assert core.wait(action, 1)['status'] == 'done'
+    assert lane(core, 1) == {'candidates': 4, 'candidate': 1, 'name': 'BD 1', 'trying': True,
+                             'generating': False}
+    assert core.get('ch1.name') == 'BD 1'
 
 
 def test_the_lane_type_follows_the_channel_then_sticks_once_set(make_core):

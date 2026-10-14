@@ -523,10 +523,14 @@ class Ai:
         self._core._post(event)
 
     # ================================================================== trying sounds
-    def _apply_candidate(self, index, candidate):
-        """Put a lane's candidate on the live channel (block start)."""
+    def _apply_candidate(self, index, candidate, candidates=None):
+        """Put a lane's candidate on the live channel (block start). New
+        ``candidates`` replace the lane's once the sound is on the channel,
+        so a reader never sees a candidate the channel does not play yet."""
         lane = self._lanes[index]
-        data = convert_drum_patch_data(lane.candidates[candidate])
+        if candidates is None:
+            candidates = lane.candidates
+        data = convert_drum_patch_data(candidates[candidate])
         core = self._core
 
         def apply():
@@ -535,6 +539,7 @@ class Ai:
             apply_drum_patch_to_channel(channel, data)
             return original
         lane.original = core.at_block_start(apply)
+        lane.candidates = candidates
         lane.index = candidate
         self._update_prefixes()
 
@@ -713,16 +718,19 @@ class Ai:
             lane.error = reply.get('error')
             job['failed'].append({'channel': channel, 'error': lane.error})
         else:
-            lane.generating = None
-            lane.candidates = list(reply['result']['candidates'])
-            lane.index = 0
+            # Reader thread: the lane shows its candidates once the first one plays
+            candidates = list(reply['result']['candidates'])
             try:
-                if lane.candidates:
-                    self._apply_candidate(index, 0)
+                if candidates:
+                    self._apply_candidate(index, 0, candidates)
+                else:
+                    lane.candidates, lane.index = candidates, 0
                 job['channels'].append(channel)
             except Exception as exc:
+                lane.candidates, lane.index = candidates, 0
                 lane.error = str(exc) or type(exc).__name__
                 job['failed'].append({'channel': channel, 'error': lane.error})
+            lane.generating = None
         self._note_lanes([index], sounds=True)
         job['remaining'] -= 1
         if job['remaining'] == 0:
