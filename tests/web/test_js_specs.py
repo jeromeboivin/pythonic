@@ -31,12 +31,14 @@ def view(qtbot):
 def run_specs(qtbot, view, *specs):
     """Load the runner with these spec files; returns its results."""
     query = '&'.join(f'spec={name}' for name in specs)
-    view.load(QUrl(f'app://ui/test/runner.html?{query}'))
+    with qtbot.waitSignal(view.loadFinished, timeout=15000):
+        view.load(QUrl(f'app://ui/test/runner.html?{query}'))
 
     def results():
-        with qtbot.waitCallback(timeout=5000) as callback:
+        # A slow runner may not answer in time: no results yet, ask again
+        with qtbot.waitCallback(timeout=5000, raising=False) as callback:
             view.page().runJavaScript('JSON.stringify(window.__results ?? null)', 0, callback)
-        return json.loads(callback.args[0] or 'null')
+        return json.loads(callback.args[0] or 'null') if callback.called else None
 
     qtbot.waitUntil(lambda: results() is not None, timeout=15000)
     return results()
