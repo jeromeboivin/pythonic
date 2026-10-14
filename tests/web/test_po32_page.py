@@ -345,6 +345,8 @@ def test_choosing_another_input_reopens_the_monitor(panel, po):
     panel.click('#po32-input')
     click_item(panel, 'Fake Duplex', '.px-menu.list .it')
     assert wait_act(panel, 'po32.listen') == [{'on': True, 'device': 'Fake Duplex'}]
+    # The box shows the reopened input, and the rescan button beside it moves
+    panel.wait_js("document.querySelector('#po32-input').textContent === 'Fake Duplex'")
     panel.click('#po32-rescan')
     wait_act(panel, 'audio.rescan')
 
