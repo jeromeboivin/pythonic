@@ -4,6 +4,8 @@ A modern synthetic drum synthesizer built entirely in Python with algorithmic so
 
 Perfect for producers, sound designers, and developers interested in audio synthesis and digital signal processing.
 
+![The Pythonic web panel with the 808 factory preset loaded](docs/images/panel.png)
+
 ## 🎵 Features
 
 ### Core Synthesis
