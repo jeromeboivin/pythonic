@@ -280,7 +280,9 @@ when it starts (its menu: recall kit).
   drum patch library by category (BD, SD, TOM, RIM, CLAP, CH, OH, CYM, PERC,
   FX, OTHER): the factory drum patches, then the `.mtdrum` files of the drum
   patch folder (PRESET ▸ drum patch folder…, default `Drum Patches` in the
-  preset folder). SHIFT jumps a category; a channel button changes the channel.
+  preset folder). ◀ ▶ stay inside the sound's category (a BD steps through
+  BDs); SHIFT goes to the next or previous category; a channel button
+  changes the channel.
 - An edited kit shows `*` and keeps its edits when you switch kits.
   **WRITE** stores them (over your user kit, or as a new one) and saves the
   preset; it also turns an old preset's programs into user kits.

@@ -121,8 +121,17 @@ def test_value_loads_the_next_drum_patch_and_plays_it_while_stopped(panel):
     panel.click('#preset-next', modifiers=Qt.KeyboardModifier.ShiftModifier)
     assert wait_act(panel, 'drum_patch.load', 2)[-1] == {'library': 'factory:909 SD', 'channel': 2, 'browse': True}
     assert display(panel) == ['INST 2 SD 1/1', '909 SD']
+    # A plain step stays in the category: the only SD, so nothing loads
     panel.press_key(Qt.Key.Key_Down)
+    panel.wait_js("pythonic.panel.display.text()[1] === 'last SD · shift: next category'")
+    panel.wheel('#display', -1)
+    assert len(acts(core, 'drum_patch.load')) == 2
+    panel.press_key(Qt.Key.Key_Down, Qt.KeyboardModifier.ShiftModifier)
     assert wait_act(panel, 'drum_patch.load', 3)[-1]['library'] == 'factory:808 CH'
+    panel.wait_js("pythonic.panel.display.text()[0] === 'INST 2 CH 1/2'")
+    panel.press_key(Qt.Key.Key_Up)  # the first CH: stays, the SDs are a SHIFT away
+    panel.wait_js("pythonic.panel.display.text()[1] === 'first CH · shift: previous category'")
+    assert len(acts(core, 'drum_patch.load')) == 3
 
 
 def test_a_channel_button_changes_the_channel_inst_chooses_for(panel):

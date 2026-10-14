@@ -2,7 +2,7 @@
 // through, the display lines, VALUE steps and SHIFT jumps, where INST starts.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { groupJump, instLines, instStart, kitEntries, kitLines, kitNumber, stepIndex, writeName } from '../js/kits.js';
+import { groupJump, instLines, instStart, kitEntries, kitLines, kitNumber, stepIndex, stepWithin, writeName } from '../js/kits.js';
 
 const LIST = [{ id: 'factory:505', name: '505', factory: true }, { id: 'factory:909', name: '909', factory: true },
   { id: 'user:Dub', name: 'Dub', factory: false }];
@@ -30,6 +30,15 @@ test('a VALUE step stays inside the list', () => {
   assert.equal(stepIndex(4, 0, -1), 0);
   assert.equal(stepIndex(4, 2, 1), 3);
   assert.equal(stepIndex(4, 3, 1), 3);
+});
+
+test('a plain INST step stays inside the category', () => {
+  const group = (i) => LIBRARY[i][2];
+  assert.equal(stepWithin(LIBRARY.length, 1, 1, group), 2); // 909 BD -> Kick 1
+  assert.equal(stepWithin(LIBRARY.length, 2, 1, group), 2); // the last BD: stays
+  assert.equal(stepWithin(LIBRARY.length, 3, -1, group), 3); // the first SD: stays
+  assert.equal(stepWithin(LIBRARY.length, 5, -1, group), 4);
+  assert.equal(stepWithin(LIBRARY.length, 5, 1, group), 5); // the end of the list
 });
 
 test('SHIFT jumps to the next group, or back to the start of this one, then the previous', () => {

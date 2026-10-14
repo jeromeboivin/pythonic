@@ -245,8 +245,10 @@ the preset kit (`kit.current` `""`, named after the preset).
   button changes the channel at once (BD-RC on a TR-8S).
 - **VALUE**: ◀ ▶ under the display (`#preset-prev`, `#preset-next`, enabled
   while a selector is on), the wheel over the display and the arrow keys
-  step through the list; SHIFT jumps to the start of the next group (the
-  category; factory / user kits), or of this one and then the previous one.
+  step through the list. In INST a step stays inside the drum patch's
+  category (at either end the display says SHIFT goes on); SHIFT jumps to
+  the start of the next group (the category; factory / user kits), or of
+  this one and then the previous one.
   Every step plays at once: `kit.select` / `drum_patch.load({library})` with
   `browse: true` (one undo step for the browse), the latest step winning
   while one is under way; INST hits the channel at 100 while stopped. The

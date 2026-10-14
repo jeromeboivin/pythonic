@@ -351,8 +351,8 @@ def test_the_inst_selector_steps_the_selected_channels_drum_patch(open_panel, re
     page.click('.strip[data-channel="5"] .chb')  # 808 SD
     page.wait_js("pythonic.store.value('global.channel') === 5", pump=pump)
     page.click('#inst-button')
-    page.wait_js("pythonic.panel.display.text()[1] === '808 SD'", pump=pump)
-    assert page.js("pythonic.panel.display.text()[0]") == 'INST 5 SD 4/13'
+    page.wait_js("pythonic.panel.display.text()[0] === 'INST 5 SD 4/13'", pump=pump)
+    assert page.js("pythonic.panel.display.text()[1]") == '808 SD'
 
     page.click('#preset-next')
     page.wait_js("pythonic.store.value('ch5.name') === '909 SD'", pump=pump)

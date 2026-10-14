@@ -7,9 +7,11 @@
 // and turns it into the drum patch selector of the selected channel: `INST 1
 // BD 3/12` (the channel, the category, the place in it) over the drum patch's
 // name. The VALUE controls step through the list and every step plays at
-// once: ◀ ▶ under the display, the wheel over the display, the arrow keys;
-// SHIFT with any of them jumps to the previous or next category (INST) or
-// between the factory and user kits (KIT). In INST the channel buttons change
+// once: ◀ ▶ under the display, the wheel over the display, the arrow keys.
+// In INST they stay inside the drum patch's category (BD steps through the
+// BDs only) and SHIFT with any of them goes to the previous or next category,
+// as SHIFT + VALUE on a TR-8S; in KIT they step through every kit and SHIFT
+// jumps between the factory and user kits. In INST the channel buttons change
 // the channel, as BD-RC do; while stopped each new drum patch is heard. The
 // lit button again or Escape leaves; the display shows the pattern again.
 //
@@ -48,6 +50,12 @@ export function kitLines(entries, index, edited) {
 
 /** `index` moved by `delta` within a list of `length` (clamped, as a VALUE knob). */
 export const stepIndex = (length, index, delta) => Math.max(0, Math.min(length - 1, index + delta));
+
+/** `index` moved by `delta` without leaving its group (`groupOf(i)`): it stops at the group's ends. */
+export function stepWithin(length, index, delta, groupOf) {
+  const next = stepIndex(length, index, delta);
+  return next !== index && groupOf(next) === groupOf(index) ? next : index;
+}
 
 /**
  * The index SHIFT + a step goes to: the first entry of the next group
@@ -201,9 +209,18 @@ export function mountKits({ store, client, ctx, display, act, stage, slot, sheet
     } else {
       const list = library();
       if (!list.length) return true;
-      const next = jump ? groupJump(list.length, state.index, delta, (i) => list[i][2])
-        : stepIndex(list.length, state.index, delta);
-      if (next !== state.index) { state.index = next; loadInst(next); }
+      const category = (i) => list[i][2];
+      const next = jump ? groupJump(list.length, state.index, delta, category)
+        : stepWithin(list.length, state.index, delta, category);
+      if (next !== state.index) {
+        state.index = next;
+        loadInst(next);
+      } else if (!jump) {
+        // The end of the category: say how to go on (the selector comes back)
+        render(true);
+        display.show(baseLines()[0], `${delta > 0 ? 'last' : 'first'} ${category(next)} · shift: ${delta > 0 ? 'next' : 'previous'} category`, 1200);
+        return true;
+      }
     }
     render(true);
     return true;
