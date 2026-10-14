@@ -10,6 +10,7 @@
 //   sheets.isOpen('setup')
 //   await sheets.alert({ title, text, tone, buttons }) // the clicked button's value
 //   await sheets.ask(title, text, { yes, no, tone })   // true / false
+//   await sheets.prompt(title, text, { value, yes, no }) // the text typed, or null
 //
 // Sheets stack (an alert shows over the setup sheet). A dismissable sheet
 // closes with a click outside it (on the dimmed panel); the alert sheet is
@@ -69,27 +70,48 @@ export function createSheets(stage, { onShow = null } = {}) {
   function showNextAlert() {
     if (alerting || !queue.length) return;
     const { options, resolve, key } = queue.shift();
-    const { title = '', text = '', tone = 'error',
+    const { title = '', text = '', tone = 'error', input = null,
       buttons = [{ label: 'OK', value: true, primary: true }] } = options;
     const box = el('div', `alert-sheet tone-${tone === 'error' ? 'error' : 'ok'}`);
     box.append(el('div', 'alert-title', title));
     if (text) box.append(el('div', 'alert-text', text));
+    // A text field (prompt): the primary button answers its text
+    let field = null;
+    if (input !== null) {
+      field = el('input', 'alert-input');
+      field.type = 'text';
+      field.value = String(input);
+      field.spellcheck = false;
+      box.append(field);
+    }
     const row = el('div', 'alert-buttons');
+    const answer = (value) => {
+      hide('alert');
+      alerting = null;
+      resolve(value);
+      showNextAlert();
+    };
     for (const b of buttons) {
       const button = el('button', `btn sq${b.primary ? ' on primary' : ''}`, b.label);
       button.type = 'button';
       button.addEventListener('click', (e) => {
         e.stopPropagation();
-        hide('alert');
-        alerting = null;
-        resolve(b.value);
-        showNextAlert();
+        answer(field && b.primary ? field.value : b.value);
       });
       row.append(button);
     }
     box.append(row);
     alerting = { key };
     show('alert', box, { width: ALERT_WIDTH, className: 'alert' });
+    if (field) {
+      field.addEventListener('keydown', (e) => {
+        e.stopPropagation();
+        if (e.key === 'Enter') answer(field.value);
+        else if (e.key === 'Escape') answer(null);
+      });
+      field.focus();
+      field.select();
+    }
   }
 
   /** Show the alert sheet; resolves with the clicked button's value. */
@@ -110,11 +132,19 @@ export function createSheets(stage, { onShow = null } = {}) {
       .then((v) => v === true);
   }
 
+  /** A text question on the alert sheet (green): Promise<string | null> (null: cancelled). */
+  function prompt(title, text, { value = '', yes = 'OK', no = 'cancel' } = {}) {
+    return alert({ title, text, tone: 'ok', input: value,
+      buttons: [{ label: no, value: null }, { label: yes, value: true, primary: true }] })
+      .then((v) => (typeof v === 'string' ? v : null));
+  }
+
   return {
     show,
     hide,
     alert,
     ask,
+    prompt,
     get current() { return layers.length ? layers.at(-1).name : null; },
     isOpen: (name) => !!find(name),
     destroy() {

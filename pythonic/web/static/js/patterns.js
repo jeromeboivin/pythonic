@@ -101,7 +101,7 @@ export function mountPatterns({ store, ctx, display, act, slot, selected }) {
       b.classList.toggle('chain-in', s.chainIn);
       b.classList.toggle('chain-out', s.chainOut);
       const n = store.value(`pattern.${s.letter}.length`);
-      b.lastChild.textContent = Number.isInteger(n) && n !== 16 ? String(n) : '';
+      b.querySelector('.len').textContent = Number.isInteger(n) && n !== 16 ? String(n) : '';
     });
     const index = selected();
     prev.disabled = index === 0;

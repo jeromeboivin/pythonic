@@ -73,6 +73,11 @@ action thread (modules finishing deferred actions).
 | `pattern.<P>.ch<N>.trig|acc|vel|fill|prob|sub` | list | a whole lane (one value per step of the length) |
 | `pattern.<P>.length` (1..64), `pattern.<P>.chained` (to the next; read-only on L), `pattern.<P>.empty` (read-only) | | pattern |
 | `pattern.selected` | enum A..L | the selected pattern (plain selection) |
+| `pattern.<P>.kit` | str | the kit the pattern recalls (a `kit.list` id, `""` for none): it plays from the pattern's first step, or as soon as the pattern is selected while stopped (outside the journal) |
+| `kit.list` | read-only list | `{'id', 'name', 'factory'}` of every kit: the factory kits (`factory:909`) in machine order, then the user kits (`user:<name>`, `Kits/<name>.json` in the preset folder) by name |
+| `kit.current`, `kit.name` | read-only str | the kit playing (`""`: the preset kit, the sounds the preset was loaded with, named after the preset) |
+| `kit.edited` | read-only bool | the channels differ from the stored kit; reported in the poll that reports the change |
+| `drum_patch.library` | read-only list | `[id, name, category]` of every drum patch INST steps through, category by category (`BD`, `SD`, `TOM`, `RIM`, `CLAP`, `CH`, `OH`, `CYM`, `PERC`, `FX`, `OTHER`): the factory ones (`factory:<name>`) then the drum patch folder's (`user:<relative path>`) |
 | `program.current` (1..16), `program.occupied` (16 bools), `program.names` (16 strings) | read-only | program bank; a name is the words the program's channel names start with (`808`), `""` when empty or nothing in common, reported with any channel name |
 | `morph.position` (0..1) | float | morph position |
 | `morph.learning` (`off`, `a`, `b`), `morph.differs` | read-only | morph learn, endpoints differ |
@@ -113,7 +118,8 @@ so both GUIs and older versions share the file) and is not undoable.
 | `pref.web.gpu` (bool; default off on Windows, on elsewhere) | next start of the web interface (`web_gpu(manager)` reads it before Qt starts) | `web_gpu` (absent = the platform default) |
 | `pref.ai.pattern_model`, `pref.ai.patch_model` (paths, None = bundled) | next model load | `drum_generator_pattern_model_path`, `drum_generator_model_path` |
 | `pref.ai.pattern_temperature`, `pref.ai.patch_temperature` (0.1..3) | next generation | `drum_generator_pattern_temperature`, `drum_generator_patch_temperature` |
-| `pref.preset_folder` (must exist) | at once (`preset.files` follows) | `preset_folder` |
+| `pref.preset_folder` (must exist) | at once (`preset.files` follows; the kits and the default drum patch folder are rescanned) | `preset_folder` |
+| `pref.patch_folder` (must exist; default `Drum Patches` in the preset folder) | at once (`drum_patch.library` is rescanned) | `patch_folder` |
 | `pref.recent_files` (read-only) | | `recent_files` |
 | `pref.ui.<name>` (`[a-z0-9_]+`, any JSON value, None until set) | front-end state (strip CTRL mode, rack open, ...) | `ui_<name>` |
 
@@ -137,13 +143,17 @@ pattern), `channel` 1..8.
 | `pattern.chain_prev`, `pattern.chain_next`, `pattern.chain_clear` | pattern | chains |
 | `undo`, `redo` | | `{'done', 'label'}` |
 | `program.select` | program 1..16 | `{'program', 'recalled'}` |
+| `kit.select` | kit (a `kit.list` id, `""` for the preset kit), browse=False | `{'kit', 'name', 'edited'}`: the edits of the kit left are kept for the session, the new kit plays its own; one undo step (`browse`: the switches in a row are one) |
+| `kit.write` | name=None, overwrite=False | `{'saved', 'exists', 'name', 'kit'}`: the sounds as a user kit, over the current user kit without a name; an existing name needs `overwrite`; the written kit plays, not edited |
+| `kit.refresh`, `kit.from_programs` | | rescan the Kits folder; write the preset's programs as user kits (`{'kits': [names]}`) |
+| `drum_patch.refresh` | | rescan the drum patch folder |
 | `program.restore_factory` | | `{'programs': [1..7]}`: the factory kits back into programs 1-7 (the current one plays at once when among them); one undo step |
 | `morph.learn` | endpoint `'a'`, `'b'` or None (stop) | `{'learning'}` |
 | `morph.capture` | endpoint | |
 | `preset.load` | path, or factory (a `factory.presets` name, with or without `.json`) | `{'path', 'name', 'format'}` (`mtpreset` or `json`) |
 | `preset.load_last` | | as `preset.load`, plus `loaded`; `{'loaded': False}` without a last preset |
 | `preset.save` | path, overwrite=False | `{'saved', 'exists', 'path'}` |
-| `drum_patch.load` | path, or factory (a `factory.patches` name: the whole channel sound), channel (default selected) | `{'channel', 'name', 'path'}` (path None for a factory drum patch); one undo step |
+| `drum_patch.load` | path, or factory (a `factory.patches` name: the whole channel sound), or library (a `drum_patch.library` id), channel (default selected), browse=False | `{'channel', 'name', 'path'}` (path None for a factory drum patch); one undo step (`browse`: the loads in a row into one channel are one) |
 | `drum_patch.save` | path, channel, overwrite=False | `{'saved', 'exists', 'path', 'channel'}` |
 | `export.midi` | path, pattern, overwrite=False | `{'saved', 'exists', 'path', 'pattern'}`: the pattern's MIDI file |
 | `export.wav` | path, pattern, tail=`'cut'` (`'cut'`, `'append'` +2 s, `'loop'` +1 pass), overwrite=False | `{'saved', 'exists', 'path', 'pattern', 'tail', 'frames', 'sample_rate', 'channels'}`; progress events while it renders |
@@ -165,7 +175,9 @@ pattern), `channel` 1..8.
 **Files.** Paths are absolute, or names relative to `pref.preset_folder`. A
 preset load replaces the whole preset (sounds, globals, programs, morph,
 patterns; mutes when the file has them) and makes it the last preset and the
-first recent file. Saving refuses to replace an existing file unless
+first recent file. A JSON preset names the kit it plays (`kit`, left out for
+the preset kit) and each pattern the kit it recalls (`kit`, left out for none);
+files without them load as before, playing the preset kit. Saving refuses to replace an existing file unless
 `overwrite=True`: the result is `{'saved': False, 'exists': True, 'path'}`, and
 the front-end asks, then sends the verb again with `overwrite=True`. The core
 adds `.json` / `.mtdrum` / `.mid` / `.wav` to a path without an extension

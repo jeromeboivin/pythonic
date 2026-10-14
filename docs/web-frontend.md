@@ -65,7 +65,8 @@ pythonic/web/
     js/modulation.js   modulatedAddresses(readout, value): {address: {offset, source}}; destinationOf,
                        targetAddress, targetName, modulationBand (click to assign, bands)
     js/midi-cues.js    ccsFor, withoutAddress, isBendTarget, ghostPosition
-    js/drum-type.js    guessDrumType(name): the channel button label
+    js/drum-type.js    guessDrumType(name): the channel button label; drumCategory(name), CATEGORIES (the library's)
+    js/kits.js         mountKits(...): KIT, INST and WRITE (the selectors on the display), a pattern's kit
     js/panel.js        mountPanel(stage, {store, client, meta}) -> {ctx, display, slot(name), drawer, steps, patterns, act, destroy}
     js/steps-logic.js  pure step-row logic: addresses, padView, withStep, editChannels, dragValue, pages, follow, patternStates, chains
     js/steps.js        mountStepRow(...): step-mode buttons, page bars, pads, the matrix; selectedPattern(store)
@@ -212,20 +213,56 @@ Strips, top row, left and right columns and START/STOP as decided in #7 and
 'off'|'pan'|'reverb_mix'|'delay_mix'|'lfo1_depth'|'user', user: [8 sound
 suffixes or null]}`; the CTRL knob's `data-address` follows it. Slots for
 the later slices are elements with `data-slot` (`panel.slot(name)`):
-`step-entry` and `patterns` (left column), `preset-prev`, `preset-next`,
+`step-entry`, `patterns` and `kit`, `inst`, `write` (left column, kits.js), `preset-prev`, `preset-next`,
 `preset` (presets.js), `po32`, `setup` (open their pages), `rack-toggle` (the
 edit rack button, wired by `rack.js`),
 `steps` (bottom row), `rack` (the edit rack drawer, 1568x294 at y = 690).
 A slice fills its slot with `px-*` elements and buttons with `data-verb`.
 The display's first line is the selected pattern and the page on the pads
-(`PATTERN A  17-32`), the second the preset name. A click on the selected
+(`PATTERN A  17-32`), the second the kit playing (`KIT 909`; the preset name
+for the preset kit), `*` when it is edited; a KIT or INST selector shows its
+own lines instead (`panel.kits.baseLines()`). A click on the selected
 channel's button hits it (bridge `trigger`, velocity 64, Ctrl+click 127, as
 tkinter); a channel button flashes when a MIDI note (`poll().midi.notes`)
 or a click hits its channel. UNDO / REDO show the step's label as the name
 of the control bound to it (`undoText`, values.js: `CH2 DECAY`), else the
-address in words. A program button's tooltip names its kit
-(`program.names`: `program 3: 808`), and a click shows it on the display
-(`PROGRAM` / `3 808`).
+address in words.
+
+## KIT, INST and WRITE (`kits.js`)
+
+ADR 0003, after the TR-8S's KIT, INST and WRITE. Kits are a library apart
+from presets (`kit.list`: the factory kits, then the user kits); kit 000 is
+the preset kit (`kit.current` `""`, named after the preset).
+
+- **KIT** (`#kit-button`, lit while on) turns the display into the kit
+  selector (`px-display.selector`): `KIT 004* FACTORY` (the number, `*` while
+  `kit.edited`, the group: PRESET, FACTORY or USER) over the kit's name.
+- **INST** (`#inst-button`) turns it into the drum patch selector of the
+  selected channel, over `drum_patch.library`: `INST 5 SD 4/13` (the
+  channel, the category, the place in it) over the drum patch's name. It
+  starts at the drum patch INST last loaded into the channel, else the one
+  named as the channel's sound, else the first of its category. A channel
+  button changes the channel at once (BD-RC on a TR-8S).
+- **VALUE**: ◀ ▶ under the display (`#preset-prev`, `#preset-next`, enabled
+  while a selector is on), the wheel over the display and the arrow keys
+  step through the list; SHIFT jumps to the start of the next group (the
+  category; factory / user kits), or of this one and then the previous one.
+  Every step plays at once: `kit.select` / `drum_patch.load({library})` with
+  `browse: true` (one undo step for the browse), the latest step winning
+  while one is under way; INST hits the channel at 100 while stopped. The
+  lit button again, Escape or Enter leaves.
+- **WRITE** (`#write-button`, a red dot while `kit.edited`) opens a menu:
+  kit “name” (over the current user kit, asked first), kit as… (the name
+  prompt, `sheets.prompt`: the user kit's own name, else `<name> copy`; an
+  existing name asks to replace it), preset, preset as… (presets.js), and
+  programs as kits (`kit.from_programs`, while `program.occupied` has one).
+- **A pattern's kit**: the pattern menu adds recall kit “name” (sets
+  `pattern.<P>.kit` to the kit playing) and recall no kit; a pattern that
+  recalls one shows a K (`.pbtn .kitmark`, bound to `pattern.<P>.kit`).
+
+`panel.kits`: `state` (`mode`: `'kit'`, `'inst'` or null, `index`),
+`setMode(mode)`, `step(delta, jump)` (false with no selector on),
+`baseLines()`, `active`.
 
 ## Step row and patterns (`steps.js`, `patterns.js`)
 
@@ -259,29 +296,12 @@ store lacks.
   page of the edit rack drawer, cells (`.matrix .stp[data-channel][data-step]`)
   drawn and edited like the pads (a paint stroke stays in its row); a
   channel label selects the channel; ⊞ again or `◀ edit rack` hides it.
-- **Kit mode** (TR-8 KIT; `#kit-mode` beside the PROGRAM heading): the step
-  row gets `data-select="kit"` and the pads give way to the 16 programs
-  (`.kits .kit[data-program]`): the kit name (`program.names`), `on` when it
-  holds sounds (`program.occupied`), `cur` (blinking) for `program.current`.
-  A press runs `program.select` (the pattern plays on; an empty program
-  starts as a copy) and shows `KIT` / `4 909` on the display. The kit button
-  again, a step mode, last step or a page bar go back to the steps.
-- **Inst mode** (TR-8 INST; `#inst-mode` beside kit, bound to
-  `factory.patches`): `data-select="inst"`; the pads offer the factory drum
-  patches of the selected channel's drum family (`sameKind`, drum-type.js:
-  toms, hats, cymbals and shakers stand in for each other; every one when
-  the channel has no drum type), each pad the machine over the rest of the
-  name (`.kit[data-patch]`), `cur` (blinking) for the channel's own. A press
-  loads it (`drum_patch.load` with `factory` and the channel), shows `INST
-  CHn` / the name, and hits the channel at 100 while stopped. A channel
-  button changes the channel the pads offer for. More than 16 choices page
-  with the page bars; a bar past them, the inst button again, a step mode or
-  last step go back to the steps.
 - **Patterns** (`.pbtn[data-pattern]`, bound to `pattern.<P>.empty`, its
   wrapper to `.chained`, its length badge to `.length`; the grid to
   `pattern.selected`): click = `pattern.select` (queued while playing);
   classes `on` (selected), `playing`, `queued` (blinks), `empty`,
-  `chain-in` / `chain-out` (amber links), the length when not 16.
+  `chain-in` / `chain-out` (amber links), the length when not 16, a K when
+  the pattern recalls a kit (kits.js).
   `#chain-prev` / `#chain-next` toggle the selected pattern's links and show
   the chain on the display; `#lane-copy` / `#lane-paste` copy and paste the
   selected channel's lane. MENU (`#pattern-menu`) and a right-click on a
@@ -305,17 +325,14 @@ store lacks.
   more pattern menu entries (export to MIDI / audio, #13);
   `panel.patterns.openMenu(index, x, y)`.
 - `panel.steps`: `state` (`mode`, `page`, `follow`, `allCh`, `armed`,
-  `selected`, `select`: `'kit'`, `'inst'` or null, `instPage`), `setMode(field)`,
-  `setPage(page)`, `setSelect('kit' | 'inst' | null)`, `render()`, `matrix`.
+  `selected`), `setMode(field)`, `setPage(page)`, `render()`, `matrix`.
 
 ## Edit rack (`rack.js`, `rack-layout.js`)
 
 Decision #11 (open / close: #7). The drawer's base page: a header (channel,
 patch name, drum type, the click-to-assign bar, **edit all** bound to
 `global.edit_all`, **drum patch ▾**: load / save `.mtdrum`, export the
-channel's hit as WAV, asking before replacing a file, factory drum patch
-into CHn… (a menu of the machines, then that machine's sounds, the
-channel's own marked; `drum_patch.load` with `factory`)) over one row of
+channel's hit as WAV, asking before replacing a file) over one row of
 sections: oscillator, noise, envelopes (fader bank), mix (osc · noise
 crossfader), velocity (fader bank), FX, then modulation with the LFO 1, LFO 2
 and pump rows (dimmed while off). `RACK_SECTIONS` lists every control with
@@ -403,7 +420,8 @@ Decisions #12, #13, #14. The right column's ◀ ▶ load the previous / next
 file of `preset.files` around `preset.path` (no wrap, as tkinter; with the
 current preset outside the folder ▶ loads the first file; disabled at the
 ends); while a factory preset is loaded (`preset.factory`) they walk
-`factory.presets` instead. PRESET (`#preset-button`) toggles the preset menu
+`factory.presets` instead, and while a KIT or INST selector is on they are
+its VALUE (kits.js). PRESET (`#preset-button`) toggles the preset menu
 (`#preset-menu`):
 
 - left: the factory presets (`.pm-factory`, marked read-only, the current
@@ -417,20 +435,20 @@ ends); while a factory preset is loaded (`preset.factory`) they walk
   factory preset falls back to save as), save preset as… (native save dialog, suffix `.json`,
   the replace question), reload last preset (`preset.load_last`), copy /
   cut / paste preset (paste off while `preset.clipboard` is false),
-  initialize preset, randomize all, restore factory kits… (asks on the alert
-  sheet, saying so when the current program is among 1-7, then
-  `program.restore_factory`); the selected channel's drum patch
+  initialize preset, randomize all; the selected channel's drum patch
   entries (`panel.rack.patchItems()`, the rack header's menu, so they work
   with the rack closed), export every drum as WAV… (folder dialog,
   `export.drum_wavs`); preset folder… (folder dialog, sets
-  `pref.preset_folder`, `preset.files` follows), refresh list; transfer to
+  `pref.preset_folder`, `preset.files` follows), drum patch folder… (folder
+  dialog, sets `pref.patch_folder`: INST's user drum patches), refresh lists
+  (presets, kits, drum patches); transfer to
   PO-32…, import from PO-32…, AI drum generator…, setup… (pages, above).
 
 A load or save failure shows on a red alert; the display shows the loaded
 preset (`PRESET` / name, `FACTORY PRESET` / name) or `saved`. The menu
 follows the folder, recent files, clipboard and factory state while open.
 Bound addresses: `preset.name`, `.path`, `.files`, `.clipboard`, `.factory`,
-`factory.presets`, `pref.preset_folder`, `pref.recent_files`.
+`factory.presets`, `pref.preset_folder`, `pref.patch_folder`, `pref.recent_files`.
 
 ## Pattern exports (`exports.js`)
 

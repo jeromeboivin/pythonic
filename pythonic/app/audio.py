@@ -165,6 +165,7 @@ class AudioEngine:
         self.sequencer = StepSequencer(pattern_manager, synth.sr)
         self._seq_generation = -1
         self._followed_pattern = None  # playing pattern the selection last followed
+        self.on_pattern_start = None  # f(pattern index) when a pattern starts playing (kits)
 
         # Performance counters (written by the callback only)
         self.enable_sample_dropping = True
@@ -340,13 +341,18 @@ class AudioEngine:
                 self._seq_generation = generation
                 sequencer.start(None, synth_clock=synth.sample_clock)
                 self._followed_pattern = pm.playing_pattern_index
+                if self.on_pattern_start is not None:
+                    self.on_pattern_start(pm.playing_pattern_index)
             trigger_start = time.perf_counter()
             events = sequencer.advance(synth_frames)
             playing = pm.playing_pattern_index
             if playing != self._followed_pattern:
-                # A chain or the queue moved on: the selection follows it
+                # A chain or the queue moved on: the selection follows it,
+                # and the pattern's kit plays from its first step
                 self._followed_pattern = playing
                 pm.selected_pattern_index = playing
+                if self.on_pattern_start is not None:
+                    self.on_pattern_start(playing)
             if drop_this_callback:
                 events = []
             if events:

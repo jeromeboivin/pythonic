@@ -872,6 +872,14 @@ class PxDisplay extends HTMLElement {
 
   alert(line1, line2, ms = 4000) { this.show(line1, line2, ms, 'alert'); }
 
+  /** Drop a message showing: the base lines again, at once. */
+  clear() {
+    this.connectedCallback();
+    clearTimeout(this.timer);
+    this.timer = null;
+    this.paint(this.base);
+  }
+
   /** Paint two lines; returns the ms a scrolling line needs to be read (0: none). */
   paint([a, b], cls = '') {
     let readMs = 0;

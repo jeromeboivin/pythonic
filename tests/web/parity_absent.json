@@ -1,5 +1,8 @@
 {
   "_about": "Parity guard of the web front-end (tests/web/test_parity_guard.py). Every address the core's describe() lists must be bound to a control on the page (an element with data-address; the edit rack binds the selected channel's, so the guard selects each channel in turn) or match a pattern below, with the reason it is absent. Patterns are fnmatch globs. A slice that binds an address removes it from here (the guard fails while a bound address is still listed, and on patterns that match nothing).",
   "absent": {
+    "program.current": "Programs are not on the web face: kits are a library of their own (ADR 0003). The tkinter interface still switches programs; WRITE ▸ programs as kits turns them into user kits.",
+    "program.names": "Programs are not on the web face (see program.current).",
+    "factory.patches": "INST steps through drum_patch.library, which lists every factory drum patch with the user ones."
   }
 }

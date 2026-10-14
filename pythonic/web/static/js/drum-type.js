@@ -17,8 +17,8 @@ const RULES = [
   ['TOM', word('TOM|TOMS'), null],
   ['BD', word('BD|BDRUM'), /KICK|BASS\s*DR/i],
   ['SD', word('SD|SNR'), /SNARE/i],
-  ['OH', word('OH|OHH'), /OPEN\s*H|OP\s*HAT/i],
-  ['CH', word('CH|CHH'), /CLOSED\s*H|CL\s*HAT/i],
+  ['OH', word('OH|OHH'), /OPEN\s*H|OP\s*HAT|HAT\s*OPEN/i],
+  ['CH', word('CH|CHH'), /CLOSED\s*H|CL\s*HAT|HAT\s*CLOSED/i],
   ['HH', word('HH|HAT'), /HI\s*-?\s*HAT/i],
   ['CB', word('CB'), /COW\s*BELL/i],
   ['RC', word('RC'), /RIDE/i],
@@ -41,22 +41,12 @@ export function guessDrumType(name) {
   return '';
 }
 
-// Drum types that stand in for each other (the inst mode's choices): all
-// toms, all hats, all cymbals, the shaken percussion
-const FAMILIES = { LT: 'TOM', MT: 'TOM', HT: 'TOM', TOM: 'TOM', CH: 'HH', HH: 'HH', OH: 'HH',
-  RC: 'CY', CC: 'CY', CY: 'CY', TB: 'SH', SH: 'SH' };
+// The categories of the drum patch library (library.py), in the INST mode's
+// order, and the category of each drum type
+export const CATEGORIES = ['BD', 'SD', 'TOM', 'RIM', 'CLAP', 'CH', 'OH', 'CYM', 'PERC', 'FX', 'OTHER'];
+const CATEGORY = { BD: 'BD', SD: 'SD', LT: 'TOM', MT: 'TOM', HT: 'TOM', TOM: 'TOM', RS: 'RIM', CP: 'CLAP',
+  CH: 'CH', HH: 'CH', OH: 'OH', RC: 'CYM', CC: 'CYM', CY: 'CYM', CB: 'PERC', CG: 'PERC', TB: 'PERC',
+  SH: 'PERC', CL: 'PERC', PC: 'PERC', FX: 'FX' };
 
-/** The family of a drum type label ('' stays ''). */
-export const drumFamily = (label) => FAMILIES[label] || label || '';
-
-/**
- * The drum patch names of `names` of the same family as `name` (a channel's
- * drum patch name), in their order; all of them when `name` has no drum type
- * or none matches.
- */
-export function sameKind(names, name) {
-  const family = drumFamily(guessDrumType(name));
-  const list = Array.isArray(names) ? names : [];
-  const matches = family ? list.filter((n) => drumFamily(guessDrumType(n)) === family) : [];
-  return matches.length ? matches : list;
-}
+/** The library category of a drum patch name ('OTHER' when the name gives no drum type). */
+export const drumCategory = (name) => CATEGORY[guessDrumType(name)] || 'OTHER';

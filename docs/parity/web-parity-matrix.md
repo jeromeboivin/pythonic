@@ -24,7 +24,7 @@ run (section 1.13).
 
 | tkinter | Web | Status |
 |---|---|---|
-| `program:` combobox 1-16 | left column programs 1-16 grid (`program.select`, `program.current`, `program.occupied`; kit names from `program.names` in the tooltip and on the display) | done W2 |
+| `program:` combobox 1-16 | none: the web panel plays kits from the kit library instead (ADR 0003); WRITE ▸ programs as kits turns a preset's programs into user kits (`kit.from_programs`) | absent (ADR 0003) |
 | Morph learn A / B | right column learn a / learn b (`morph.learn`); right-click: capture (`morph.capture`) | done W2 |
 | `sound morph` slider | right column sound morph knob (`morph.position`), dims while A = B (`morph.differs`) | done W2 |
 | Undo ↶ / Redo ↷ | left column undo / redo (`undo`, `redo`, `undo.can_*`) | done W2 |
@@ -103,9 +103,10 @@ run (section 1.13).
 | Audio / MIDI / Synthesis / AI Settings... | setup… → `openPage('setup')` (one sheet with tabs, #22) | done W5 / W6 |
 | (recent files, never shown in tkinter) | recent files in the preset menu (`pref.recent_files`) | done W5 (new) |
 | (last preset, loaded at start-up) | reload last preset (`preset.load_last`) | done W5 (new) |
-| (kit mode, not in tkinter) | kit button beside the PROGRAM heading: the pads show the 16 programs by kit name and switch them (`program.select`, `program.names`) | done (new, web only) |
-| (inst mode, not in tkinter) | inst button beside kit: the pads offer the factory drum patches of the selected channel's drum family and load one (`drum_patch.load` with `factory`); also drum patch ▾ › factory drum patch into CHn… | done (new, web only) |
-| (factory presets, not in tkinter) | factory section of the preset menu (`factory.presets`, `preset.load({factory})`), ◀ ▶ walk it while one is loaded (`preset.factory`), saved only as another file; restore factory kits… (`program.restore_factory`) | done (new, web only) |
+| (KIT, not in tkinter) | KIT: the display is the kit selector over `kit.list` (factory and user kits, kit 000 the preset kit), stepped by ◀ ▶, the wheel and the arrow keys, each kit playing at once (`kit.select`); `*` while `kit.edited` | done (new, web only) |
+| (INST, not in tkinter) | INST: the display is the selected channel's drum patch selector over `drum_patch.library` (factory and drum patch folder, by category; SHIFT jumps a category), each loading at once (`drum_patch.load` with `library`) | done (new, web only) |
+| (WRITE, not in tkinter) | WRITE: the kit over itself or as a new user kit (`kit.write`), the preset, the programs as kits; a pattern's menu sets the kit it recalls (`pattern.<P>.kit`) | done (new, web only) |
+| (factory presets, not in tkinter) | factory section of the preset menu (`factory.presets`, `preset.load({factory})`), ◀ ▶ walk it while one is loaded (`preset.factory`), saved only as another file; each plays its factory kit | done (new, web only) |
 
 ### 1.6.2 Pattern menu (MENU or right-click a pattern)
 

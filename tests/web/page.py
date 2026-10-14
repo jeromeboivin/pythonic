@@ -8,9 +8,9 @@ Page-test helpers: drive the real app:// page in a PanelWindow from pytest-qt.
 - ``run(statements)``: run statements, no result
 - ``wait_js(expr, timeout, pump)``: wait until an expression is truthy;
   ``pump()`` runs before every check (pull audio blocks for a real core)
-- ``rect(selector)``, ``click(selector)``, ``wheel(selector, steps)``,
+- ``rect(selector)``, ``click(selector, modifiers)``, ``wheel(selector, steps)``,
   ``drag(selector, dy, modifiers, dx=0)``, ``right_click``, ``double_click``,
-  ``press``, ``type_text(text)``: real pointer and key input through QTest
+  ``press``, ``press_key(key, modifiers)``, ``type_text(text)``: real pointer and key input through QTest
   on the view's focus proxy, at an element's centre
 - ``pixel(x, y)``, ``color_at(selector)``: coarse ``grab()`` pixel checks;
   ``close_to(color, expected, tolerance)``; ``wait_pixels(check)`` (painting
@@ -146,13 +146,12 @@ class Page:
         x, y, w, h = self.rect(selector)
         return QPoint(round(x + w / 2), round(y + h / 2))
 
-    def click(self, selector):
+    def click(self, selector, modifiers=Qt.KeyboardModifier.NoModifier):
         point = self.center(selector)
         target = self.view.focusProxy()
         QTest.mouseMove(target, point)
-        QTest.mousePress(target, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
-        QTest.mouseRelease(target, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
-                           point)
+        QTest.mousePress(target, Qt.MouseButton.LeftButton, modifiers, point)
+        QTest.mouseRelease(target, Qt.MouseButton.LeftButton, modifiers, point)
 
     def press(self, selector, button=Qt.MouseButton.LeftButton, modifiers=Qt.KeyboardModifier.NoModifier,
               fx=0.5, fy=0.5):
@@ -201,6 +200,10 @@ class Page:
             event = QMouseEvent(kind, local, screen, left, buttons, none)
             event.setTimestamp(stamp + 20 * i)
             QApplication.sendEvent(target, event)
+
+    def press_key(self, key, modifiers=Qt.KeyboardModifier.NoModifier):
+        """Press and release a key on the page (Qt.Key.Key_Left, ...)."""
+        QTest.keyClick(self.view.focusProxy(), key, modifiers)
 
     def type_text(self, text, enter=True):
         """Type into the focused element of the page (Enter at the end)."""

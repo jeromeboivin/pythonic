@@ -5,7 +5,7 @@ A synthetic drum machine: eight synthesized drum channels played by a step seque
 ## Language
 
 **Preset**:
-The whole saved document: the sounds of all eight channels, the patterns, the programs, the morph and the tempo, swing, step rate and fill rate.
+The whole saved document: the sounds of all eight channels and the kit they come from, the patterns, the programs, the morph and the tempo, swing, step rate and fill rate.
 _Avoid_: Kit, project, song
 
 **Channel**:
@@ -21,19 +21,35 @@ The kind of drum a drum patch is (bass drum, snare, closed hat, ...), guessed fr
 _Avoid_: Instrument, role, slot
 
 **Program**:
-One of sixteen stored sets of the eight channel sounds inside a preset, switched to change all sounds at once.
+One of sixteen stored sets of the eight channel sounds inside a preset, switched to change all sounds at once. The tkinter interface switches them; the web panel plays kits instead and can write programs as user kits.
 _Avoid_: Bank, slot
 
 **Kit**:
-The eight channel sounds a program holds, named after the words its drum patch names share ("808"). The factory kits are the seven drum machines' sounds, in programs 1 to 7 of every factory preset. The panel's kit mode picks programs on the pads.
-_Avoid_: Drum kit, sound set
+The eight channel sounds under a name, kept in the kit library apart from presets: a factory kit (one per drum machine, read-only) or a user kit (a file in the Kits folder). A preset plays one kit; kit 000, the preset kit, is the sounds the preset was loaded with.
+_Avoid_: Drum kit, sound set, program
+
+**Edited kit**:
+A kit whose channels no longer match the stored kit, shown with `*`. Its edits stay with it for the session when another kit plays, until written.
+_Avoid_: Dirty, modified, unsaved
+
+**Write**:
+Storing the kit playing as a user kit: over itself, or under a new name (a factory kit or the preset kit always takes a new name).
+_Avoid_: Save kit, store, commit
+
+**Kit recall**:
+The kit a pattern switches to when it starts playing, or when it is selected while stopped.
+_Avoid_: Pattern kit, kit change, kit link
+
+**Drum patch library**:
+Every drum patch the INST selector steps through: the factory drum patches, then the drum patch folder's, sorted into categories (BD, SD, TOM, RIM, CLAP, CH, OH, CYM, PERC, FX, OTHER).
+_Avoid_: Tone list, browser, sounds
 
 **Factory preset**:
-A read-only preset shipped with Pythonic, one per drum machine (505, 707, 808, 909, DMX, LM2, TR-8): that machine's sounds and patterns, with all seven machines' sounds as programs 1 to 7. Saved only as another file.
+A read-only preset shipped with Pythonic, one per drum machine (505, 707, 808, 909, DMX, LM2, TR-8): that machine's patterns, playing that machine's factory kit (its programs 1 to 7 hold all seven kits, for the tkinter interface). Saved only as another file.
 _Avoid_: Demo, template, kit
 
 **Factory drum patch**:
-One channel sound of a factory kit ("909 SD"), or one of the other drum patches fitted to TR-8 samples ("TR-8 Cowbell"), loaded into any channel by name; the panel's inst mode offers those of the selected channel's drum type.
+One channel sound of a factory kit ("909 SD"), or one of the other drum patches fitted to TR-8 samples ("TR-8 Cowbell"), loaded into any channel by name; part of the drum patch library.
 _Avoid_: Tone, sample, factory sound
 
 **Pattern**:

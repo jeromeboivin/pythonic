@@ -13,12 +13,16 @@ The journal holds up to 50 steps. A step is either
 - a **snapshot** of part of the preset, for bulk actions: ``bulk_change()``
   (code that has not moved into the core yet and writes the engine itself:
   preset load, AI apply, PO-32 import, ...) and the verbs that rewrite many
-  values (pattern ops, program switch, morph capture).
+  values (pattern ops, program switch, kit switch, morph capture). A
+  snapshot op with a ``merge`` key joins the newest step when it is a
+  snapshot of the same parts and key: a browse through kits or drum patches
+  is one step.
 
 Covered: every edit saved in the preset (sounds, globals, morph, programs,
-patterns). Not covered: transport, selection, mutes and modes (addresses with
-``undoable=False``). Morph-derived channel values are not journaled: undo
-restores the morph position and the values follow.
+patterns, the kit playing). Not covered: transport, selection, mutes and
+modes (addresses with ``undoable=False``), the kit a pattern recalls when it
+starts, and kits written to files. Morph-derived channel values are not
+journaled: undo restores the morph position and the values follow.
 
 Verbs ``undo`` and ``redo`` return ``{'done': bool, 'label': str}``; they apply
 at block start. ``undo.can_undo`` / ``undo.can_redo`` are reported by poll.
@@ -44,9 +48,11 @@ BURST_IDLE_S = 0.4
 NUM_CHANNELS = 8
 PATTERN_NAMES = tuple(PatternManager.PATTERN_NAMES)
 
-# Parts of the preset a snapshot can hold. ``pattern:<index>`` is one pattern.
-CHANNELS, GLOBALS, PROGRAMS, MORPH, PATTERNS = 'channels', 'globals', 'programs', 'morph', 'patterns'
-PRESET = (CHANNELS, GLOBALS, PROGRAMS, MORPH, PATTERNS)
+# Parts of the preset a snapshot can hold. ``pattern:<index>`` is one pattern;
+# ``kit`` is the current kit and the preset's own sounds (kits.py).
+CHANNELS, GLOBALS, PROGRAMS, MORPH, PATTERNS, KIT = (
+    'channels', 'globals', 'programs', 'morph', 'patterns', 'kit')
+PRESET = (CHANNELS, GLOBALS, PROGRAMS, MORPH, PATTERNS, KIT)
 
 _SKIP = object()  # an entry's ``new`` when redo leaves it to the entry after it
 
@@ -86,12 +92,13 @@ class Snapshot:
     """A step of a bulk change: the parts of the preset before it (after it,
     once undone)."""
 
-    __slots__ = ('parts', 'state', 'label')
+    __slots__ = ('parts', 'state', 'label', 'merge')
 
-    def __init__(self, parts, state, label):
+    def __init__(self, parts, state, label, merge=None):
         self.parts = tuple(parts)
         self.state = state
         self.label = label
+        self.merge = merge  # snapshot_op(merge=...) runs with this key join it
 
 
 def _same(a, b):
@@ -197,6 +204,13 @@ class Journal:
             self._redo.clear()
             self._push(step)
         self._report()
+
+    def top(self):
+        """The newest undo step, after the open gesture and bursts are
+        committed (None when there is none)."""
+        with self._lock:
+            self._flush()
+            return self._undo[-1] if self._undo else None
 
     def begin_gesture(self):
         with self._lock:
@@ -335,12 +349,18 @@ class Undo:
             if PATTERNS in parts:
                 gc.freeze()
 
-    def snapshot_op(self, parts, label, op):
+    def snapshot_op(self, parts, label, op, merge=None):
         """Run op() at block start as one snapshot step (verbs that rewrite
         many values: pattern ops, program switch, morph capture). Returns
-        op's result."""
+        op's result. With a ``merge`` key, op joins the newest step when that
+        step is a snapshot of the same parts and key (browsing kits or drum
+        patches: the whole browse is one step)."""
         parts = tuple(parts)
         self._release(parts=parts)
+        if merge is not None:
+            top = self.journal.top()
+            if isinstance(top, Snapshot) and top.merge == merge and top.parts == parts:
+                return self._core.at_block_start(op)
         box = {}
 
         def apply():
@@ -348,7 +368,7 @@ class Undo:
             return op()
         result = self._core.at_block_start(apply)
         if 'before' in box:
-            self.journal.push(Snapshot(parts, box['before'], label))
+            self.journal.push(Snapshot(parts, box['before'], label, merge))
         return result
 
     # ================================================================== verbs
@@ -449,6 +469,8 @@ class Undo:
                 state[part] = morph.to_dict()
             elif part == PATTERNS:
                 state[part] = [p.copy() for p in pm.patterns]
+            elif part == KIT:
+                state[part] = core.kits.capture()
             else:
                 state[part] = pm.patterns[_pattern_part(part)].copy()
         return state
@@ -479,6 +501,8 @@ class Undo:
                     morph.apply_effective_position()  # the channels follow the morph
             elif part == PATTERNS:
                 pm.patterns = data
+            elif part == KIT:
+                core.kits.restore(data)  # after the channels: it may take them as the preset's sounds
             else:
                 pm.patterns[_pattern_part(part)] = data
 
@@ -502,6 +526,8 @@ class Undo:
             elif part == PATTERNS:
                 for index in range(len(PATTERN_NAMES)):
                     names += _pattern_addresses(index)
+            elif part == KIT:
+                names += ['kit.current', 'kit.name', 'kit.edited']
             else:
                 names += _pattern_addresses(_pattern_part(part))
         return list(dict.fromkeys(names))
@@ -519,7 +545,8 @@ def _pattern_part(part):
 def _pattern_addresses(index):
     from .patterns import lane_addresses
     name = PATTERN_NAMES[index]
-    names = lane_addresses(name) + [f'pattern.{name}.length', f'pattern.{name}.empty']
+    names = lane_addresses(name) + [f'pattern.{name}.length', f'pattern.{name}.empty',
+                                    f'pattern.{name}.kit']
     names += [f'pattern.{PATTERN_NAMES[i]}.chained' for i in (index - 1, index)
               if 0 <= i < len(PATTERN_NAMES)]
     return names

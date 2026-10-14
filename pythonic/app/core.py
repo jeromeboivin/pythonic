@@ -18,6 +18,8 @@ the audio stream, driven through an address-based interface (ADR 0001).
   (``pattern.*``) are in ``patterns.py``.
 - Programs (``program.*``) are in ``programs.py``, the sound morph
   (``morph.*``) in ``morph.py``.
+- Kits (``kit.*``, ``pattern.<P>.kit``) are in ``kits.py``, the drum patch
+  library (``drum_patch.library``, ``pref.patch_folder``) in ``library.py``.
 - Preset and drum-patch files (``preset.*``, ``drum_patch.*``) are in
   ``presets.py``, the preferences (``pref.*``) in ``prefs.py``.
 - MIDI and WAV export (``export.*``) is in ``export.py``; WAV renders run on
@@ -54,6 +56,8 @@ from pythonic.synthesizer import PythonicSynthesizer
 from .ai import Ai
 from .audio import AudioEngine
 from .export import Export
+from .kits import Kits
+from .library import Library
 from .midi import MidiInput, import_mido
 from .morph import Morph
 from .patterns import Patterns
@@ -145,6 +149,11 @@ class AppCore:
         self.undo.register(self.registry)
         self.programs = Programs(self)
         self.programs.register(self.registry)
+        self.kits = Kits(self)
+        self.kits.register(self.registry)
+        self.audio.on_pattern_start = self.kits.follow
+        self.library = Library(self)
+        self.library.register(self.registry)
         self.morph = Morph(self)
         self.morph.register(self.registry)
         self.patterns = Patterns(self)
@@ -167,6 +176,8 @@ class AppCore:
             'audio.apply': self._verb_audio_apply,
             **self.undo.verbs(),
             **self.programs.verbs(),
+            **self.kits.verbs(),
+            **self.library.verbs(),
             **self.morph.verbs(),
             **self.patterns.verbs(),
             **self.midi.verbs(),
@@ -183,6 +194,7 @@ class AppCore:
         self._worker = threading.Thread(target=self._worker_loop, name='pythonic-core',
                                         daemon=True)
         self._worker.start()
+        self.call_soon(self.library.scan)
 
     # ================================================================== services
     @property
@@ -348,6 +360,9 @@ class AppCore:
         self.po32.collect()
         with self._cond:
             self._promote_applied()
+        self.kits.collect()  # the edited mark follows the sounds just applied, in this poll
+        with self._cond:
+            self._promote_applied()
             version = self._version
             changes = {a: val for a, (v, val) in self._changes.items() if v > since}
             events = [e for e in self._events if e['version'] > since]
@@ -414,7 +429,14 @@ class AppCore:
         self.synth.cleanup()
 
     # ================================================================== poll bookkeeping
+    def _touch(self, names):
+        """Note that channel sounds may have changed (the kit's edited mark)."""
+        kits = getattr(self, 'kits', None)
+        if kits is not None and not kits.touched:
+            kits.touched = any(n.startswith(('ch', 'morph.')) for n in names)
+
     def _note_change(self, address, value):
+        self._touch((address,))
         with self._cond:
             self._promote_applied()  # sets the audio thread applied before are older
             self._version += 1
@@ -431,6 +453,7 @@ class AppCore:
     def note_values(self, values):
         """Report addresses with the given values as one change."""
         values = {**values, **self._derived(values)}
+        self._touch(values)
         with self._cond:
             self._promote_applied()
             self._version += 1
@@ -443,6 +466,7 @@ class AppCore:
             return
         values = {name: self.registry[name].get() for name in addresses}
         values.update(self._derived(values))
+        self._touch(values)
         with self._cond:
             self._promote_applied()
             self._version += 1
@@ -500,6 +524,7 @@ class AppCore:
         self._pending = [p for p in self._pending if p[0] > drained]
         ready.sort(key=lambda p: p[0])
         for _seq, names, value, related in ready:
+            self._touch(names)
             self._version += 1
             for name in names:
                 self._changes[name] = (self._version, value)

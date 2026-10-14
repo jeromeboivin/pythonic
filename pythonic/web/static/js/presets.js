@@ -1,19 +1,20 @@
 // The PRESET buttons of the right column (map decisions #12, #13, #14):
 // ◀ ▶ load the previous / next file of the preset folder (of the factory
-// presets while one of them is loaded), PRESET opens the preset menu: the
-// factory presets (read-only) and the folder's presets as in-panel lists (a
-// click loads one), the recent files, and the commands: open / save / save
-// as (native dialogs, a save asks before replacing a file; a factory preset
-// is only saved as another file), reload the last preset, the preset
-// clipboard, initialize, randomize all, restore the factory kits into
-// programs 1-7 (asks first), the selected channel's drum patch
-// (the edit rack's menu, also here so it works with the rack closed), every
-// drum as WAV files, the preset folder, and the pages (PO-32, AI drum
+// presets while one of them is loaded); while the KIT or INST selector is on
+// (kits.js) they are its VALUE instead (shift: the previous / next category).
+// PRESET opens the preset menu: the factory presets (read-only) and the
+// folder's presets as in-panel lists (a click loads one), the recent files,
+// and the commands: open / save / save as (native dialogs, a save asks before
+// replacing a file; a factory preset is only saved as another file), reload
+// the last preset, the preset clipboard, initialize, randomize all, the
+// selected channel's drum patch (the edit rack's menu, also here so it works
+// with the rack closed), every drum as WAV files, the preset folder, the drum
+// patch folder (INST's user drum patches), and the pages (PO-32, AI drum
 // generator, setup) through panel.openPage.
 //
 // Bound addresses: preset.name, preset.path, preset.files, preset.clipboard,
 // preset.factory, factory.presets, pref.preset_folder (a folder dialog sets
-// it; preset.files follows) and pref.recent_files.
+// it; preset.files follows), pref.patch_folder and pref.recent_files.
 
 import { fileName, folderOf, samePath } from './files.js';
 
@@ -52,7 +53,7 @@ function el(tag, cls, text) {
 }
 
 export function mountPresets({ store, client, ctx, display, act, stage, slot, files, openPage, patchItems,
-  ask = async () => true, beforeLoad = async () => true }) {
+  kits = null, ask = async () => true, beforeLoad = async () => true }) {
   const offs = [];
   const prev = slot('preset-prev');
   const next = slot('preset-next');
@@ -109,18 +110,6 @@ export function mountPresets({ store, client, ctx, display, act, stage, slot, fi
     await (isFactory() ? loadFactory(name) : load(name));
   }
 
-  async function restoreKits() {
-    const current = Number(value('program.current')) || 1;
-    const playing = current <= 7
-      ? ` Program ${current} is one of them: the sounds playing change too (undo brings them back).` : '';
-    const sure = await ask('Restore the factory kits?',
-      `Programs 1-7 get the 505, 707, 808, 909, DMX, LM2 and TR-8 kits back; the other programs and the patterns stay.${playing}`,
-      { yes: 'restore', no: 'cancel' });
-    if (!sure) return;
-    const event = await act('program.restore_factory');
-    if (event.status === 'done') display.show('PROGRAMS 1-7', 'factory kits');
-  }
-
   async function chooseFolder() {
     const path = await client.chooseFolder({ title: 'Select preset folder', folder: folder() });
     if (!path) return;
@@ -131,6 +120,19 @@ export function mountPresets({ store, client, ctx, display, act, stage, slot, fi
       return;
     }
     display.show('PRESET FOLDER', fileName(path));
+  }
+
+  async function choosePatchFolder() {
+    const path = await client.chooseFolder({ title: 'Select the drum patch folder (INST)',
+      folder: value('pref.patch_folder') || folder() });
+    if (!path) return;
+    client.set('pref.patch_folder', path);
+    const errors = await client.flush();
+    if (errors['pref.patch_folder']) {
+      display.alert('DRUM PATCH FOLDER', errors['pref.patch_folder']);
+      return;
+    }
+    display.show('DRUM PATCH FOLDER', fileName(path));
   }
 
   async function exportDrums() {
@@ -166,13 +168,14 @@ export function mountPresets({ store, client, ctx, display, act, stage, slot, fi
       ['paste preset', value('preset.clipboard') ? quick('preset.paste', 'pasted') : null],
       ['initialize preset', quick('preset.initialize', 'initialized')],
       ['randomize all', quick('preset.randomize_all', 'randomized')],
-      ['restore factory kits…', restoreKits],
       null,
       ...patchItems(),
       ['export every drum as WAV…', exportDrums],
       null,
       ['preset folder…', chooseFolder],
-      ['refresh list', () => act('preset.refresh').then(() => display.show('PRESET', 'list refreshed'))],
+      ['drum patch folder…', choosePatchFolder],
+      ['refresh lists', () => Promise.all([act('preset.refresh'), act('kit.refresh'), act('drum_patch.refresh')])
+        .then(() => display.show('PRESET', 'lists refreshed'))],
       null,
       ['transfer to PO-32…', () => openPage('po32', { tab: 'transfer' })],
       ['import from PO-32…', () => openPage('po32', { tab: 'import' })],
@@ -259,6 +262,11 @@ export function mountPresets({ store, client, ctx, display, act, stage, slot, fi
 
   // ------------------------------------------------------------ buttons
   const showButtons = () => {
+    if (kits && kits.active) {
+      prev.disabled = false;
+      next.disabled = false;
+      return;
+    }
     const { files: names, folder: within } = walked();
     prev.disabled = !neighbourFile(names, value('preset.path'), within, -1);
     next.disabled = !neighbourFile(names, value('preset.path'), within, 1);
@@ -270,8 +278,9 @@ export function mountPresets({ store, client, ctx, display, act, stage, slot, fi
     'preset.factory', 'factory.presets']) {
     offs.push(store.watch(address, refreshOpen, { now: false }));
   }
-  prev.addEventListener('click', () => step(-1));
-  next.addEventListener('click', () => step(1));
+  // While a KIT or INST selector is on, ◀ ▶ are its VALUE
+  prev.addEventListener('click', (e) => { if (!(kits && kits.step(-1, e.shiftKey))) step(-1); });
+  next.addEventListener('click', (e) => { if (!(kits && kits.step(1, e.shiftKey))) step(1); });
   // PRESET toggles the menu: a press closes any menu (controls.js) before
   // the click, so note whether this one was open before that
   let wasOpen = false;
@@ -288,12 +297,14 @@ export function mountPresets({ store, client, ctx, display, act, stage, slot, fi
     openMenu,
     load,
     loadFactory,
-    restoreKits,
     save,
     saveAs,
     open,
     chooseFolder,
+    choosePatchFolder,
     exportDrums,
+    /** Enable ◀ ▶ for the selector, or as the preset folder allows (kits.js calls it). */
+    showButtons,
     destroy() { offs.forEach((off) => off()); },
   };
 }

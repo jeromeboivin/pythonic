@@ -173,6 +173,7 @@ class Pattern:
         ]
         self.chained_to_next = False  # Is this pattern chained to the next?
         self.chained_from_prev = False  # Is this pattern chained from the previous?
+        self.kit = ''  # The kit the pattern recalls when it starts ('' = none)
 
     def get_channel(self, channel_id: int) -> PatternChannel:
         """Get a channel by ID"""
@@ -208,6 +209,7 @@ class Pattern:
         new_pattern.channels = [channel.copy() for channel in self.channels]
         new_pattern.chained_to_next = self.chained_to_next
         new_pattern.chained_from_prev = self.chained_from_prev
+        new_pattern.kit = self.kit
         return new_pattern
 
     def clear(self):
@@ -229,14 +231,17 @@ class Pattern:
         return True
 
     def to_dict(self) -> Dict:
-        """Convert to dictionary for serialization"""
-        return {
+        """Convert to dictionary for serialization (``kit`` only when set)"""
+        data = {
             'name': self.name,
             'length': self.length,
             'chained_to_next': self.chained_to_next,
             'chained_from_prev': self.chained_from_prev,
             'channels': [channel.to_dict() for channel in self.channels]
         }
+        if self.kit:
+            data['kit'] = self.kit
+        return data
 
     @staticmethod
     def from_dict(data: Dict) -> 'Pattern':
@@ -245,6 +250,7 @@ class Pattern:
         pattern.channels = [PatternChannel.from_dict(ch) for ch in data['channels']]
         pattern.chained_to_next = data.get('chained_to_next', False)
         pattern.chained_from_prev = data.get('chained_from_prev', False)
+        pattern.kit = str(data.get('kit') or '')
         return pattern
 
 

@@ -71,7 +71,7 @@ from pythonic.preset_manager import (DrumPatchParser, DrumPatchWriter, PythonicP
 
 from .registry import Address
 from .sound import SOUND_SUFFIXES
-from .undo import CHANNELS, GLOBALS, MORPH, PATTERNS, PRESET, PROGRAMS, pattern_part
+from .undo import CHANNELS, GLOBALS, KIT, MORPH, PATTERNS, PRESET, PROGRAMS, pattern_part
 
 NUM_CHANNELS = 8
 NUM_PROGRAMS = 16
@@ -245,6 +245,7 @@ class Presets:
             PROGRAMS: ([None] * NUM_PROGRAMS, 0),
             MORPH: self._morph({}, channels, 0.5 if position is None else position),
             PATTERNS: patterns.patterns,
+            KIT: self._core.kits.loaded(),
         }
         mutes = [bool(m) for m in (data.get('mutes') or [])][:NUM_CHANNELS]
         return state, mutes or None
@@ -278,6 +279,7 @@ class Presets:
             PROGRAMS: self._programs(data.get('programs')),
             MORPH: self._morph(morph, channels, morph.get('position', 0.5) if morph else 0.5),
             PATTERNS: patterns,
+            KIT: self._core.kits.loaded(data.get('kit')),
         }
         mutes = data.get('mutes')
         mutes = [bool(m) for m in mutes][:NUM_CHANNELS] if isinstance(mutes, list) else None
@@ -319,7 +321,7 @@ class Presets:
     def _set_document(self, path, name, extra=()):
         self._path, self._name = path, name
         self._core.note_changes(['preset.path', 'preset.name', 'preset.files', 'preset.factory',
-                                 *[a for a in extra if a in self._core.registry]])
+                                 'kit.name', *[a for a in extra if a in self._core.registry]])
 
     # ================================================================== preset save
     def capture(self):
@@ -335,7 +337,7 @@ class Presets:
         bpm, swing, step_rate, fill_rate, master = state[GLOBALS]
         slots, current = state[PROGRAMS]
         pm = self._core.pattern_manager
-        return {
+        document = {
             'version': '1.0',
             'master_volume_db': master,
             'channels': state[CHANNELS],
@@ -358,6 +360,10 @@ class Presets:
             },
             'mutes': mutes,
         }
+        kit = state.get(KIT, ('',))[0]
+        if kit:
+            document['kit'] = kit  # the kit the preset plays; none: its own sounds
+        return document
 
     def _verb_save(self, path, overwrite=False):
         path = _with_suffix(self.resolve(path), '.json')
@@ -396,8 +402,9 @@ class Presets:
             CHANNELS: channels,
             MORPH: self._morph({}, channels, self._core.morph_manager.position),
             PATTERNS: PatternManager(num_channels=NUM_CHANNELS).patterns,
+            KIT: self._core.kits.loaded(),
         }
-        self._install(state, None, 'initialize preset', (CHANNELS, MORPH, PATTERNS))
+        self._install(state, None, 'initialize preset', (CHANNELS, MORPH, PATTERNS, KIT))
         return {'initialized': True}
 
     def _verb_randomize_all(self):
@@ -421,29 +428,41 @@ class Presets:
         return {'files': self.files()}
 
     # ================================================================== drum patches
-    def _verb_load_patch(self, path=None, channel=None, factory=None):
-        if (path is None) == (factory is None):
-            raise ValueError('give a path or a factory drum patch')
+    def _verb_load_patch(self, path=None, channel=None, factory=None, library=None, browse=False):
+        if sum(arg is not None for arg in (path, factory, library)) != 1:
+            raise ValueError('give a path, a factory drum patch or a library drum patch')
         index = self.channel_index(channel)
+        # Browsing the library (INST): the loads in a row into one channel are one undo step
+        merge = ('inst', index) if browse else None
+        name = None
+        if library is not None:
+            kind, found = self._core.library.resolve(library)
+            if kind == 'factory':
+                factory = found
+            else:
+                path, name = found, os.path.splitext(os.path.basename(found))[0]
         if factory is not None:
-            return self._load_factory_patch(index, factory)
+            return self._load_factory_patch(index, factory, merge)
         path = self.resolve(path)
         patch = DrumPatchParser().parse_file(path)
-        # Patches without a Name line are named after the file
+        # Patches without a Name line are named after the file; a library
+        # patch is named as the library lists it
         patch.setdefault('Name', os.path.splitext(os.path.basename(path))[0])
+        if name is not None:
+            patch['Name'] = name
         data = convert_drum_patch_data(patch)
         core = self._core
         core.undo.snapshot_op(
             (CHANNELS,), 'load drum patch',
-            lambda: apply_drum_patch_to_channel(core.synth.channels[index], data))
+            lambda: apply_drum_patch_to_channel(core.synth.channels[index], data), merge=merge)
         core.note_changes(channel_addresses(index + 1))
         return {'channel': index + 1, 'name': data['name'], 'path': path}
 
-    def _load_factory_patch(self, index, name):
+    def _load_factory_patch(self, index, name, merge=None):
         sound = self._sound(_factory_patch(name))
         core = self._core
         core.undo.snapshot_op((CHANNELS,), 'load drum patch',
-                              lambda: core.synth.channels[index].set_parameters(sound))
+                              lambda: core.synth.channels[index].set_parameters(sound), merge=merge)
         core.note_changes(channel_addresses(index + 1))
         return {'channel': index + 1, 'name': sound['name'], 'path': None}
 

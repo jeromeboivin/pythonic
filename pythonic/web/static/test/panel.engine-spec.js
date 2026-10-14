@@ -16,7 +16,7 @@ function setup(values = {}) {
     'global.channel': num('global.channel', 1, 8, '', { kind: 'int', default: 1 }),
   };
   const all = { 'global.tempo': 120, 'global.channel': 1, 'preset.name': '808 Beats', 'undo.can_undo': false,
-    'undo.can_redo': false, 'program.current': 1, 'program.occupied': Array(16).fill(false), 'morph.learning': 'off' };
+    'undo.can_redo': false, 'kit.current': '', 'kit.name': '808 Beats', 'kit.edited': false, 'morph.learning': 'off' };
   for (let n = 1; n <= 8; n += 1) {
     for (const [s, lo, hi, unit] of [['osc.pitch', -24, 24, 'st'], ['osc.decay', 10, 10000, 'ms'],
       ['mix.level', -60, 10, 'dB'], ['mix.pan', -100, 100, 'pan'], ['fx.reverb_mix', 0, 1, 'ratio']]) {
@@ -135,17 +135,12 @@ test('CTRL setup and addresses', () => {
   assert.equal(ctrlAddress(ctrlSetup({ mode: 'bogus' }), 4), 'ch4.mix.pan');
 });
 
-test('programs light the current one and select through the verb', async () => {
-  const occupied = Array(16).fill(false);
-  occupied[0] = true;
-  occupied[4] = true;
-  const { stage, verbs } = setup({ 'program.current': 5, 'program.occupied': occupied });
-  const buttons = [...stage.querySelectorAll('#programs .btn')];
-  assert.deepEqual(buttons.map((b, i) => (b.classList.contains('on') ? i + 1 : 0)).filter(Boolean), [5]);
-  assert.ok(buttons[1].classList.contains('empty') && !buttons[0].classList.contains('empty'));
-  buttons[11].click();
-  await tick();
-  assert.deepEqual(verbs(), [{ verb: 'program.select', args: { program: 12 } }]);
+test('the display shows the kit playing, * when it is edited, the preset for the preset kit', () => {
+  const { panel, bridge } = setup({ 'kit.current': '', 'kit.name': '808 Beats', 'kit.edited': false });
+  assert.equal(panel.display.text()[1], '808 BEATS');
+  bridge.pushFrame({ changes: { 'kit.current': 'factory:909', 'kit.name': '909', 'kit.edited': true } });
+  assert.equal(panel.display.text()[1], 'KIT 909*');
+  assert.ok(!document.querySelector('#programs'));
 });
 
 test('undo and redo follow the journal and run their verbs', async () => {

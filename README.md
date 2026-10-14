@@ -130,7 +130,7 @@ differs; the window cannot shrink below 1280×800):
 
 - **Left column**: undo / redo, the step modes (trig, accent, velo, fill,
   prob, sub), last step, all ch, follow, ⊞ matrix, the patterns A-L with
-  chain, menu, lane copy / paste, and the 16 programs.
+  chain, menu, lane copy / paste, and KIT / INST / WRITE (below).
 - **Centre**: master, step rate, fill rate and the strip CTRL mode over
   eight channel strips (patch name, tune, decay, CTRL knob, level fader,
   channel button showing the drum type).
@@ -264,13 +264,32 @@ MIDI/Key Input
    └────────────────────┘
 ```
 
-## 🎯 Factory Presets
+## 🎯 Kits and Factory Presets
+
+Kits work as on a TR-8S. A kit (the eight channel sounds under a name) lives
+in a kit library of its own: seven read-only factory kits (505, 707, 808,
+909, DMX, LM2, TR-8) and your user kits (JSON files in the `Kits` folder of
+the preset folder). A preset plays one kit, and a pattern can recall a kit
+when it starts (its menu: recall kit).
+
+- **KIT** turns the display into the kit selector (`KIT 004* FACTORY` / `909`):
+  ◀ ▶, the wheel over the display or the arrow keys step through the kits,
+  each playing at once; SHIFT jumps between the factory and user kits.
+  Kit 000 is the preset's own sounds.
+- **INST** does the same for the selected channel's drum patch, through the
+  drum patch library by category (BD, SD, TOM, RIM, CLAP, CH, OH, CYM, PERC,
+  FX, OTHER): the factory drum patches, then the `.mtdrum` files of the drum
+  patch folder (PRESET ▸ drum patch folder…, default `Drum Patches` in the
+  preset folder). SHIFT jumps a category; a channel button changes the channel.
+- An edited kit shows `*` and keeps its edits when you switch kits.
+  **WRITE** stores them (over your user kit, or as a new one) and saves the
+  preset; it also turns an old preset's programs into user kits.
 
 The PRESET menu lists seven read-only factory presets, one per drum machine:
-505, 707, 808, 909, DMX, LM2 and TR-8 Beats. Each has its machine's kit and
-twelve patterns, and all seven kits in programs 1-7. The TR-8 kit is made of
-drum patches fitted to TR-8 samples with `tools/fit_samples.py` (see below);
-all 41 of them are factory drum patches, offered by the panel's inst mode.
+505, 707, 808, 909, DMX, LM2 and TR-8 Beats. Each plays its machine's kit
+with twelve patterns. The TR-8 kit is made of drum patches fitted to TR-8
+samples with `tools/fit_samples.py` (see below); all 41 of them are factory
+drum patches in the INST library.
 
 Pythonic includes 8 built-in drum sounds:
 

@@ -209,6 +209,9 @@ class Prefs:
         if not os.path.isdir(folder):
             raise ValueError(f'pref.preset_folder: {folder} is not a folder')
         self._save('preset_folder', folder)
+        # The kits and the default drum patch folder are in the preset folder
+        self._core.call_soon(self._core.kits.scan)
+        self._core.call_soon(self._core.library.scan)
 
     # ================================================================== stream settings
     def stream_settings(self):

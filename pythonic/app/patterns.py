@@ -347,6 +347,7 @@ class Patterns:
         else:
             pm.play_position = 0
             pm.current_step = 0
+            self._core.kits.follow(index)  # stopped: the pattern's kit plays at once
 
     def _apply_queue(self, index):
         pm = self.pm

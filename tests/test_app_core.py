@@ -22,8 +22,9 @@ from tests.fake_audio import FakeAudioBackend
 # ---------------------------------------------------------------------------
 
 def edits(poll):
-    """The changes of a poll without the undo journal state."""
-    return {a: v for a, v in poll['changes'].items() if not a.startswith('undo.')}
+    """The changes of a poll without the undo journal state and the kit's edited mark."""
+    return {a: v for a, v in poll['changes'].items()
+            if not a.startswith('undo.') and a != 'kit.edited'}
 
 
 @pytest.fixture

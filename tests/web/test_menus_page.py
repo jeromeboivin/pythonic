@@ -149,36 +149,6 @@ def test_a_factory_preset_is_saved_as_another_file(panel, tmp_path):
     assert same_path(save['path'], tmp_path / 'my 808.json')
 
 
-def test_restore_factory_kits_asks_first(panel, tmp_path):
-    core = panel.core
-    folder_state(panel, tmp_path)
-    core.post_change('program.current', 3)
-    panel.wait_js("pythonic.store.value('program.current') === 3")
-    open_preset_menu(panel)
-    click_item(panel, 'restore factory kits…')
-    title, text = alert_up(panel, 'ok')
-    assert title == 'Restore the factory kits?' and 'Program 3 is one of them' in text
-    answer_alert(panel, primary=False)
-    assert acts(core, 'program.restore_factory') == []
-
-    open_preset_menu(panel)
-    click_item(panel, 'restore factory kits…')
-    alert_up(panel, 'ok')
-    answer_alert(panel, primary=True)
-    assert wait_act(panel, 'program.restore_factory') == [{}]
-    panel.wait_js("pythonic.panel.display.text()[1] === 'factory kits'")
-
-
-def test_a_program_button_names_its_kit(panel):
-    core = panel.core
-    core.post_change('program.names', ['505', '707', '808', '909', 'DMX', 'LM2'] + [''] * 10)
-    panel.wait_js("document.querySelector('#programs .btn[data-program=\"3\"]').title === 'program 3: 808'")
-    assert panel.js("document.querySelector('#programs .btn[data-program=\"7\"]').title") == 'program 7'
-    panel.click('#programs .btn[data-program="5"]')
-    panel.wait_js("pythonic.panel.display.text()[1] === '5 DMX'")
-    assert wait_act(panel, 'program.select') == [{'program': 5}]
-
-
 def test_open_preset_goes_through_the_native_dialog(panel, tmp_path):
     core = panel.core
     preset = tmp_path / 'other.mtpreset'

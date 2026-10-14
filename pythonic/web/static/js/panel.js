@@ -1,13 +1,15 @@
 // The hardware face (map decisions #7, #12, #16): left column (undo / redo,
-// programs), the top row (master, step rate, fill rate, strip ctrl) over the
-// eight channel strips, the right column (display, MUTE latch, morph learn,
-// tempo, MIDI LED, sound morph) and START/STOP. Everything is address-driven:
+// step entry, patterns, KIT / INST / WRITE), the top row (master, step rate,
+// fill rate, strip ctrl) over the eight channel strips, the right column
+// (display, MUTE latch, morph learn, tempo, MIDI LED, sound morph) and
+// START/STOP. Everything is address-driven:
 // controls are px-* elements (controls.js) bound by data-address, buttons
 // that start verbs carry data-verb.
 //
 // Extension slots for later slices (elements with data-slot):
 //   step-entry  left column: step-mode buttons, last step, all ch, follow, matrix (steps.js)
 //   patterns    left column: patterns A-L, chain, menu, copy, paste (patterns.js)
+//   kit, inst, write   left column: the kit and drum patch selectors and WRITE (kits.js)
 //   preset-prev, preset-next, preset   the PRESET buttons and menu (presets.js)
 //   po32, setup           open the PO-32 page and the setup sheet (panel.openPage)
 //   rack-toggle           the edit rack button (rack.js)
@@ -33,6 +35,7 @@ import { createControlContext, provideContext } from './controls.js';
 import { createDrawer } from './drawer.js';
 import { mountExports } from './exports.js';
 import { createFileFlows } from './files.js';
+import { mountKits } from './kits.js';
 import { mountPatterns } from './patterns.js';
 import { mountRack } from './rack.js';
 import { mountPresets } from './presets.js';
@@ -107,7 +110,7 @@ export function errorTitle(event) {
 export const PANEL_ADDRESSES = [
   'global.tempo', 'global.swing', 'global.step_rate', 'global.fill_rate', 'global.master',
   'global.channel', 'global.edit_all', 'morph.position', 'morph.learning', 'morph.differs',
-  'program.current', 'program.occupied', 'undo.can_undo', 'undo.can_redo', 'preset.name',
+  'kit.current', 'kit.name', 'kit.edited', 'undo.can_undo', 'undo.can_redo', 'preset.name',
   'midi.connected', 'midi.cc_map', 'midi.learning', 'midi.pitchbend_target',
   ...CHANNELS.flatMap((n) => [`ch${n}.name`, `ch${n}.mute`, `ch${n}.osc.pitch`, `ch${n}.osc.decay`,
     `ch${n}.mix.level`]),
@@ -130,8 +133,6 @@ function stripHtml(n) {
 }
 
 function faceHtml() {
-  const programs = Array.from({ length: 16 }, (_, i) =>
-    `<button class="btn" type="button" data-verb="program.select" data-program="${i + 1}">${i + 1}</button>`).join('');
   return html`
   <div class="panel-face">
     <div class="col left">
@@ -143,13 +144,16 @@ function faceHtml() {
       <div class="slot-step-entry slot-mark" data-slot="step-entry"></div>
       <div class="hl">pattern</div>
       <div class="slot-patterns slot-mark" data-slot="patterns"></div>
-      <div class="hl prog-head"><span>program</span>
-        <button class="btn sq slot" type="button" data-slot="kit-mode" disabled>kit</button>
-        <div style="display:contents" data-address="factory.patches">
-        <button class="btn sq slot" type="button" data-slot="inst-mode" disabled>inst</button></div></div>
-      <div class="programs" id="programs" data-address="program.occupied">
-        <div style="display:contents" data-address="program.current">
-        <div style="display:contents" data-address="program.names">${programs}</div></div>
+      <div class="hl">kit</div>
+      <div class="kit-row" data-address="kit.current">
+        <div style="display:contents" data-address="kit.list">
+        <div style="display:contents" data-address="kit.name">
+        <button class="btn sq slot" type="button" data-slot="kit" title="kit: pick a kit with ◀ ▶ (shift: factory / user)" disabled>kit</button>
+        <div style="display:contents" data-address="drum_patch.library">
+        <button class="btn sq slot" type="button" data-slot="inst" title="inst: pick the selected channel's drum patch with ◀ ▶ (shift: category)" disabled>inst</button></div></div></div>
+        <div style="display:contents" data-address="kit.edited">
+        <div style="display:contents" data-address="program.occupied">
+        <button class="btn sq slot" type="button" data-slot="write" disabled>write</button></div></div>
       </div>
     </div>
     <div class="col centre">
@@ -172,13 +176,14 @@ function faceHtml() {
         <div style="display:contents" data-address="preset.files">
         <div style="display:contents" data-address="preset.clipboard">
         <div style="display:contents" data-address="pref.preset_folder">
+        <div style="display:contents" data-address="pref.patch_folder">
         <div style="display:contents" data-address="pref.recent_files">
         <div style="display:contents" data-address="preset.factory">
         <div style="display:contents" data-address="factory.presets">
         <button class="btn sq slot" type="button" data-slot="preset-prev" data-address="preset.path" disabled>◀</button>
         <button class="btn sq slot" type="button" data-slot="preset-next" data-address="preset.path" disabled>▶</button>
         <button class="btn sq slot w2" type="button" data-slot="preset" data-address="preset.name" disabled>preset</button>
-        </div></div></div></div></div></div>
+        </div></div></div></div></div></div></div>
         <button class="btn sq slot w2" type="button" data-slot="rack-toggle" disabled>edit rack</button>
         <button class="btn sq" type="button" data-slot="po32" id="po32-button">po-32</button>
         <button class="btn sq" type="button" data-slot="setup" id="setup-button">setup</button>
@@ -211,22 +216,31 @@ export function mountPanel(stage, { store, client, meta = {} }) {
   stage.innerHTML = faceHtml();
   provideContext(stage, ctx);
   const $ = (sel) => stage.querySelector(sel);
-  const $$ = (sel) => [...stage.querySelectorAll(sel)];
   const display = $('#display');
   const offs = [];
   const watch = (address, fn) => offs.push(store.watch(address, fn));
   let muteLatch = false;
 
   // ------------------------------------------------------------ display
-  // Pattern and page on the first line (the pads' view), the preset on the second
+  // Pattern and page on the first line (the pads' view), the kit on the
+  // second (the preset's name for the preset kit), * when it is edited; a
+  // KIT or INST selector shows its own lines (kits.js)
   let view = { letter: 'A', page: 0 };
+  let kits = null;
   const baseDisplay = () => {
+    const selector = kits && kits.baseLines();
+    if (selector) {
+      display.setBase(...selector);
+      return;
+    }
+    const kit = store.value('kit.current') ? `KIT ${store.value('kit.name') || ''}`
+      : String(store.value('preset.name') || 'PYTHONIC');
     display.setBase(`PATTERN ${view.letter}  ${pageRange(view.page).padStart(5)}`,
-      String(store.value('preset.name') || 'PYTHONIC').toUpperCase());
+      `${kit.toUpperCase()}${store.value('kit.edited') ? '*' : ''}`);
   };
   const onTouch = (e) => display.show(e.detail.name, e.detail.text);
   stage.addEventListener('px-touch', onTouch);
-  watch('preset.name', baseDisplay);
+  for (const address of ['preset.name', 'kit.current', 'kit.name', 'kit.edited']) watch(address, baseDisplay);
 
   /** Run a verb; its error (if any) shows on the display. */
   const act = (verb, args = {}) => client.act(verb, args).then((event) => {
@@ -309,7 +323,8 @@ export function mountPanel(stage, { store, client, meta = {} }) {
         display.show(`CH${n} MUTE`, muted ? 'on' : 'off');
       } else {
         ctx.set('global.channel', n);
-        display.show(`CH${n}`, String(store.value(`ch${n}.name`) || '').toUpperCase());
+        // In INST the selector shows the channel's drum patch itself
+        if (!(kits && kits.state.mode === 'inst')) display.show(`CH${n}`, String(store.value(`ch${n}.name`) || '').toUpperCase());
       }
     });
   });
@@ -398,28 +413,6 @@ export function mountPanel(stage, { store, client, meta = {} }) {
       display.show(button.dataset.verb.toUpperCase(), r.done ? undoText(r.label, controlName) : 'nothing to ' + button.dataset.verb);
     }));
   }
-  const programButtons = $$('#programs .btn');
-  const programName = (i) => String((store.value('program.names') || [])[i] || '');
-  const showPrograms = () => {
-    const current = store.value('program.current');
-    const occupied = store.value('program.occupied') || [];
-    programButtons.forEach((b, i) => {
-      b.classList.toggle('on', i + 1 === current);
-      b.classList.toggle('empty', !occupied[i]);
-      b.title = programName(i) ? `program ${i + 1}: ${programName(i)}` : `program ${i + 1}`;
-    });
-  };
-  watch('program.current', showPrograms);
-  watch('program.occupied', showPrograms);
-  watch('program.names', showPrograms);
-  for (const b of programButtons) {
-    b.addEventListener('click', () => {
-      const program = Number(b.dataset.program);
-      const name = programName(program - 1);
-      display.show('PROGRAM', name ? `${program} ${name.toUpperCase()}` : String(program));
-      act('program.select', { program });
-    });
-  }
 
   // ------------------------------------------------------------ right column
   const latch = $('#mute-latch');
@@ -493,7 +486,10 @@ export function mountPanel(stage, { store, client, meta = {} }) {
     onView: (next) => { view = next; baseDisplay(); } });
   const patterns = mountPatterns({ store, ctx, display, act, slot, selected: () => selectedPattern(store) });
   rack = mountRack({ store, client, ctx, display, stage, slot, drawer, files });
-  const presets = mountPresets({ store, client, ctx, display, act, stage, slot, files, openPage,
+  let presets = null;
+  kits = mountKits({ store, client, ctx, display, act, stage, slot, sheets, patterns,
+    presets: () => presets, onBase: baseDisplay });
+  presets = mountPresets({ store, client, ctx, display, act, stage, slot, files, openPage, kits,
     patchItems: rack.patchItems, ask: sheets.ask, beforeLoad: beforePresetLoad });
   const exportsMenu = mountExports({ client, ctx, display, stage, patterns, files });
   baseDisplay();
@@ -519,6 +515,8 @@ export function mountPanel(stage, { store, client, meta = {} }) {
     files,
     /** The PRESET buttons and menu (presets.js). */
     presets,
+    /** KIT, INST and WRITE (kits.js): state, setMode, step, active. */
+    kits,
     /** The pattern menu's exports (exports.js): exportMidi, exportAudio, openTailPopover. */
     exports: exportsMenu,
     registerPage,
@@ -533,6 +531,7 @@ export function mountPanel(stage, { store, client, meta = {} }) {
       sheets.destroy();
       exportsMenu.destroy();
       presets.destroy();
+      kits.destroy();
       steps.destroy();
       patterns.destroy();
       rack.destroy();

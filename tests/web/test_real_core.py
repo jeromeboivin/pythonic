@@ -8,6 +8,8 @@ import json
 import statistics
 from pathlib import Path
 
+from PySide6.QtCore import Qt
+
 from pythonic.web.bridge import FRAME_BUDGET_MS, Bridge
 
 PRESETS = Path(__file__).resolve().parent.parent
@@ -291,61 +293,76 @@ def test_a_preset_saved_from_the_menu_loads_back_from_the_folder_list(open_panel
     assert real_core.get('pref.recent_files')[0] == str(folder / 'mine.json')
 
 
-def test_a_factory_preset_loads_from_the_menu_and_names_its_kits(open_panel, real_core, tmp_path):
+def test_a_factory_preset_loads_from_the_menu_and_plays_its_kit(open_panel, real_core, tmp_path):
     page = open_panel(real_core, owns_core=False)
     pump = real_core.backend.stream.pull
     page.click('#preset-button')
     _pick(page, '909 Beats', '#preset-menu .pm-factory .it')
     page.wait_js("pythonic.store.value('preset.factory') === true", pump=pump)
-    assert real_core.get('preset.name') == '909 Beats' and real_core.get('program.current') == 4
-    page.wait_js("document.querySelector('#programs .btn[data-program=\"4\"]').title === 'program 4: 909'",
-                 pump=pump)
-    page.wait_js("document.querySelector('#programs .btn[data-program=\"4\"]').classList.contains('on')")
+    assert real_core.get('preset.name') == '909 Beats' and real_core.get('kit.current') == 'factory:909'
+    page.wait_js("pythonic.panel.display.text()[1] === 'KIT 909'", pump=pump)
 
     # ▶ walks the factory presets; a kit switch keeps the patterns
     page.click('#preset-next')
     page.wait_js("pythonic.store.value('preset.name') === 'DMX Beats'", pump=pump)
     lanes = [p.to_dict() for p in real_core.pattern_manager.patterns]
-    page.click('#programs .btn[data-program="3"]')
-    page.wait_js("pythonic.store.value('program.current') === 3", pump=pump)
+    page.click('#kit-button')
+    page.wait_js("pythonic.panel.display.text()[0].startsWith('KIT 005')", pump=pump)
+    page.click('#preset-prev')
+    page.click('#preset-prev')
+    page.wait_js("pythonic.store.value('kit.current') === 'factory:808'", pump=pump)
+    assert page.js("pythonic.panel.display.text()") == ['KIT 003  FACTORY', '808']
     assert real_core.get('ch1.name') == '808 BD'
     assert [p.to_dict() for p in real_core.pattern_manager.patterns] == lanes
 
 
-def test_kit_mode_switches_programs_from_the_pads(open_panel, real_core):
+def test_the_kit_selector_keeps_edits_and_write_stores_a_user_kit(open_panel, real_core):
     page = open_panel(real_core, owns_core=False)
     pump = real_core.backend.stream.pull
     assert finish(real_core, real_core.act('preset.load', factory='808 Beats'))['status'] == 'done'
-    lanes = [p.to_dict() for p in real_core.pattern_manager.patterns]
-    page.click('#kit-mode')
-    page.wait_js("document.querySelector('.kits .kit.cur') &&"
-                 " document.querySelector('.kits .kit.cur').dataset.program === '3'", pump=pump)
-    assert page.js("document.querySelector('.kits .kit[data-program=\"6\"] .kn').textContent") == 'LM2'
+    real_core.set('ch1.osc.decay', 1500.0)
+    page.wait_js("pythonic.store.value('kit.edited') === true", pump=pump)
+    page.wait_js("pythonic.panel.display.text()[1] === 'KIT 808*'", pump=pump)
+    assert page.js("document.querySelector('#write-button').classList.contains('edited')")
 
-    page.click('.kits .kit[data-program="6"]')
-    page.wait_js("document.querySelector('.kits .kit.cur').dataset.program === '6'", pump=pump)
-    assert real_core.get('program.current') == 6 and real_core.get('ch8.name') == 'LM2 OH'
-    assert [p.to_dict() for p in real_core.pattern_manager.patterns] == lanes
+    # Another kit and back: the edits are still there
+    page.click('#kit-button')
+    page.click('#preset-next')
+    page.wait_js("pythonic.store.value('kit.current') === 'factory:909'", pump=pump)
+    page.click('#preset-prev')
+    page.wait_js("pythonic.store.value('kit.current') === 'factory:808'", pump=pump)
+    page.wait_js("pythonic.panel.display.text()[0] === 'KIT 003* FACTORY'", pump=pump)
+    assert real_core.get('ch1.osc.decay') == 1500.0
+
+    page.click('#write-button')
+    _pick(page, 'kit as…', '.px-menu .it')
+    page.wait_js("document.querySelector('.alert-input') && document.querySelector('.alert-input').value === '808 copy'")
+    page.run("document.querySelector('.alert-input').value = 'Long 808'")
+    page.click('.alert-buttons .primary')
+    page.wait_js("pythonic.store.value('kit.current') === 'user:Long 808'", pump=pump)
+    page.wait_js("pythonic.store.value('kit.edited') === false", pump=pump)
+    assert (Path(real_core.get('pref.preset_folder')) / 'Kits' / 'Long 808.json').is_file()
 
 
-def test_inst_mode_loads_a_factory_sound_into_the_selected_channel(open_panel, real_core):
+def test_the_inst_selector_steps_the_selected_channels_drum_patch(open_panel, real_core):
     page = open_panel(real_core, owns_core=False)
     pump = real_core.backend.stream.pull
     assert finish(real_core, real_core.act('preset.load', factory='808 Beats'))['status'] == 'done'
     page.click('.strip[data-channel="5"] .chb')  # 808 SD
     page.wait_js("pythonic.store.value('global.channel') === 5", pump=pump)
-    page.click('#inst-mode')
-    page.wait_js("document.querySelector('.kits .kit.cur') &&"
-                 " document.querySelector('.kits .kit.cur').dataset.patch === '808 SD'", pump=pump)
-    offered = page.js("[...document.querySelectorAll('.kits .kit.on')].map((k) => k.dataset.patch)")
-    assert offered == ['505 SD', '707 SD 1', '707 SD 2', '808 SD', '909 SD', 'DMX SD', 'LM2 SD',
-                       'TR-8 Snare 01', 'TR-8 Snare 02', 'TR-8 Snare 03', 'TR-8 Snare 04',
-                       'TR-8 Snare 05', 'TR-8 Snare 06']
+    page.click('#inst-button')
+    page.wait_js("pythonic.panel.display.text()[1] === '808 SD'", pump=pump)
+    assert page.js("pythonic.panel.display.text()[0]") == 'INST 5 SD 4/13'
 
-    page.click('.kits .kit[data-patch="909 SD"]')
-    page.wait_js("document.querySelector('.kits .kit.cur').dataset.patch === '909 SD'", pump=pump)
-    assert real_core.get('ch5.name') == '909 SD' and real_core.get('ch1.name') == '808 BD'
-    assert real_core.get('program.names')[2] == ''  # the kit is no longer all 808
+    page.click('#preset-next')
+    page.wait_js("pythonic.store.value('ch5.name') === '909 SD'", pump=pump)
+    assert page.js("pythonic.panel.display.text()") == ['INST 5 SD 5/13', '909 SD']
+    assert real_core.get('ch1.name') == '808 BD'
+    # SHIFT: the next category, and one undo step for the whole browse
+    page.click('#preset-next', modifiers=Qt.KeyboardModifier.ShiftModifier)
+    page.wait_js("pythonic.store.value('ch5.name') === '505 Tom High'", pump=pump)
+    assert finish(real_core, real_core.act('undo'))['status'] == 'done'
+    page.wait_js("pythonic.store.value('ch5.name') === '808 SD'", pump=pump)
 
 
 def test_export_to_midi_from_the_pattern_menu_writes_the_file(open_panel, real_core, tmp_path):

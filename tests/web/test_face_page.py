@@ -268,13 +268,6 @@ def test_the_tempo_knob_and_display(panel, qtbot):
     qtbot.waitUntil(lambda: panel.core.values['global.tempo'] == 119)
 
 
-def test_programs_select_through_the_verb(panel, qtbot):
-    panel.click('#programs .btn[data-program="7"]')
-    qtbot.waitUntil(lambda: ('act', 'program.select', {'program': 7}) in panel.core.calls)
-    panel.core.post_change('program.current', 7)
-    panel.wait_js("document.querySelector('#programs .btn.on').dataset.program === '7'")
-
-
 def test_undo_and_redo_follow_the_journal(panel, qtbot):
     core = panel.core
     core.verbs['undo'] = lambda: {'done': True, 'label': 'ch1.osc.decay'}
