@@ -80,7 +80,7 @@ pythonic/web/
     js/exports.js      mountExports(...): the pattern menu's export to MIDI / audio (tail popover)
     js/setup-logic.js  pure setup sheet logic: tabs, note names, CC map rows and edits, target names / menu groups, rates
     js/setup.js        mountSetup({panel, store, client, meta}): the setup sheet (registers the 'setup' page)
-    js/ai-logic.js     pure AI page logic: laneView, modelView, bankText, previewArgs, leaveQuestion, parseSeed, ...
+    js/ai-logic.js     pure AI page logic: laneView, patternView, modelProblem, trialText, leaveQuestion, keptText, ...
     js/ai-page.js      mountAiPage({panel, store, client, stage}): the AI drum generator drawer page
     js/po32-logic.js   pure PO-32 page logic: stage flows, picks and letters, level meter, stage texts
     js/po32.js         mountPo32Page(panel, {store, client}): the 'po32' drawer page (transfer, import)
@@ -515,47 +515,45 @@ mappings… for controls on the setup sheet.
 
 Decisions #13, #21 (settings shared with the setup sheet's ai tab: #22). A
 drawer page (`panel.openPage('ai')`, from the PRESET menu) whose three
-columns line up with the face's, so each lane sits under its strip:
+columns line up with the face's, so each lane sits under its strip. New
+sounds and new patterns work the same way: one click makes them and they
+play on the face; old | new compares; keep or revert settles.
 
-- **left**: patch and pattern model lines (`ai.models`: file ✓ (sampling),
-  loading…, error, no model; `load…` opens the native dialog and runs
-  `ai.load_model` with the path, which the core saves as `pref.ai.<kind>_model`
-  once loaded), the patch temperature knob (`pref.ai.patch_temperature`),
-  candidates ‹ n › (1..32, default 8, wheel too), seed (blank = random, ⟳
-  reseeds), **generate all 8** (`ai.generate` with candidates and seed; in
-  generate-new mode it then runs `ai.generate_patterns` with the seed). The
-  saved or bundled models still `unloaded` load when the page opens.
+- **left**: the sound temperature knob (`pref.ai.patch_temperature`),
+  **generate 8 sounds** (`ai.generate`: one new sound per lane, a fresh
+  random seed each time), and a red note when a model is missing or broken
+  (`ai.models`). The saved or bundled models still `unloaded` load when the
+  page opens.
 - **lanes** (`.ai-lane[data-channel]`): drum type (`px-list` on
-  `ai.ch<N>.type`, any of 18), gen (`ai.generate` with channel and type), ‹
-  `i/n` › (`ai.try` with `step` ±1), the candidate name, try / trying ✓
-  (`ai.try` / `ai.untry`), and a note (generating…, error: …). A lane that
-  generates, steps or tries is hit at 127 while the transport is stopped
-  (tkinter's preview). The strip tab of a channel trying a candidate gets
-  `aitry` (its name, now the channel's, in italics with a dashed outline).
-  Generating a lane or stepping it drops the AI pattern bank
-  (`ai.clear_patterns`, as tkinter).
-- **right**: keep current / generate new patterns (page state, as the
-  tkinter dialog), the pattern temperature knob
-  (`pref.ai.pattern_temperature`), the bank note (`ai.bank`) with ↻ (a new
-  bank), ▶ loop / ▶ bank A→L (`ai.pattern_try`, a second click stops; `bank`
-  only in generate-new mode), keep tried (`ai.keep`, one undo step; off
-  while `ai.tried` is empty), replace patterns (`ai.replace_patterns`, only
-  with a bank ready in generate-new mode), revert all (`ai.revert`).
+  `ai.ch<N>.type`, any of 18), gen (`ai.generate` with channel and type: one
+  new sound, tried at once), the new sound's name, old | new (`ai.untry` /
+  `ai.try`; hidden until the lane has a sound), and a note (generating…,
+  error: …, which sound plays). A lane that generates or switches to new is
+  hit at 127 while the transport is stopped. The strip tab of a channel
+  playing its new sound gets `aitry` (its name, now the channel's, in
+  italics with a dashed outline).
+- **right**: the pattern temperature knob (`pref.ai.pattern_temperature`),
+  **generate patterns** (`ai.generate_patterns`, then `ai.pattern_try`
+  `try`: the 12 new patterns go on the face and the transport starts; any
+  pattern picked plays its new version, stop and start keep them), old | new
+  (`ai.pattern_try` None / `try`), a note (`ai.bank`, `ai.preview`), keep
+  (`ai.replace_patterns` while the new patterns play, else `ai.keep`: what
+  plays, one undo step) and revert, both then `ai.clear` (the new ones are
+  forgotten). Keep and revert are off while nothing new plays.
 - **Without the ML extras** (`ai.available` false) the lanes give way to
   the `ai.install_command` with copy (clipboard) and install now (asks, then
   `ai.install`; `ai.installing` greys it; success says so and loads the
   models: the worker needs no restart).
 - **Header**: `◀ ch n edit`, the state (`ai.state`: generating…, loading a
-  model…, installing…, ML extras missing), the channels trying, ✕.
-- **Leaving with tried sounds** asks keep or revert on the alert sheet: ✕
-  and `◀ ch n edit` ask first (cancel stays); another drawer page or closing
-  the rack ask once the page is gone (keep / revert); a preset load asks
-  first (a guard). Keep also stops a pattern preview; leaving without tried
-  sounds just stops it. Verb errors show on the display; generation, model
-  and install failures also on a red alert.
+  model…, installing…, ML extras missing), what is new on the face,
+  models… (`panel.openPage('setup', {tab: 'ai'})`), ✕.
+- **Leaving with new sounds or patterns playing** asks keep or revert on the
+  alert sheet: ✕ and `◀ ch n edit` ask first (cancel stays); another drawer
+  page or closing the rack ask once the page is gone (keep / revert); a
+  preset load asks first (a guard). Verb errors show on the display;
+  generation, model and install failures also on a red alert.
 
-`panel.ai` = `{element, open, leave, settle(cancellable), patternMode,
-candidates, destroy}`.
+`panel.ai` = `{element, open, leave, settle(cancellable), destroy}`.
 
 ## PO-32 page (`po32.js`, `po32-logic.js`)
 
@@ -668,8 +666,9 @@ before pytest-qt makes the QApplication. CI also sets
   note step, an added CC mapping and a buffer change with restart audio.
 - **AI page**: `test_ai_page.py` (fake core: layout under the strips, every
   state, the leave question on every way out) and `test_ai_real_core.py`
-  (the real core with `tests/fake_ai_worker.py`: generate, try on the face,
-  a knob edit, keep tried, one undo step; leave and revert).
+  (the real core with `tests/fake_ai_worker.py`: gen, old | new on the
+  face, a knob edit, keep as one undo step; new patterns played, kept with
+  the sounds and undone; leave and revert).
 - **PO-32 page**: `test_po32_page.py` (fake core: both tabs, every stage,
   opening, closing and the tab memory) and `test_po32_real_core.py` (a card
   transfer made with the codec pushed into the fake input while recording,

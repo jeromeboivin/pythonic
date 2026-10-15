@@ -1,10 +1,10 @@
-"""Page tests of the AI drum generator page (web slice W8) over the fake core:
-a drawer page opened from the PRESET menu whose lanes sit under the strips
+"""Page tests of the AI generator page (web slice W8) over the fake core: a
+drawer page opened from the PRESET menu whose lanes sit under the strips
 (#21, #13), every state (ML extras missing and their install, idle, a lane
-generating, candidates tried on the face, an error), the generation
-settings, the pattern bank and its previews, keep / replace / revert, and
-the keep-or-revert question on every way out (the page's own buttons,
-another drawer page, a preset load)."""
+generating, a new sound playing on the face, an error), one new sound per
+lane with old | new, new patterns played on the face with old | new, keep
+and revert, and the keep-or-revert question on every way out (the page's
+own buttons, another drawer page, a preset load)."""
 
 import pytest
 
@@ -107,32 +107,19 @@ def test_the_page_opens_a_closed_rack_and_closing_it_restores(panel, qtbot):
     window_is(panel, qtbot, 560)
 
 
-def test_the_settings_are_the_shared_ai_preferences(panel):
+def test_the_settings_are_the_shared_ai_preferences_and_models_open_setup(panel):
     open_ai(panel)
     bound = panel.bound_addresses()
-    assert {'pref.ai.patch_temperature', 'pref.ai.pattern_temperature', 'pref.ai.patch_model',
-            'pref.ai.pattern_model', 'ai.models'} <= bound
+    assert {'pref.ai.patch_temperature', 'pref.ai.pattern_temperature', 'ai.models'} <= bound
     for n in range(1, 9):
-        assert {f'ai.ch{n}.{f}' for f in ('type', 'candidates', 'candidate', 'name', 'trying',
-                                          'generating', 'error')} <= bound
+        assert {f'ai.ch{n}.{f}' for f in ('type', 'candidates', 'name', 'trying', 'generating')} <= bound
+    assert text(panel, '.ai-model-note') == ''
     panel.core.post_change('ai.models', {
         'patch': {'path': '/m/kick.pt', 'bundled': True, 'status': 'loaded', 'error': None, 'sampling': 'prior'},
         'pattern': {'path': '/m/pat.pt', 'bundled': True, 'status': 'error', 'error': 'broken', 'sampling': None}})
-    panel.wait_js("document.querySelector('.ai-model[data-kind=\"patch\"] .st').textContent === 'kick.pt ✓ (prior)'")
-    assert text(panel, '.ai-model[data-kind="pattern"] .st') == 'error: broken'
-
-
-def test_load_model_goes_through_the_open_dialog(panel, tmp_path):
-    core = panel.core
-    open_ai(panel)
-    model = tmp_path / 'mine.pt'
-    model.write_bytes(b'x')
-    core.verbs['ai.load_model'] = lambda kind, path=None: {'kind': kind, 'path': path or '/b.pt', 'sampling': None}
-    panel.click('.ai-model[data-kind="patch"] .ai-load')
-    panel.answer_dialog(model)
-    loads = [a for a in wait_act(panel, 'ai.load_model', 3) if a.get('path')]
-    assert loads[0]['kind'] == 'patch' and loads[0]['path'].endswith('mine.pt')
-    panel.wait_js("pythonic.panel.display.text()[1] === 'mine.pt loaded'")
+    panel.wait_js("document.querySelector('.ai-model-note').textContent === 'pattern model: broken'")
+    panel.click('#ai-models')
+    panel.wait_js("!!document.querySelector('.sheet-layer[data-sheet=\"setup\"]')")
 
 
 # ---------------------------------------------------------------- states
@@ -188,52 +175,53 @@ def test_a_failed_install_says_why(panel):
     answer_alert(panel)
 
 
-def test_a_lane_generates_then_tries_candidate_one_on_the_face(panel):
+def test_gen_makes_one_new_sound_and_plays_it_on_the_face(panel):
     core = panel.core
     open_ai(panel)
-    assert text(panel, lane(2, '.cnt')) == '–/–'
-    assert panel.js(f"document.querySelector('{lane(2, '.try')}').disabled")
+    assert text(panel, lane(2, '.cname')) == ''
+    assert panel.js(f"getComputedStyle(document.querySelector('{lane(2, '.ab')}')).visibility") == 'hidden'
     core.verbs['ai.generate'] = lambda **args: core.DEFERRED
     panel.click(lane(2, '.gen'))
     (args,) = wait_act(panel, 'ai.generate')
-    assert args == {'channel': 2, 'type': core.values['ai.ch2.type'], 'candidates': 8}
+    assert args == {'channel': 2, 'type': core.values['ai.ch2.type']}  # one sound, a fresh seed
     post(core, ai__ch2__generating=True, ai__state='generating')
     panel.wait_js(f"document.querySelector('{lane(2, '.lnote')}').textContent === 'generating…'")
     assert text(panel, '.ai-state') == 'generating…'
     assert panel.js(f"document.querySelector('{lane(2)}').dataset.state") == 'generating'
+    assert panel.js(f"document.querySelector('{lane(2, '.gen')}').disabled")
 
-    tried(core, 2, 'SD 1')
+    tried(core, 2, 'SD 1', n=1)
     post(core, ai__state='idle')
     core.finish(core.running, {'channels': [2], 'failed': []})
-    panel.wait_js(f"document.querySelector('{lane(2, '.cnt')}').textContent === '1/8'")
-    assert text(panel, lane(2, '.cname')) == 'SD 1'
-    assert text(panel, lane(2, '.try')) == 'trying ✓'
-    # The strip tab shows the tried candidate in italics
+    panel.wait_js(f"document.querySelector('{lane(2, '.cname')}').textContent === 'SD 1'")
+    assert panel.js(f"document.querySelector('{lane(2, '.new')}').classList.contains('on')")
+    assert not panel.js(f"document.querySelector('{lane(2, '.old')}').classList.contains('on')")
+    assert text(panel, lane(2, '.lnote')) == 'the new sound plays'
+    # The strip tab shows the new sound in italics
     panel.wait_js("document.querySelector('.strip[data-channel=\"2\"] .tab').classList.contains('aitry')")
     assert text(panel, '.strip[data-channel="2"] .tab') == 'SD 1'
     assert panel.js("getComputedStyle(document.querySelector('.strip[data-channel=\"2\"] .tab')).fontStyle") == 'italic'
-    assert text(panel, '.ai-tried') == 'trying on ch 2'
-    assert ('trigger', 1, 127) in core.calls  # heard at once while stopped (tkinter's preview)
+    assert text(panel, '.ai-tried') == 'new sounds on ch 2'
+    assert ('trigger', 1, 127) in core.calls  # heard at once while stopped
 
 
-def test_the_arrows_step_through_candidates_and_try_toggles(panel):
+def test_old_and_new_switch_a_lane_between_its_sounds(panel):
     core = panel.core
     open_ai(panel)
-    tried(core, 4, 'OH 1')
-    panel.wait_js(f"!document.querySelector('{lane(4, '.next')}').disabled")
-    core.verbs['ai.try'] = lambda channel, candidate=None, step=0: {'channel': channel, 'candidate': 2, 'name': 'OH 2'}
-    panel.click(lane(4, '.next'))
-    assert wait_act(panel, 'ai.try') == [{'channel': 4, 'step': 1}]
-    panel.wait_js("pythonic.panel.display.text()[0] === 'CH4 OH 2'")
-    panel.click(lane(4, '.prev'))
-    assert wait_act(panel, 'ai.try', 2)[1] == {'channel': 4, 'step': -1}
-    panel.click(lane(4, '.try'))
+    tried(core, 4, 'OH 1', n=1)
+    panel.wait_js(f"!document.querySelector('{lane(4, '.old')}').disabled")
+    panel.click(lane(4, '.new'))  # already playing: nothing to do
+    panel.click(lane(4, '.old'))
     assert wait_act(panel, 'ai.untry') == [{'channel': 4}]
+    assert not acts(core, 'ai.try')
     post(core, ai__ch4__trying=False, **{'ai.tried': []})
-    panel.wait_js(f"document.querySelector('{lane(4, '.try')}').textContent === 'try'")
+    panel.wait_js(f"document.querySelector('{lane(4, '.old')}').classList.contains('on')")
+    assert text(panel, lane(4, '.lnote')) == 'the old sound plays'
     assert not panel.js("document.querySelector('.strip[data-channel=\"4\"] .tab').classList.contains('aitry')")
-    panel.click(lane(4, '.try'))
-    assert wait_act(panel, 'ai.try', 3)[2] == {'channel': 4}
+    core.verbs['ai.try'] = lambda channel, candidate=None, step=0: {'channel': channel, 'candidate': 1, 'name': 'OH 1'}
+    panel.click(lane(4, '.new'))
+    assert wait_act(panel, 'ai.try') == [{'channel': 4}]
+    panel.wait_js("pythonic.panel.display.text()[0] === 'CH4 OH 1'")
 
 
 def test_a_lane_error_and_a_failed_generation(panel):
@@ -259,71 +247,79 @@ def test_the_drum_type_of_a_lane_is_any_of_the_18(panel):
     panel.wait_js(f"document.querySelector('{lane(5, 'px-list .lbox')}').textContent === 'perc'")
 
 
-def test_generate_all_uses_the_candidates_and_seed_and_makes_a_bank(panel):
+def test_generate_8_sounds_makes_one_per_lane(panel):
     core = panel.core
     open_ai(panel)
-    panel.click('#ai-cand-up')
-    panel.click('#ai-cand-up')
-    panel.wait_js("document.querySelector('#ai-cands').textContent === '10'")
-    panel.run("document.querySelector('#ai-seed').focus()")
-    panel.type_text('42')
-    panel.click('#ai-pmode-new')
-    panel.wait_js("document.querySelector('#ai-pmode-new').classList.contains('on')")
-    assert panel.js("document.querySelector('.ai-banknote').textContent") == '(generate all 8 first)'
-    core.verbs['ai.generate'] = lambda **args: {'channels': list(range(1, 9)), 'failed': []}
-    core.verbs['ai.generate_patterns'] = lambda **args: core.DEFERRED
+    core.verbs['ai.generate'] = lambda **args: {'channels': list(range(1, 8)), 'failed': [{'channel': 8, 'error': 'x'}]}
     panel.click('#ai-generate-all')
-    assert wait_act(panel, 'ai.generate') == [{'candidates': 10, 'seed': 42}]
-    assert wait_act(panel, 'ai.generate_patterns') == [{'seed': 42}]
+    assert wait_act(panel, 'ai.generate') == [{}]
+    panel.wait_js("pythonic.panel.display.text()[1] === '7 new, 1 failed'")
+    assert not acts(core, 'ai.generate_patterns')  # patterns have their own button
+
+
+def test_generate_patterns_plays_them_and_old_new_switches(panel):
+    core = panel.core
+    open_ai(panel)
+    assert text(panel, '.ai-patnote') == 'make 12 patterns (A–L) for the sounds on the face'
+    assert panel.js("document.querySelector('#ai-pat-new').disabled")
+    assert panel.js("document.querySelector('#ai-keep').disabled && document.querySelector('#ai-revert').disabled")
+    core.verbs['ai.generate_patterns'] = lambda **args: core.DEFERRED
+    core.verbs['ai.pattern_try'] = lambda mode=None, bank=True: {'preview': mode or 'off', 'pattern': 'A'}
+    panel.click('#ai-gen-patterns')
+    assert wait_act(panel, 'ai.generate_patterns') == [{}]
     post(core, ai__bank='generating')
-    panel.wait_js("document.querySelector('.ai-banknote').textContent === 'generating patterns…'")
-    assert panel.js("document.querySelector('#ai-replace').disabled")
+    panel.wait_js("document.querySelector('.ai-patnote').textContent === 'generating patterns…'")
+    assert panel.js("document.querySelector('#ai-gen-patterns').disabled")
     post(core, ai__bank='ready')
     core.finish(core.running, {'patterns': 12})
-    panel.wait_js("!document.querySelector('#ai-replace').disabled")
-    assert text(panel, '.ai-banknote') == 'bank of 12 ready'
-    # Stepping a lane changes the kit: the bank goes (tkinter)
-    tried(core, 1, 'BD 1')
-    panel.wait_js(f"!document.querySelector('{lane(1, '.next')}').disabled")
-    panel.click(lane(1, '.next'))
-    wait_act(panel, 'ai.clear_patterns')
-    panel.click('#ai-reseed')
-    panel.wait_js("/^\\d+$/.test(document.querySelector('#ai-seed').value) && document.querySelector('#ai-seed').value !== '42'")
+    assert wait_act(panel, 'ai.pattern_try') == [{'mode': 'try'}]  # played at once
+    post(core, ai__preview='try')
+    panel.wait_js("document.querySelector('#ai-pat-new').classList.contains('on')")
+    assert text(panel, '.ai-patnote').startswith('the new patterns play')
+    assert text(panel, '.ai-tried') == 'new patterns'
+    assert not panel.js("document.querySelector('#ai-keep').disabled")
+    panel.wait_js("pythonic.panel.display.text()[1] === '12 new patterns'")
 
-
-def test_previews_keep_replace_and_revert(panel):
-    core = panel.core
-    open_ai(panel)
-    assert panel.js("document.querySelector('#ai-keep').disabled")
-    assert panel.js("document.querySelector('#ai-replace').disabled")  # keep current patterns
-    core.verbs['ai.pattern_try'] = lambda mode=None, bank=True: {'preview': mode or 'off', 'pattern': 'A'}
-    panel.click('#ai-loop')
-    assert wait_act(panel, 'ai.pattern_try') == [{'mode': 'loop', 'bank': False}]
-    post(core, ai__preview='loop')
-    panel.wait_js("document.querySelector('#ai-loop').textContent === '■ stop loop'")
-    panel.click('#ai-loop')
+    panel.click('#ai-pat-old')
     assert wait_act(panel, 'ai.pattern_try', 2)[1] == {'mode': None}
     post(core, ai__preview='off')
-    panel.click('#ai-bank')
-    assert wait_act(panel, 'ai.pattern_try', 3)[2] == {'mode': 'bank', 'bank': False}
+    panel.wait_js("document.querySelector('#ai-pat-old').classList.contains('on')")
+    assert text(panel, '.ai-patnote') == 'the old patterns play'
+    panel.click('#ai-pat-new')
+    assert wait_act(panel, 'ai.pattern_try', 3)[2] == {'mode': 'try'}
 
-    tried(core, 1, 'BD 3')
-    tried(core, 3, 'CH 2')
+
+def test_keep_commits_what_plays_then_forgets_the_new_ones(panel):
+    core = panel.core
+    open_ai(panel)
+    tried(core, 1, 'BD 3', n=1)
+    tried(core, 3, 'CH 2', n=1)
     panel.wait_js("!document.querySelector('#ai-keep').disabled")
     core.verbs['ai.keep'] = lambda channels=None: {'kept': [1, 3]}
     panel.click('#ai-keep')
     assert wait_act(panel, 'ai.keep') == [{}]
-    panel.wait_js("pythonic.panel.display.text()[1] === 'kept ch 1, 3'")
+    assert wait_act(panel, 'ai.clear') == [{}]
+    panel.wait_js("pythonic.panel.display.text()[1] === 'kept 2 sounds'")
 
-    panel.click('#ai-pmode-new')
-    post(core, ai__bank='ready')
-    panel.wait_js("!document.querySelector('#ai-replace').disabled")
+    # With the new patterns playing, keep takes them too (one undo step)
+    post(core, ai__bank='ready', ai__preview='try')
+    panel.wait_js("pythonic.store.value('ai.preview') === 'try'")
     core.verbs['ai.replace_patterns'] = lambda channels=None: {'kept': [1], 'patterns': 12}
-    panel.click('#ai-replace')
+    panel.click('#ai-keep')
     assert wait_act(panel, 'ai.replace_patterns') == [{}]
+    assert len(wait_act(panel, 'ai.clear', 2)) == 2
     panel.wait_js("pythonic.panel.display.text()[1] === 'kept ch 1 + 12 patterns'")
+
+
+def test_revert_puts_the_old_ones_back_and_forgets_the_new_ones(panel):
+    core = panel.core
+    open_ai(panel)
+    tried(core, 5, 'TOM 1', n=1)
+    panel.wait_js("!document.querySelector('#ai-revert').disabled")
     panel.click('#ai-revert')
-    assert wait_act(panel, 'ai.revert') == [{}]
+    assert wait_act(panel, 'ai.clear') == [{}]
+    assert not acts(core, 'ai.keep')
+    panel.wait_js("pythonic.panel.display.text()[1] === 'reverted'")
 
 
 # ---------------------------------------------------------------- leaving
@@ -335,11 +331,11 @@ def test_closing_with_tried_sounds_asks_keep_revert_or_cancel(panel):
     panel.wait_js("pythonic.store.value('ai.tried').length === 1")
     panel.click('#ai-close')
     title, body = alert_up(panel, 'ok')
-    assert title == 'Keep the tried sounds?' and body.startswith('CH2 SD 5 is trying')
+    assert title == 'Keep what is new?' and body.startswith('CH2 SD 5 plays on the face')
     assert buttons(panel) == ['cancel', 'revert', 'keep']
     answer(panel, 'cancel')
     assert panel.js("pythonic.panel.drawer.current") == 'ai'
-    assert not acts(core, 'ai.keep') and not acts(core, 'ai.revert')
+    assert not acts(core, 'ai.keep') and not acts(core, 'ai.clear')
 
     core.verbs['ai.keep'] = lambda channels=None: {'kept': [2]}
     panel.click('#ai-close')
@@ -357,11 +353,25 @@ def test_back_to_the_rack_can_revert(panel):
     panel.click('#ai-back')
     alert_up(panel, 'ok')
     answer(panel, 'revert')
-    assert wait_act(panel, 'ai.revert') == [{}]
+    assert wait_act(panel, 'ai.clear') == [{}]
     panel.wait_js("pythonic.panel.drawer.current === null")
 
 
-def test_leaving_without_tried_sounds_stops_a_preview_and_asks_nothing(panel):
+def test_leaving_with_new_patterns_asks_too(panel):
+    core = panel.core
+    open_ai(panel)
+    post(core, ai__bank='ready', ai__preview='try')
+    panel.wait_js("pythonic.store.value('ai.preview') === 'try'")
+    panel.click('#ai-close')
+    title, body = alert_up(panel, 'ok')
+    assert body.startswith('The 12 new patterns play on the face')
+    core.verbs['ai.replace_patterns'] = lambda channels=None: {'kept': [], 'patterns': 12}
+    answer(panel, 'keep')
+    assert wait_act(panel, 'ai.replace_patterns') == [{}]
+    panel.wait_js("pythonic.panel.drawer.current === null")
+
+
+def test_leaving_without_new_sounds_stops_a_preview_and_asks_nothing(panel):
     core = panel.core
     open_ai(panel)
     post(core, ai__preview='bank')
@@ -402,5 +412,5 @@ def test_a_preset_load_with_tried_sounds_asks_first(panel, tmp_path):
     click_item(panel, '505', '#preset-menu .pm-files .it')
     alert_up(panel, 'ok')
     answer(panel, 'revert')
-    wait_act(panel, 'ai.revert')
+    wait_act(panel, 'ai.clear')
     assert wait_act(panel, 'preset.load') == [{'path': FILES[0]}]

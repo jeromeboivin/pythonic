@@ -1,13 +1,10 @@
-// Pure logic behind the AI drum generator page (ai-page.js): what a lane, a
-// model line and the pattern bank show, the leave question, the candidates
-// count, the seed and the preview arguments. No DOM.
+// Pure logic behind the AI generator page (ai-page.js): what a lane, the
+// patterns column and the header show, the model problems, the leave
+// question and what keep says. No DOM.
 
 export const CHANNELS = [1, 2, 3, 4, 5, 6, 7, 8];
 export const LANE_FIELDS = ['type', 'candidates', 'candidate', 'name', 'trying', 'generating', 'error'];
-export const MIN_CANDIDATES = 1;
-export const MAX_CANDIDATES = 32;
-export const DEFAULT_CANDIDATES = 8;
-export const MAX_SEED = 2 ** 31 - 1;
+const KINDS = ['patch', 'pattern'];
 
 /** What the standalone app (no pip, ai.install_command empty) says instead of the install command. */
 export const AI_EDITION_TEXT = 'Download the Pythonic + AI edition from the releases page: '
@@ -20,40 +17,51 @@ export const laneAddress = (channel, field) => `ai.ch${channel}.${field}`;
 export function aiAddresses() {
   return [
     'ai.available', 'ai.install_command', 'ai.installing', 'ai.state', 'ai.models', 'ai.tried',
-    'ai.bank', 'ai.preview', 'pref.ai.patch_model', 'pref.ai.pattern_model',
-    'pref.ai.patch_temperature', 'pref.ai.pattern_temperature',
+    'ai.bank', 'ai.preview', 'pref.ai.patch_temperature', 'pref.ai.pattern_temperature',
     ...CHANNELS.flatMap((n) => LANE_FIELDS.map((f) => laneAddress(n, f))),
   ];
 }
 
 /**
- * What a lane shows, from its fields ({candidates, candidate, name, trying,
- * generating, error}): state 'generating' | 'ready' | 'error' | 'empty', the
- * ‹ i/n › counter, the candidate name, the try button and a note.
+ * What a lane shows, from its fields ({candidates, name, trying, generating,
+ * error}): state 'generating' | 'ready' | 'error' | 'empty', the new sound's
+ * name, whether old / new can switch, which one plays and a note.
  */
 export function laneView(lane = {}) {
-  const n = Number(lane.candidates) || 0;
-  const i = Number(lane.candidate) || 0;
+  const ready = Number(lane.candidates) > 0;
   const trying = !!lane.trying;
-  const ready = n > 0;
   let state = ready ? 'ready' : 'empty';
   if (lane.generating) state = 'generating';
   else if (lane.error && !ready) state = 'error';
-  let note = 'no candidates';
+  let note = '';
   if (state === 'generating') note = 'generating…';
   else if (state === 'error') note = `error: ${lane.error}`;
-  else if (ready) note = trying ? 'the face plays this' : 'the face plays its sound';
+  else if (ready) note = trying ? 'the new sound plays' : 'the old sound plays';
   return {
     state,
-    counter: ready ? `${i}/${n}` : '–/–',
     name: ready ? String(lane.name || '') : '',
-    canStep: ready && !lane.generating,
-    canTry: ready && !lane.generating,
-    tryLabel: trying ? 'trying ✓' : 'try',
+    canSwitch: ready && !lane.generating,
     trying,
     note,
   };
 }
+
+/**
+ * What the patterns column shows, from ai.bank ('none' | 'generating' |
+ * 'ready') and ai.preview: whether old / new can switch, whether the new
+ * patterns play, and a note.
+ */
+export function patternView(bank, preview) {
+  const trying = preview === 'try';
+  let note = 'make 12 patterns (A–L) for the sounds on the face';
+  if (bank === 'generating') note = 'generating patterns…';
+  else if (trying) note = 'the new patterns play: pick any of A–L on the face';
+  else if (bank === 'ready') note = 'the old patterns play';
+  return { canSwitch: bank === 'ready', trying, generating: bank === 'generating', note };
+}
+
+/** Whether anything new plays on the face (keep and revert have work). */
+export const hasTrial = (tried, preview) => (tried || []).length > 0 || preview === 'try';
 
 /** The last part of a path ('' for none). */
 export function fileName(path) {
@@ -61,18 +69,16 @@ export function fileName(path) {
   return String(path).split(/[\\/]/).filter(Boolean).pop() || '';
 }
 
-/** A model line: {text, tone: 'ok' | 'busy' | 'error' | 'dim'} from ai.models[kind]. */
-export function modelView(model, available = true) {
-  if (!available) return { text: 'needs the ML extras', tone: 'error' };
-  if (!model) return { text: '…', tone: 'dim' };
-  const file = fileName(model.path);
-  switch (model.status) {
-    case 'loaded': return { text: `${file} ✓${model.sampling ? ` (${model.sampling})` : ''}`, tone: 'ok' };
-    case 'loading': return { text: `loading ${file}…`, tone: 'busy' };
-    case 'error': return { text: `error: ${model.error || file}`, tone: 'error' };
-    case 'missing': return { text: 'no model: load one', tone: 'error' };
-    default: return { text: `${file} (not loaded)`, tone: 'dim' };
+/** What is wrong with the models ('' when nothing is), from ai.models. */
+export function modelProblem(models) {
+  const label = { patch: 'sound model', pattern: 'pattern model' };
+  for (const kind of KINDS) {
+    const m = (models || {})[kind];
+    if (!m) continue;
+    if (m.status === 'missing') return `no ${label[kind]}: set one in models…`;
+    if (m.status === 'error') return `${label[kind]}: ${m.error || fileName(m.path)}`;
   }
+  return '';
 }
 
 /** What the header says for ai.state ('' when idle). */
@@ -83,57 +89,37 @@ export function stateText(state) {
   }[state] || '';
 }
 
-/** The bank note of the right column: pattern mode 'keep' | 'generate', ai.bank. */
-export function bankText(mode, bank) {
-  if (mode !== 'generate') return 'the preset’s patterns stay';
-  if (bank === 'ready') return 'bank of 12 ready';
-  if (bank === 'generating') return 'generating patterns…';
-  return '(generate all 8 first)';
+/** The header note: what is new on the face ('' when nothing). */
+export function trialText(tried, preview) {
+  const parts = [];
+  if ((tried || []).length) parts.push(`new sounds on ch ${tried.join(', ')}`);
+  if (preview === 'try') parts.push('new patterns');
+  return parts.join(' + ');
 }
-
-/** Whether replace patterns can run: generate mode with a bank ready (tkinter). */
-export const canReplacePatterns = (mode, bank) => mode === 'generate' && bank === 'ready';
-
-/** The ai.pattern_try arguments of a ▶ loop / ▶ bank click: a second click stops. */
-export function previewArgs(current, mode, patternMode) {
-  if (current === mode) return { mode: null };
-  return { mode, bank: patternMode === 'generate' };
-}
-
-/** The candidates count clamped to 1..32 (whole numbers). */
-export function clampCandidates(n) {
-  const v = Math.round(Number(n));
-  if (!Number.isFinite(v)) return DEFAULT_CANDIDATES;
-  return Math.min(MAX_CANDIDATES, Math.max(MIN_CANDIDATES, v));
-}
-
-/** The seed typed in the field: a whole number 0..2^31-1, or null (random). */
-export function parseSeed(text) {
-  const s = String(text ?? '').trim();
-  if (!/^\d+$/.test(s)) return null;
-  const v = Number(s);
-  return v <= MAX_SEED ? v : null;
-}
-
-/** A new random seed (reseed), as tkinter: 0..2^31-1. */
-export const randomSeed = (rand = Math.random) => Math.floor(rand() * (MAX_SEED + 1));
 
 /**
- * The keep-or-revert question when leaving with tried sounds: tried is
- * ai.tried (channels 1..8), names maps a channel to its tried candidate name.
+ * The keep-or-revert question when leaving with new sounds or patterns:
+ * tried is ai.tried (channels 1..8), names maps a channel to its new sound's
+ * name, patterns is whether the new patterns play.
  */
-export function leaveQuestion(tried, names = {}) {
+export function leaveQuestion(tried, names = {}, patterns = false) {
   const list = (tried || []).map((ch) => (names[ch] ? `CH${ch} ${names[ch]}` : `CH${ch}`));
-  const which = list.length === 1 ? `${list[0]} is` : `${list.join(', ')} are`;
+  if (patterns) list.push('the 12 new patterns');
+  const which = list.length > 1 ? `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}` : list[0];
+  const plural = list.length > 1 || (patterns && !list[0].startsWith('CH'));
   return {
-    title: 'Keep the tried sounds?',
-    text: `${which} trying AI candidates. Keep them (one undo step), or revert to the old sounds.`,
+    title: 'Keep what is new?',
+    text: `${which[0].toUpperCase()}${which.slice(1)} ${plural ? 'play' : 'plays'} on the face. `
+      + 'Keep (one undo step), or revert to what was there.',
   };
 }
 
-/** The display's lines after ai.keep / ai.replace_patterns / ai.revert. */
+/** The display's line after a keep (ai.keep / ai.replace_patterns result). */
 export function keptText(result) {
   const kept = (result && result.kept) || [];
-  if (!kept.length) return 'nothing tried';
-  return `kept ch ${kept.join(', ')}`;
+  const parts = [];
+  if (kept.length === 1) parts.push(`ch ${kept[0]}`);
+  else if (kept.length) parts.push(`${kept.length} sounds`);
+  if (result && result.patterns) parts.push(`${result.patterns} patterns`);
+  return parts.length ? `kept ${parts.join(' + ')}` : 'nothing new';
 }

@@ -361,16 +361,16 @@ The repository includes these pre-trained checkpoints, used by default:
 | `drum_patterns/pattern_cvae_best.pt` | Bundled pattern CVAE checkpoint used for AI pattern generation |
 | `fit_prior.pt` | Starting-patch model of `tools/fit_samples.py` (see below) |
 
-Other checkpoints can be chosen with **load…** on the AI page or in setup ▸ ai (tkinter: **Load Model...** and Preset menu → **AI Settings**). The chosen paths are saved in preferences.
+Other checkpoints can be chosen in setup ▸ ai (**models…** on the AI page opens it) (tkinter: **Load Model...** and Preset menu → **AI Settings**). The chosen paths are saved in preferences.
 
 ### Generator Workflow (web interface)
 
 1. Open the PRESET menu and choose **AI drum generator…**: the page opens under the strips, one lane per channel
-2. Adjust the patch **temperature** (lower = conservative, higher = experimental), the **candidates** count and an optional **seed**
-3. Pick a drum type per lane (it starts from the channel's drum type) and click **gen**, or **generate all 8**
-4. The first candidate plays on the face at once; browse candidates with ‹ / ›, edit them with the panel's controls
-5. **keep tried** makes them part of the preset (one undo step); **revert all** brings the old sounds back; leaving the page asks which
-6. On the right, keep the current patterns or generate new ones, preview them (**▶ loop**, **▶ bank A→L**) and **replace patterns**
+2. Click **gen** in a lane (pick its drum type first if you like) or **generate 8 sounds**: each lane gets one new sound, which plays on the face at once; edit it with the panel's controls, click **gen** again for another
+3. Click **generate patterns**: 12 new patterns (A–L) for the sounds on the face start playing; pick any of them on the face
+4. **old** / **new** switches a lane, or the patterns, back and forth to compare
+5. **keep** makes what plays part of the preset (one undo step); **revert** brings the old sounds and patterns back; leaving the page asks which
+6. The **temperature** knobs set how far the new sounds and patterns stray (lower = conservative, higher = experimental)
 
 In the tkinter dialog, candidates are previewed per slot and **Apply Selected** copies the checked slots into the preset.
 

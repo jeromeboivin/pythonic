@@ -3,6 +3,7 @@
   "absent": {
     "program.current": "Programs are not on the web face: kits are a library of their own (ADR 0003). The tkinter interface still switches programs; WRITE ▸ programs as kits turns them into user kits.",
     "program.names": "Programs are not on the web face (see program.current).",
-    "factory.patches": "INST steps through drum_patch.library, which lists every factory drum patch with the user ones."
+    "factory.patches": "INST steps through drum_patch.library, which lists every factory drum patch with the user ones.",
+    "ai.ch*.candidate": "The AI page makes one new sound per lane (ai.generate candidates=1): there is no candidate to pick, the lane shows its name."
   }
 }

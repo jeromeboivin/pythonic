@@ -234,7 +234,7 @@ the live channel, so the running pattern plays it; the channel's sound before
 the first try is kept and nothing is journaled. `ai.keep` commits the tried
 sounds as **one undo step**; `ai.revert` puts the old sounds back.
 
-- Generating a lane tries its candidate 1 at once.
+- Generating a lane tries its candidate 1 at once (one candidate by default).
 - **Knob edits on a trying channel go into the tried sound:** a `set` of a
   `ch<N>.*` sound address of a trying channel changes the live channel and is
   not an undo step of its own; `ai.keep` commits it with the candidate,
@@ -262,21 +262,21 @@ sounds as **one undo step**; `ai.revert` puts the old sounds back.
 | `ai.ch<N>.name`, `ai.ch<N>.trying`, `ai.ch<N>.generating`, `ai.ch<N>.error` | | the current candidate's name, the lane is trying it, generating…, the last error |
 | `ai.tried` | list | channels trying a candidate (for keep tried and the leave prompt) |
 | `ai.bank` | enum | AI patterns: `none`, `generating`, `ready` |
-| `ai.preview` | enum | pattern preview: `off`, `loop`, `bank` |
+| `ai.preview` | enum | pattern preview: `off`, `try`, `loop`, `bank` |
 
 | Verb | Arguments | Result |
 |---|---|---|
 | `ai.load_model` | kind (`patch` / `pattern`), path=None (the resolved one) | `{'kind', 'path', 'sampling'}`; an explicit path is saved to `pref.ai.<kind>_model` once loaded |
-| `ai.generate` | channel=None (all 8), type=None, temperature=None (`pref.ai.patch_temperature`), candidates=8 (1..32), seed=None | `{'channels', 'failed': [{'channel', 'error'}]}` once every lane has its candidates; an error when all failed |
+| `ai.generate` | channel=None (all 8), type=None, temperature=None (`pref.ai.patch_temperature`), candidates=1 (1..32), seed=None | `{'channels', 'failed': [{'channel', 'error'}]}` once every lane has its candidates; an error when all failed |
 | `ai.try` | channel, candidate=None (the current), step=0 (±1 for the arrows, wraps) | `{'channel', 'candidate', 'name'}` |
 | `ai.untry` | channel | `{'channel', 'reverted'}`: back to the old sound, the candidates stay |
 | `ai.keep` | channels=None (every trying lane; listed lanes not trying are tried first) | `{'kept'}`; one undo step |
-| `ai.revert` | | `{'reverted', 'preview'}`: old sounds back, pattern preview stopped |
+| `ai.revert` | | `{'reverted', 'preview'}`: old sounds back, pattern preview ended (a `try` preview leaves the transport running) |
 | `ai.clear` | | revert, then forget candidates, lane types and the bank |
 | `ai.generate_patterns` | temperature=None (`pref.ai.pattern_temperature`), seed=None | `{'patterns': 12}`: a bank A-L for the drum patches on the face (no swing) |
 | `ai.clear_patterns` | | drops the bank |
-| `ai.pattern_try` | mode `'loop'` / `'bank'` / None (stop), bank=True | loop: the AI version of the playing (else selected) pattern; bank: all 12 chained from A; without a bank, the preset's patterns. Starts the transport; stopping it (any way) ends the preview and puts the preset's patterns back |
-| `ai.replace_patterns` | channels=None (as `ai.keep`) | `{'kept', 'patterns'}`: kept sounds plus all 12 bank patterns, one undo step |
+| `ai.pattern_try` | mode `'try'` / `'loop'` / `'bank'` / None (end), bank=True | try (needs a bank): all 12 bank patterns on the face as they will be kept, until None puts the preset's back (the transport keeps running, stop and start keep the preview; step edits go into it); loop: the AI version of the playing (else selected) pattern; bank: all 12 chained from A; without a bank, loop and bank play the preset's patterns. Starts the transport; stopping it ends a loop or bank preview and puts the preset's patterns back |
+| `ai.replace_patterns` | channels=None (as `ai.keep`) | `{'kept', 'patterns'}`: kept sounds plus all 12 bank patterns (during a `try` preview, the patterns as they play, step edits included), one undo step |
 | `ai.randomize_pattern` | pattern=None, channel=None (the whole pattern) | `{'pattern', 'channel'}`: one AI pattern (tempo, swing, fill and step rate, `pref.ai.pattern_temperature`) over the pattern or one lane, one undo step |
 | `ai.install` | | `{'installed', 'output'}` (the last lines); runs in the background, the worker uses the new packages without a restart |
 

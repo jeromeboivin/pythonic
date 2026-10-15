@@ -39,12 +39,17 @@ undo step; ``ai.revert`` puts the kept sounds back.
 
 **Patterns.** ``ai.generate_patterns`` makes a bank of 12 patterns (A-L)
 for the drum patches on the face (tried candidates included). ``ai.pattern_try``
-previews: ``loop`` plays the AI version of the playing pattern (the selected
+previews: ``try`` puts the whole bank on the face, as trying a candidate
+does for a sound: the transport starts if it was stopped, any pattern picked
+plays its AI version, stopping and starting the transport keeps it, and
+``ai.pattern_try(mode=None)`` puts the preset's patterns back without
+stopping. ``loop`` plays the AI version of the playing pattern (the selected
 one when stopped), ``bank`` plays all 12 chained from A; without a bank (or
-with ``bank=False``) they play the preset's own patterns. Stopping the
-transport, or ``ai.pattern_try(mode=None)``, ends the preview and puts the
-preset's patterns back. ``ai.replace_patterns`` keeps the tried sounds and
-replaces all 12 patterns with the bank (one undo step).
+with ``bank=False``) they play the preset's own patterns, and stopping the
+transport, or ``ai.pattern_try(mode=None)``, ends them and puts the preset's
+patterns back. ``ai.replace_patterns`` keeps the tried sounds and replaces
+all 12 patterns with the bank (one undo step); during a ``try`` preview it
+keeps the patterns on the face, step edits included.
 ``ai.randomize_pattern`` replaces one pattern, or one channel's lane of it,
 with an AI pattern at once (one undo step).
 
@@ -68,7 +73,7 @@ Addresses (read-only unless noted):
   ``ai.ch<N>.trying``, ``ai.ch<N>.generating``, ``ai.ch<N>.error``.
 - ``ai.tried``: the channels trying a candidate (1..8).
 - ``ai.bank``: ``none``, ``generating`` or ``ready``. ``ai.preview``:
-  ``off``, ``loop`` or ``bank``.
+  ``off``, ``try``, ``loop`` or ``bank``.
 
 Verbs (channels 1..8, candidates 1..n):
 
@@ -76,7 +81,7 @@ Verbs (channels 1..8, candidates 1..n):
   in the worker; an explicit path is saved as ``pref.ai.<kind>_model`` once
   it loads. ``{'kind', 'path', 'sampling'}``.
 - ``ai.generate`` (channel=None for all 8, type=None, temperature=None
-  (``pref.ai.patch_temperature``), candidates=8 (1..32), seed=None):
+  (``pref.ai.patch_temperature``), candidates=1 (1..32), seed=None):
   ``{'channels': [...], 'failed': [{'channel', 'error'}]}`` once every lane
   has its candidates (an error when every lane failed).
 - ``ai.try`` (channel, candidate=None (the current one), step=0),
@@ -86,7 +91,7 @@ Verbs (channels 1..8, candidates 1..n):
   candidates, the lane types and the bank).
 - ``ai.generate_patterns`` (temperature=None (``pref.ai.pattern_temperature``),
   seed=None) -> ``{'patterns': 12}``; ``ai.clear_patterns``.
-- ``ai.pattern_try`` (mode ``'loop'``, ``'bank'`` or None to stop,
+- ``ai.pattern_try`` (mode ``'try'``, ``'loop'``, ``'bank'`` or None to stop,
   bank=True), ``ai.replace_patterns`` (channels=None, as ``ai.keep``).
 - ``ai.randomize_pattern`` (pattern=None, channel=None) -> ``{'pattern',
   'channel'}``.
@@ -118,7 +123,7 @@ from .undo import CHANNELS, PATTERNS, PROGRAMS, Snapshot, pattern_part
 
 NUM_CHANNELS = 8
 MAX_CANDIDATES = 32
-DEFAULT_CANDIDATES = 8
+DEFAULT_CANDIDATES = 1
 KINDS = ('patch', 'pattern')
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -331,7 +336,7 @@ class Ai:
         reg(Address('ai.bank', get=self._bank_state, kind='enum',
                     labels=('none', 'generating', 'ready')))
         reg(Address('ai.preview', get=lambda: self._preview_mode, kind='enum',
-                    labels=('off', 'loop', 'bank')))
+                    labels=('off', 'try', 'loop', 'bank')))
         for i in range(NUM_CHANNELS):
             prefix = f'ai.ch{i + 1}'
             lane = self._lanes[i]
@@ -613,8 +618,9 @@ class Ai:
 
     # ================================================================== pattern preview
     def on_stop(self):
-        """The transport stopped (audio thread): end the pattern preview."""
-        if self._preview_mode != 'off':
+        """The transport stopped (audio thread): end a loop or bank preview
+        (a tried bank stays on the face)."""
+        if self._preview_mode in ('loop', 'bank'):
             self._end_preview()
 
     def _end_preview(self):
@@ -787,8 +793,7 @@ class Ai:
             reverted = self._revert_lanes(range(NUM_CHANNELS))
             preview = self._preview_mode != 'off'
             if preview:
-                self._core.at_block_start(self._core.patterns._apply_stop)
-                self.collect()
+                self._stop_preview()
             return {'reverted': [i + 1 for i in reverted], 'preview': preview}
 
     def _verb_clear(self):
@@ -861,26 +866,37 @@ class Ai:
             self._core.note_changes(['ai.bank'])
         return {'cleared': True}
 
+    def _stop_preview(self):
+        """End the pattern preview: a tried bank leaves the transport
+        running, a loop or bank preview stops it."""
+        if self._preview_mode == 'try':
+            self._core.at_block_start(self._end_preview)
+        elif self._preview_mode != 'off':
+            self._core.at_block_start(self._core.patterns._apply_stop)
+        self.collect()
+
     def _verb_pattern_try(self, mode=None, bank=True):
         if mode in (None, 'off'):
             mode = 'off'
-        elif mode not in ('loop', 'bank'):
-            raise ValueError(f'not a preview mode: {mode!r} (loop, bank or None)')
+        elif mode not in ('try', 'loop', 'bank'):
+            raise ValueError(f'not a preview mode: {mode!r} (try, loop, bank or None)')
         core = self._core
         pm = core.pattern_manager
         patterns = core.patterns
         with self._lock:
             if mode == 'off':
-                if self._preview_mode != 'off':
-                    core.at_block_start(patterns._apply_stop)
-                self.collect()
+                self._stop_preview()
                 return {'preview': 'off'}
+            if mode == 'try' and self._bank is None:
+                raise ValueError('no AI patterns: generate them first')
             use_bank = bool(bank) and self._bank is not None
             core.at_block_start(lambda: None)  # queued sets land first
             base = self._preset_patterns()
             index = pm.playing_pattern_index if pm.is_playing else pm.selected_pattern_index
             new = None
-            if mode == 'loop' and use_bank:
+            if mode == 'try':
+                new = self._apply_bank(base, self._bank)
+            elif mode == 'loop' and use_bank:
                 new = list(base)
                 temp = PatternManager(num_channels=NUM_CHANNELS)
                 temp.patterns = new
@@ -909,7 +925,7 @@ class Ai:
             self._note_patterns()
             gc.freeze()
             return {'preview': mode, 'pattern': 'A' if mode == 'bank' else PATTERN_NAMES[index],
-                    'bank': use_bank}
+                    'bank': use_bank or mode == 'try'}
 
     def _verb_replace_patterns(self, channels=None):
         core = self._core
@@ -925,10 +941,12 @@ class Ai:
             def apply():
                 before = core.undo.capture((CHANNELS,))
                 before[PATTERNS] = self._preset_patterns()  # no longer referenced by pm
+                # A tried bank is kept as it plays, step edits included
+                kept = pm.patterns if self._preview_mode == 'try' else new
                 self._saved_patterns = None
                 if self._preview_mode != 'off':
                     self._preview_mode = 'off'
-                pm.patterns = new
+                pm.patterns = kept
                 return before
             before = core.at_block_start(apply)
             for i, original in originals.items():

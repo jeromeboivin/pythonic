@@ -1,35 +1,34 @@
-// The AI drum generator page (map decisions #13, #21, #22): a page of the
-// edit rack drawer that tries candidates on the live face.
+// The AI generator page (map decisions #13, #21, #22): a page of the edit
+// rack drawer that makes new sounds and patterns and plays them on the live
+// face, one click each.
 //
-//   left (under the left column)   patch and pattern models (load…), patch
-//                                  temperature, candidates, seed, generate all 8
-//   middle, one lane per strip     drum type, gen, ‹ i/n ›, the candidate name,
-//                                  try / trying ✓ (or, without the ML extras,
-//                                  the pip command with copy and install now)
-//   right (under the right column) keep current / generate new patterns,
-//                                  pattern temperature and the bank, ▶ loop,
-//                                  ▶ bank A→L, keep tried, replace patterns,
-//                                  revert all
+//   left (under the left column)   sound temperature, generate 8 sounds
+//   middle, one lane per strip     drum type, gen, the new sound's name,
+//                                  old | new (or, without the ML extras, the
+//                                  pip command with copy and install now)
+//   right (under the right column) pattern temperature, generate patterns,
+//                                  old | new, keep, revert
 //
-// Generating a lane tries its candidate 1 on the channel (the core does);
-// the strip tab of a channel trying a candidate shows its name in italics,
-// knob edits there go into the tried sound, and keep tried is one undo step
-// (ai.keep). Leaving the page with tried sounds asks keep or revert: ✕ and
-// ◀ ch n edit ask first (cancel stays), any other way out (another drawer
-// page, closing the rack) asks once the page is gone; a preset load asks
-// first too (panel.guardPresetLoad). The AI settings are the pref.ai.*
-// addresses the setup sheet's ai tab shows as well (#22).
+// gen makes one new sound for its channel and plays it there (the core tries
+// it); generate patterns makes 12 (A-L) for the sounds on the face and plays
+// them (ai.pattern_try 'try': the transport starts, any pattern picked plays
+// its new version). old | new switches back and forth. The strip tab of a
+// channel playing a new sound shows its name in italics, knob edits there go
+// into the new sound. keep commits what plays, sounds and patterns, as one
+// undo step (ai.keep or ai.replace_patterns), revert puts the old ones back;
+// both then forget the new ones (ai.clear). Leaving the page with something
+// new asks keep or revert: ✕ and ◀ ch n edit ask first (cancel stays), any
+// other way out (another drawer page, closing the rack) asks once the page
+// is gone; a preset load asks first too (panel.guardPresetLoad). models…
+// opens the setup sheet's ai tab, where the models are chosen (#22).
 //
 //   const ai = mountAiPage({ panel, store, client, stage });
-//   ai.open() / ai.leave() / ai.element / ai.patternMode / ai.destroy()
+//   ai.open() / ai.leave() / ai.element / ai.destroy()
 
 import {
-  AI_EDITION_TEXT, bankText, canReplacePatterns, CHANNELS, clampCandidates, DEFAULT_CANDIDATES, fileName,
-  keptText, laneAddress, laneView, LANE_FIELDS, leaveQuestion, modelView, parseSeed, previewArgs,
-  randomSeed, stateText,
+  AI_EDITION_TEXT, CHANNELS, hasTrial, keptText, laneAddress, laneView, LANE_FIELDS, leaveQuestion,
+  modelProblem, patternView, stateText, trialText,
 } from './ai-logic.js';
-
-const KINDS = [['patch', 'patch model', 'Load a drum patch model'], ['pattern', 'pattern model', 'Load a pattern model']];
 
 function el(tag, cls, text) {
   const node = document.createElement(tag);
@@ -74,13 +73,25 @@ async function copyText(text) {
   }
 }
 
+/** An old | new switch: two buttons, the one playing lit. */
+function abSwitch(cls = '') {
+  const box = el('div', `ab${cls ? ` ${cls}` : ''}`);
+  const old = button('old', { cls: 'old' });
+  const fresh = button('new', { cls: 'new' });
+  box.append(old, fresh);
+  const render = (canSwitch, trying) => {
+    old.disabled = fresh.disabled = !canSwitch;
+    old.classList.toggle('on', canSwitch && !trying);
+    fresh.classList.toggle('on', canSwitch && trying);
+  };
+  return { box, old, fresh, render };
+}
+
 export function mountAiPage({ panel, store, client, stage }) {
   const { display, drawer, sheets } = panel;
   const offs = [];
   const watch = (address, fn, options) => { offs.push(store.watch(address, fn, options)); };
   const value = (address) => store.value(address);
-  let patternMode = 'keep';
-  let candidates = DEFAULT_CANDIDATES;
   let leaving = false; // our own ✕ / ◀ asked already
   let settling = null; // the leave question in progress
 
@@ -97,50 +108,21 @@ export function mountAiPage({ panel, store, client, stage }) {
   const head = el('div', 'ai-head');
   const back = button('◀ ch 1 edit', { id: 'ai-back' });
   const stateNote = el('span', 'ai-state');
-  const triedNote = el('span', 'ai-tried');
-  triedNote.dataset.address = 'ai.tried';
+  const trialNote = el('span', 'ai-tried');
+  trialNote.dataset.address = 'ai.tried';
+  const models = button('models…', { id: 'ai-models' });
+  models.title = 'choose the AI models (setup ▸ ai)';
   const close = button('✕', { id: 'ai-close' });
-  head.append(back, el('span', 'ai-title', 'AI drum generator'), stateNote, el('span', 'sp'), triedNote, close);
+  head.append(back, el('span', 'ai-title', 'AI generator'), stateNote, el('span', 'sp'), trialNote, models, close);
 
-  // left: models and generation
+  // left: new sounds
   const left = el('section', 'ai-sec ai-left');
-  left.append(el('h4', '', 'generate'));
-  const models = el('div', 'ai-models');
-  models.dataset.address = 'ai.models';
-  const modelLines = {};
-  for (const [kind, label, title] of KINDS) {
-    const line = el('div', 'ai-model');
-    line.dataset.kind = kind;
-    line.dataset.address = `pref.ai.${kind}_model`;
-    const status = el('span', 'st');
-    const load = button('load…', { cls: 'ai-load', verb: 'ai.load_model' });
-    load.dataset.kind = kind;
-    load.addEventListener('click', () => loadModel(kind, title));
-    line.append(el('span', 'k', label), status, load);
-    models.append(line);
-    modelLines[kind] = status;
-  }
-  const candDown = button('‹', { id: 'ai-cand-down', cls: 'arr' });
-  const candUp = button('›', { id: 'ai-cand-up', cls: 'arr' });
-  const candValue = el('span', 'ai-cands', String(candidates));
-  candValue.id = 'ai-cands';
-  const candRow = el('div', 'fl');
-  candRow.append(el('span', 'k', 'candidates'), candDown, candValue, candUp);
-  const seed = el('input', 'ai-seed');
-  seed.id = 'ai-seed';
-  seed.placeholder = 'random';
-  seed.spellcheck = false;
-  seed.inputMode = 'numeric';
-  const reseed = button('⟳', { id: 'ai-reseed', cls: 'arr' });
-  reseed.title = 'new random seed';
-  const seedRow = el('div', 'fl');
-  seedRow.append(el('span', 'k', 'seed'), seed, reseed);
-  const settings = el('div', 'ai-settings');
-  const pickers = el('div', 'ai-pickers');
-  pickers.append(candRow, seedRow);
-  settings.append(control('px-knob', 'pref.ai.patch_temperature', { label: 'patch temp', name: 'patch temperature', size: '34' }), pickers);
-  const generateAllButton = button('generate all 8', { id: 'ai-generate-all', cls: 'on', verb: 'ai.generate' });
-  left.append(models, settings, generateAllButton);
+  const generateAllButton = button('generate 8 sounds', { id: 'ai-generate-all', cls: 'on big', verb: 'ai.generate' });
+  const modelNote = el('div', 'note ai-model-note');
+  modelNote.dataset.address = 'ai.models';
+  left.append(el('h4', '', 'new sounds'),
+    control('px-knob', 'pref.ai.patch_temperature', { label: 'temperature', name: 'sound temperature', size: '34' }),
+    generateAllButton, el('div', 'note', 'or gen one drum in its lane'), modelNote);
 
   // middle: one lane under each strip, or the install box
   const middle = el('section', 'ai-sec ai-mid');
@@ -154,28 +136,23 @@ export function mountAiPage({ panel, store, client, stage }) {
     const top = el('div', 'lrow');
     const type = control('px-list', laneAddress(n, 'type'), { name: `ch${n} AI drum type` });
     const gen = button('gen', { cls: 'gen', verb: 'ai.generate' });
+    gen.title = `a new ch${n} sound of this drum type`;
     top.append(type, gen);
-    const nav = el('div', 'lrow nav');
-    nav.dataset.address = laneAddress(n, 'candidate');
-    const prev = button('‹', { cls: 'arr prev', verb: 'ai.try' });
-    const counter = el('span', 'cnt', '–/–');
-    const next = button('›', { cls: 'arr next', verb: 'ai.try' });
-    nav.append(prev, counter, next);
     const name = el('div', 'cname');
     name.dataset.address = laneAddress(n, 'name');
-    const tryButton = button('try', { cls: 'try', verb: 'ai.try', address: laneAddress(n, 'trying') });
+    const ab = abSwitch();
+    ab.box.dataset.address = laneAddress(n, 'trying');
     const note = el('div', 'lnote');
     note.dataset.address = laneAddress(n, 'generating');
-    const error = el('span', 'lerr');
-    error.dataset.address = laneAddress(n, 'error');
-    note.append(error);
-    lane.append(top, nav, name, tryButton, note);
+    const noteText = el('span', 'lerr');
+    noteText.dataset.address = laneAddress(n, 'error');
+    note.append(noteText);
+    lane.append(top, name, ab.box, note);
     gen.addEventListener('click', () => generateLane(n));
-    prev.addEventListener('click', () => step(n, -1));
-    next.addEventListener('click', () => step(n, 1));
-    tryButton.addEventListener('click', () => toggleTry(n));
+    ab.old.addEventListener('click', () => useOld(n));
+    ab.fresh.addEventListener('click', () => useNew(n));
     lanesBox.append(lane);
-    return { lane, gen, prev, next, counter, name, tryButton, note, error };
+    return { lane, gen, name, ab, note, noteText };
   });
   const install = el('div', 'ai-install');
   const command = el('code', 'ai-command');
@@ -188,30 +165,28 @@ export function mountAiPage({ panel, store, client, stage }) {
   const installText = el('div', 'note');
   const installTitle = el('div', 'ai-install-title');
   install.append(installTitle, installText, installRow);
-  middle.append(el('h4', '', 'lanes: tried sounds play on the face'), lanesBox, install);
+  middle.append(el('h4', '', 'one new sound per drum: it plays on the face'), lanesBox, install);
 
-  // right: patterns and apply
+  // right: new patterns, keep and revert
   const right = el('section', 'ai-sec ai-right');
-  right.append(el('h4', '', 'patterns and apply'));
-  const modes = el('div', 'ai-pmodes');
-  const keepMode = button('keep current', { id: 'ai-pmode-keep' });
-  const newMode = button('generate new', { id: 'ai-pmode-new' });
-  modes.append(keepMode, newMode);
-  const bankRow = el('div', 'ai-bankrow');
-  const patternTemp = control('px-knob', 'pref.ai.pattern_temperature', { label: 'pattern temp', name: 'pattern temperature', size: '30' });
-  const bankNote = el('span', 'note ai-banknote');
-  bankNote.dataset.address = 'ai.bank';
-  const newBank = button('↻', { id: 'ai-new-bank', cls: 'arr', verb: 'ai.generate_patterns' });
-  newBank.title = 'generate a new bank of 12 patterns for the drum patches on the face';
-  bankRow.append(patternTemp, bankNote, newBank);
+  const patternRow = el('div', 'ai-patrow');
+  const generatePatternsButton = button('generate patterns', { id: 'ai-gen-patterns', cls: 'on big', verb: 'ai.generate_patterns' });
+  patternRow.append(
+    control('px-knob', 'pref.ai.pattern_temperature', { label: 'temperature', name: 'pattern temperature', size: '30' }),
+    generatePatternsButton);
+  const patternAb = abSwitch('ai-patab');
+  patternAb.box.dataset.address = 'ai.preview';
+  patternAb.old.id = 'ai-pat-old';
+  patternAb.fresh.id = 'ai-pat-new';
+  const patternNote = el('div', 'note ai-patnote');
+  patternNote.dataset.address = 'ai.bank';
   const actions = el('div', 'ai-actions');
-  const loop = button('▶ loop', { id: 'ai-loop', verb: 'ai.pattern_try', address: 'ai.preview' });
-  const bank = button('▶ bank A→L', { id: 'ai-bank', verb: 'ai.pattern_try' });
-  const keep = button('keep tried', { id: 'ai-keep', cls: 'on', verb: 'ai.keep' });
-  const replace = button('replace patterns', { id: 'ai-replace', verb: 'ai.replace_patterns' });
-  const revert = button('revert all', { id: 'ai-revert', cls: 'red', verb: 'ai.revert' });
-  actions.append(loop, bank, keep, replace, revert);
-  right.append(modes, bankRow, actions);
+  const keep = button('keep', { id: 'ai-keep', cls: 'on', verb: 'ai.keep' });
+  keep.title = 'keep the new sounds and patterns that play (one undo step)';
+  const revert = button('revert', { id: 'ai-revert', cls: 'red', verb: 'ai.clear' });
+  revert.title = 'put the old sounds and patterns back';
+  actions.append(keep, revert);
+  right.append(el('h4', '', 'new patterns'), patternRow, patternAb.box, patternNote, actions);
 
   const body = el('div', 'ai-body');
   body.append(left, middle, right);
@@ -224,31 +199,18 @@ export function mountAiPage({ panel, store, client, stage }) {
     const v = laneView(lane(n));
     const w = lanes[n - 1];
     w.lane.dataset.state = v.state;
-    w.counter.textContent = v.counter;
     w.name.textContent = v.name;
     w.name.title = v.name;
-    w.prev.disabled = w.next.disabled = !v.canStep;
-    w.tryButton.disabled = !v.canTry;
-    w.tryButton.textContent = v.tryLabel;
-    w.tryButton.classList.toggle('on', v.trying);
-    w.error.textContent = v.note; // the note (generating…, error: …, who plays)
+    w.ab.render(v.canSwitch, v.trying);
+    w.gen.disabled = v.state === 'generating' || !value('ai.available');
+    w.noteText.textContent = v.note; // generating…, error: …, which sound plays
     w.note.classList.toggle('busy', v.state === 'generating');
     w.note.classList.toggle('bad', v.state === 'error');
     w.lane.classList.toggle('trying', v.trying);
-    // The strip tab: the tried candidate's name in italics
+    // The strip tab: the new sound's name in italics
     if (tabs[n - 1]) {
       tabs[n - 1].classList.toggle('aitry', v.trying);
-      if (v.trying && v.name) tabs[n - 1].title = `trying ${v.name}`; else tabs[n - 1].removeAttribute('title');
-    }
-  };
-  const renderModels = () => {
-    const available = !!value('ai.available');
-    const all = value('ai.models') || {};
-    for (const [kind] of KINDS) {
-      const v = modelView(all[kind], available);
-      modelLines[kind].textContent = v.text;
-      modelLines[kind].title = all[kind] && all[kind].path ? all[kind].path : '';
-      modelLines[kind].dataset.tone = v.tone;
+      if (v.trying && v.name) tabs[n - 1].title = `new sound ${v.name}`; else tabs[n - 1].removeAttribute('title');
     }
   };
   const renderAvailable = () => {
@@ -259,38 +221,36 @@ export function mountAiPage({ panel, store, client, stage }) {
     installNow.textContent = installing ? 'installing…' : 'install now';
     installNote.textContent = installing ? 'pip is running in the background…' : 'pip runs in the background';
     generateAllButton.disabled = !available;
-    renderModels();
+    modelNote.textContent = available ? modelProblem(value('ai.models')) : '';
+    CHANNELS.forEach(renderLane);
+    renderPatterns();
   };
   const renderState = () => {
     const state = value('ai.state');
     stateNote.textContent = stateText(state);
     stateNote.dataset.state = state || '';
   };
-  const renderTried = () => {
+  const renderTrial = () => {
     const tried = value('ai.tried') || [];
-    triedNote.textContent = tried.length ? `trying on ch ${tried.join(', ')}` : '';
-    keep.disabled = !tried.length;
+    const preview = value('ai.preview') || 'off';
+    trialNote.textContent = trialText(tried, preview);
+    keep.disabled = revert.disabled = !hasTrial(tried, preview);
   };
   const renderPatterns = () => {
-    const bankState = value('ai.bank');
-    const preview = value('ai.preview') || 'off';
-    keepMode.classList.toggle('on', patternMode === 'keep');
-    newMode.classList.toggle('on', patternMode === 'generate');
-    right.classList.toggle('generate', patternMode === 'generate');
-    bankNote.textContent = bankText(patternMode, bankState);
-    newBank.disabled = bankState === 'generating';
-    replace.disabled = !canReplacePatterns(patternMode, bankState);
-    loop.textContent = preview === 'loop' ? '■ stop loop' : '▶ loop';
-    bank.textContent = preview === 'bank' ? '■ stop bank' : '▶ bank A→L';
-    loop.classList.toggle('on', preview === 'loop');
-    bank.classList.toggle('on', preview === 'bank');
+    const v = patternView(value('ai.bank') || 'none', value('ai.preview') || 'off');
+    patternAb.render(v.canSwitch, v.trying);
+    patternNote.textContent = v.note;
+    patternNote.classList.toggle('busy', v.generating);
+    generatePatternsButton.disabled = v.generating || !value('ai.available');
+    generatePatternsButton.textContent = v.generating ? 'generating…' : 'generate patterns';
+    renderTrial();
   };
   const renderBack = (n) => { back.textContent = `◀ ch ${n || 1} edit`; };
 
   CHANNELS.forEach((n) => LANE_FIELDS.forEach((f) => watch(laneAddress(n, f), () => renderLane(n))));
   watch('ai.available', renderAvailable);
   watch('ai.installing', renderAvailable);
-  watch('ai.models', renderModels);
+  watch('ai.models', renderAvailable);
   watch('ai.install_command', (cmd) => {
     // Empty in the standalone app: no pip there, the AI comes with its own edition
     const edition = cmd === '';
@@ -302,163 +262,102 @@ export function mountAiPage({ panel, store, client, stage }) {
     installRow.style.display = edition ? 'none' : '';
   });
   watch('ai.state', renderState);
-  watch('ai.tried', renderTried);
+  watch('ai.tried', renderTrial);
   watch('ai.bank', renderPatterns);
   watch('ai.preview', renderPatterns);
   watch('global.channel', renderBack);
 
   // ------------------------------------------------------------ models
-  async function loadModel(kind, title) {
-    if (!value('ai.available')) {
-      const cmd = value('ai.install_command');
-      sheets.alert({ title: 'The ML extras are missing', text: cmd === '' ? AI_EDITION_TEXT : `Install them first: ${cmd || ''}`, tone: 'error' });
-      return;
-    }
-    const current = (value('ai.models') || {})[kind];
-    const path = await client.openFile({ title, filters: ['PyTorch checkpoints (*.pt)', 'All files (*)'],
-      folder: current && current.path ? String(current.path).replace(/[\\/][^\\/]*$/, '') : null });
-    if (!path) return;
-    display.show(`${kind.toUpperCase()} MODEL`, `loading ${fileName(path)}`);
-    const r = await run('ai.load_model', { kind, path }, 'Could not load the model');
-    if (r) display.show(`${kind.toUpperCase()} MODEL`, `${fileName(r.path)} loaded`);
-  }
-
-  /** Load the saved (or bundled) models when the page opens (tkinter). */
+  /** Load the saved (or bundled) models when the page opens, so the first click is quick. */
   function loadModels() {
     if (!value('ai.available')) return;
     const all = value('ai.models') || {};
-    for (const [kind] of KINDS) {
+    for (const kind of ['patch', 'pattern']) {
       if (all[kind] && all[kind].status === 'unloaded') panel.act('ai.load_model', { kind });
     }
   }
+  models.addEventListener('click', () => panel.openPage('setup', { tab: 'ai' }));
 
-  // ------------------------------------------------------------ generation
-  const generationArgs = () => {
-    const args = { candidates };
-    const s = parseSeed(seed.value);
-    if (s !== null) args.seed = s;
-    return args;
-  };
-  /** The drum patches changed: drop the AI pattern bank (tkinter). */
-  const invalidateBank = () => {
-    if (value('ai.bank') && value('ai.bank') !== 'none') panel.act('ai.clear_patterns');
-  };
+  // ------------------------------------------------------------ sounds
   const hit = (n) => {
     const transport = store.readout('transport');
     if (!transport || !transport.playing) client.trigger(n, 127).catch(() => {});
   };
 
   async function generateLane(n) {
-    invalidateBank();
     display.show(`CH${n} AI`, 'generating…');
-    const r = await run('ai.generate', { channel: n, type: value(laneAddress(n, 'type')), ...generationArgs() },
-      'Generation failed');
+    const r = await run('ai.generate', { channel: n, type: value(laneAddress(n, 'type')) }, 'Generation failed');
     if (!r) return;
     if (r.failed && r.failed.length) display.alert(`CH${n} AI`, r.failed[0].error);
     else {
-      display.show(`CH${n} ${String(value(laneAddress(n, 'name')) || '').toUpperCase()}`, `1 / ${value(laneAddress(n, 'candidates'))}`);
+      display.show(`CH${n} ${String(value(laneAddress(n, 'name')) || '').toUpperCase()}`, 'new sound');
       hit(n);
     }
   }
 
   async function generateAll() {
-    display.show('AI GENERATOR', 'generating 8 lanes…');
-    const r = await run('ai.generate', generationArgs(), 'Generation failed');
+    display.show('AI GENERATOR', 'generating 8 sounds…');
+    const r = await run('ai.generate', {}, 'Generation failed');
     if (!r) return;
     const failed = r.failed || [];
-    display.show('AI GENERATOR', failed.length ? `${r.channels.length} ready, ${failed.length} failed` : '8 lanes ready');
-    if (patternMode === 'generate') generatePatterns();
+    display.show('AI GENERATOR', failed.length ? `${r.channels.length} new, ${failed.length} failed` : '8 new sounds');
   }
 
-  async function generatePatterns() {
-    const args = {};
-    const s = parseSeed(seed.value);
-    if (s !== null) args.seed = s;
-    const r = await run('ai.generate_patterns', args, 'Could not generate the patterns');
-    if (r) display.show('AI PATTERNS', `bank of ${r.patterns} ready`);
+  async function useOld(n) {
+    if (!value(laneAddress(n, 'trying'))) return;
+    if (await run('ai.untry', { channel: n })) display.show(`CH${n}`, 'old sound');
   }
 
-  async function step(n, direction) {
-    invalidateBank();
-    const r = await run('ai.try', { channel: n, step: direction });
-    if (!r) return;
-    display.show(`CH${n} ${String(r.name || '').toUpperCase()}`, `${r.candidate} / ${value(laneAddress(n, 'candidates'))}`);
-    hit(n);
-  }
-
-  async function toggleTry(n) {
-    if (value(laneAddress(n, 'trying'))) {
-      const r = await run('ai.untry', { channel: n });
-      if (r) display.show(`CH${n}`, 'old sound back');
-      return;
-    }
+  async function useNew(n) {
+    if (value(laneAddress(n, 'trying'))) return;
     const r = await run('ai.try', { channel: n });
     if (!r) return;
-    display.show(`CH${n} ${String(r.name || '').toUpperCase()}`, 'trying');
+    display.show(`CH${n} ${String(r.name || '').toUpperCase()}`, 'new sound');
     hit(n);
   }
 
   generateAllButton.addEventListener('click', generateAll);
-  newBank.addEventListener('click', () => {
-    if (patternMode === 'generate') generatePatterns();
-  });
-  candDown.addEventListener('click', () => setCandidates(candidates - 1));
-  candUp.addEventListener('click', () => setCandidates(candidates + 1));
-  candValue.addEventListener('wheel', (e) => {
-    e.preventDefault();
-    if (e.deltaY) setCandidates(candidates + (e.deltaY < 0 ? 1 : -1));
-  }, { passive: false });
-  function setCandidates(n) {
-    candidates = clampCandidates(n);
-    candValue.textContent = String(candidates);
-    display.show('AI CANDIDATES', String(candidates));
-  }
-  reseed.addEventListener('click', () => {
-    seed.value = String(randomSeed());
-    display.show('AI SEED', seed.value);
-  });
-  seed.addEventListener('change', () => {
-    const s = parseSeed(seed.value);
-    if (s === null) seed.value = '';
-    display.show('AI SEED', s === null ? 'random' : String(s));
-  });
-  seed.addEventListener('keydown', (e) => {
-    e.stopPropagation();
-    if (e.key === 'Enter') seed.blur();
-  });
 
-  // ------------------------------------------------------------ patterns and apply
-  const setPatternMode = (mode) => {
-    if (mode === patternMode) return;
-    patternMode = mode;
-    invalidateBank();
-    renderPatterns();
-    display.show('AI PATTERNS', mode === 'generate' ? 'generate new' : 'keep current');
-  };
-  keepMode.addEventListener('click', () => setPatternMode('keep'));
-  newMode.addEventListener('click', () => setPatternMode('generate'));
-
-  const preview = async (mode) => {
-    const args = previewArgs(value('ai.preview') || 'off', mode, patternMode);
-    const r = await run('ai.pattern_try', args);
+  // ------------------------------------------------------------ patterns
+  async function generatePatterns() {
+    display.show('AI PATTERNS', 'generating…');
+    const r = await run('ai.generate_patterns', {}, 'Could not generate the patterns');
     if (!r) return;
-    if (!args.mode) display.show('AI PREVIEW', 'stopped, restored');
-    else display.show('AI PREVIEW', mode === 'bank' ? 'bank A→L' : `loop pattern ${r.pattern || ''}`.trim());
-  };
-  loop.addEventListener('click', () => preview('loop'));
-  bank.addEventListener('click', () => preview('bank'));
-  keep.addEventListener('click', async () => {
-    const r = await run('ai.keep', {}, 'Could not keep the sounds');
-    if (r) display.show('AI GENERATOR', keptText(r));
+    if (await run('ai.pattern_try', { mode: 'try' }, 'Could not play the patterns')) {
+      display.show('AI PATTERNS', `${r.patterns} new patterns`);
+    }
+  }
+
+  generatePatternsButton.addEventListener('click', generatePatterns);
+  patternAb.old.addEventListener('click', async () => {
+    if (value('ai.preview') !== 'try') return;
+    if (await run('ai.pattern_try', { mode: null })) display.show('AI PATTERNS', 'old patterns');
   });
-  replace.addEventListener('click', async () => {
-    const r = await run('ai.replace_patterns', {}, 'Could not replace the patterns');
-    if (r) display.show('AI GENERATOR', `${keptText(r)} + 12 patterns`);
+  patternAb.fresh.addEventListener('click', async () => {
+    if (value('ai.preview') === 'try') return;
+    if (await run('ai.pattern_try', { mode: 'try' }, 'Could not play the patterns')) display.show('AI PATTERNS', 'new patterns');
   });
-  revert.addEventListener('click', async () => {
-    const r = await run('ai.revert');
-    if (r) display.show('AI GENERATOR', r.reverted && r.reverted.length ? `reverted ch ${r.reverted.join(', ')}` : 'reverted');
-  });
+
+  // ------------------------------------------------------------ keep and revert
+  /** Keep what plays (one undo step), then forget the new ones. */
+  async function keepAll() {
+    const patterns = value('ai.preview') === 'try';
+    const r = await run(patterns ? 'ai.replace_patterns' : 'ai.keep', {}, 'Could not keep the new sounds');
+    if (!r) return false;
+    await panel.act('ai.clear');
+    display.show('AI GENERATOR', keptText(r));
+    return true;
+  }
+
+  /** Put the old sounds and patterns back and forget the new ones. */
+  async function revertAll() {
+    const r = await run('ai.clear');
+    if (r) display.show('AI GENERATOR', 'reverted');
+    return !!r;
+  }
+
+  keep.addEventListener('click', keepAll);
+  revert.addEventListener('click', revertAll);
 
   // ------------------------------------------------------------ install
   copy.addEventListener('click', async () => {
@@ -484,32 +383,27 @@ export function mountAiPage({ panel, store, client, stage }) {
   const triedNames = () => Object.fromEntries((value('ai.tried') || []).map((n) => [n, value(laneAddress(n, 'name'))]));
 
   /**
-   * Settle the tried sounds before leaving: keep or revert (and cancel when
-   * the page is still showing). Resolves false when the user stays.
+   * Settle what is new before leaving: keep or revert (and cancel when the
+   * page is still showing). Resolves false when the user stays.
    */
   function settle(cancellable) {
     if (settling) return settling;
     settling = (async () => {
       const tried = value('ai.tried') || [];
-      if (!tried.length) {
-        if ((value('ai.preview') || 'off') !== 'off') await panel.act('ai.pattern_try', { mode: null });
+      const preview = value('ai.preview') || 'off';
+      if (!hasTrial(tried, preview)) {
+        if (preview !== 'off') await panel.act('ai.pattern_try', { mode: null });
         return true;
       }
-      const q = leaveQuestion(tried, triedNames());
+      const q = leaveQuestion(tried, triedNames(), preview === 'try');
       const buttons = [
         ...(cancellable ? [{ label: 'cancel', value: 'cancel' }] : []),
         { label: 'revert', value: 'revert' }, { label: 'keep', value: 'keep', primary: true },
       ];
       const answer = await sheets.alert({ title: q.title, text: q.text, tone: 'ok', buttons });
-      if (answer !== 'keep' && answer !== 'revert') return false;
-      if (answer === 'keep') {
-        const r = await run('ai.keep', {}, 'Could not keep the sounds');
-        if (r) display.show('AI GENERATOR', keptText(r));
-        if ((value('ai.preview') || 'off') !== 'off') await panel.act('ai.pattern_try', { mode: null });
-      } else {
-        const r = await run('ai.revert');
-        if (r) display.show('AI GENERATOR', 'reverted');
-      }
+      if (answer === 'keep') await keepAll();
+      else if (answer === 'revert') await revertAll();
+      else return false;
       return true;
     })().finally(() => { settling = null; });
     return settling;
@@ -531,29 +425,23 @@ export function mountAiPage({ panel, store, client, stage }) {
       drawer.show('ai', page, { onHide: () => { if (!leaving) settle(false); } });
     }
     renderAvailable();
-    renderPatterns();
     loadModels();
     return page;
   }
 
   offs.push(panel.registerPage('ai', open));
-  // A preset load replaces every sound: settle the tried ones first (#21)
+  // A preset load replaces every sound: settle the new ones first (#21)
   offs.push(panel.guardPresetLoad(() => settle(true)));
 
   renderAvailable();
   renderState();
-  renderTried();
-  renderPatterns();
   renderBack(value('global.channel'));
-  CHANNELS.forEach(renderLane);
 
   return {
     element: page,
     open,
     leave,
     settle,
-    get patternMode() { return patternMode; },
-    get candidates() { return candidates; },
     destroy() {
       offs.forEach((off) => off());
       if (drawer.current === 'ai') { leaving = true; drawer.hide('ai'); }

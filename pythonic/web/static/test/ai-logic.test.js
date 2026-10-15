@@ -1,23 +1,22 @@
-// Pure logic behind the AI drum generator page: lanes, model lines, the
-// pattern bank note, preview arguments, candidates, seed, the leave question.
+// Pure logic behind the AI generator page: lanes, the patterns column, the
+// header, the model problems, the leave question and what keep says.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  aiAddresses, bankText, canReplacePatterns, clampCandidates, fileName, keptText, laneAddress,
-  laneView, leaveQuestion, modelView, parseSeed, previewArgs, randomSeed, stateText,
+  aiAddresses, fileName, hasTrial, keptText, laneAddress, laneView, leaveQuestion, modelProblem,
+  patternView, stateText, trialText,
 } from '../js/ai-logic.js';
 
 test('lane addresses and every address the page reads', () => {
   assert.equal(laneAddress(3, 'trying'), 'ai.ch3.trying');
   const all = aiAddresses();
-  assert.equal(all.length, 12 + 8 * 7);
+  assert.equal(all.length, 10 + 8 * 7);
   assert.ok(all.includes('ai.ch8.error') && all.includes('pref.ai.pattern_temperature'));
 });
 
-test('a lane without candidates, generating, failed, ready and trying', () => {
+test('a lane without a sound, generating, failed, with a new sound and back on the old one', () => {
   assert.deepEqual(laneView({ candidates: 0, candidate: 0 }), {
-    state: 'empty', counter: '–/–', name: '', canStep: false, canTry: false, tryLabel: 'try',
-    trying: false, note: 'no candidates',
+    state: 'empty', name: '', canSwitch: false, trying: false, note: '',
   });
   const busy = laneView({ candidates: 0, generating: true });
   assert.equal(busy.state, 'generating');
@@ -25,71 +24,67 @@ test('a lane without candidates, generating, failed, ready and trying', () => {
   const failed = laneView({ candidates: 0, error: 'no model' });
   assert.equal(failed.state, 'error');
   assert.equal(failed.note, 'error: no model');
-  const ready = laneView({ candidates: 8, candidate: 3, name: 'BD 3', trying: false });
-  assert.equal(ready.state, 'ready');
-  assert.equal(ready.counter, '3/8');
-  assert.equal(ready.name, 'BD 3');
-  assert.ok(ready.canStep && ready.canTry);
-  assert.equal(ready.tryLabel, 'try');
-  const trying = laneView({ candidates: 8, candidate: 1, name: 'BD 1', trying: true });
-  assert.equal(trying.tryLabel, 'trying ✓');
-  assert.equal(trying.note, 'the face plays this');
-  // an old error stays hidden while the lane has candidates; regenerating blocks the arrows
-  assert.equal(laneView({ candidates: 4, candidate: 1, error: 'x' }).state, 'ready');
-  assert.equal(laneView({ candidates: 4, candidate: 1, generating: true }).canStep, false);
+  const trying = laneView({ candidates: 1, candidate: 1, name: 'BD 1', trying: true });
+  assert.deepEqual(trying, { state: 'ready', name: 'BD 1', canSwitch: true, trying: true, note: 'the new sound plays' });
+  assert.equal(laneView({ candidates: 1, name: 'BD 1', trying: false }).note, 'the old sound plays');
+  // an old error stays hidden while the lane has a sound; regenerating blocks old | new
+  assert.equal(laneView({ candidates: 1, error: 'x' }).state, 'ready');
+  assert.equal(laneView({ candidates: 1, generating: true }).canSwitch, false);
 });
 
-test('model lines', () => {
-  assert.equal(fileName('/a/b/drum_cvae_best.pt'), 'drum_cvae_best.pt');
-  assert.equal(fileName('C:\\m\\p.pt'), 'p.pt');
-  assert.equal(fileName(null), '');
-  assert.deepEqual(modelView({ path: '/m/p.pt', status: 'loaded', sampling: 'prior' }), { text: 'p.pt ✓ (prior)', tone: 'ok' });
-  assert.deepEqual(modelView({ path: '/m/p.pt', status: 'loading' }), { text: 'loading p.pt…', tone: 'busy' });
-  assert.deepEqual(modelView({ path: '/m/p.pt', status: 'error', error: 'broken' }), { text: 'error: broken', tone: 'error' });
-  assert.deepEqual(modelView({ path: null, status: 'missing' }), { text: 'no model: load one', tone: 'error' });
-  assert.deepEqual(modelView({ path: '/m/p.pt', status: 'unloaded' }), { text: 'p.pt (not loaded)', tone: 'dim' });
-  assert.equal(modelView({ status: 'loaded' }, false).text, 'needs the ML extras');
+test('the patterns column: none, generating, new patterns playing, back on the old ones', () => {
+  assert.deepEqual(patternView('none', 'off'), {
+    canSwitch: false, trying: false, generating: false, note: 'make 12 patterns (A–L) for the sounds on the face',
+  });
+  assert.equal(patternView('generating', 'off').generating, true);
+  assert.equal(patternView('generating', 'off').note, 'generating patterns…');
+  const trying = patternView('ready', 'try');
+  assert.ok(trying.canSwitch && trying.trying);
+  assert.match(trying.note, /^the new patterns play/);
+  assert.equal(patternView('ready', 'off').note, 'the old patterns play');
 });
 
-test('the header state, the bank note and replace patterns', () => {
+test('what is new on the face', () => {
+  assert.ok(!hasTrial([], 'off'));
+  assert.ok(hasTrial([2], 'off'));
+  assert.ok(hasTrial([], 'try'));
+  assert.ok(!hasTrial(null, 'loop'));
+  assert.equal(trialText([], 'off'), '');
+  assert.equal(trialText([1, 3], 'off'), 'new sounds on ch 1, 3');
+  assert.equal(trialText([2], 'try'), 'new sounds on ch 2 + new patterns');
+  assert.equal(trialText([], 'try'), 'new patterns');
+});
+
+test('the header state and the model problems', () => {
   assert.equal(stateText('idle'), '');
   assert.equal(stateText('generating'), 'generating…');
   assert.equal(stateText('unavailable'), 'ML extras missing');
-  assert.equal(bankText('keep', 'ready'), 'the preset’s patterns stay');
-  assert.equal(bankText('generate', 'none'), '(generate all 8 first)');
-  assert.equal(bankText('generate', 'generating'), 'generating patterns…');
-  assert.equal(bankText('generate', 'ready'), 'bank of 12 ready');
-  assert.ok(canReplacePatterns('generate', 'ready'));
-  assert.ok(!canReplacePatterns('keep', 'ready'));
-  assert.ok(!canReplacePatterns('generate', 'none'));
+  assert.equal(fileName('/a/b/drum_cvae_best.pt'), 'drum_cvae_best.pt');
+  assert.equal(fileName('C:\\m\\p.pt'), 'p.pt');
+  assert.equal(fileName(null), '');
+  const ok = { path: '/m/p.pt', status: 'loaded' };
+  assert.equal(modelProblem({ patch: ok, pattern: { ...ok, status: 'unloaded' } }), '');
+  assert.equal(modelProblem(null), '');
+  assert.equal(modelProblem({ patch: { path: null, status: 'missing' } }), 'no sound model: set one in models…');
+  assert.equal(modelProblem({ patch: ok, pattern: { path: '/m/q.pt', status: 'error', error: 'broken' } }),
+    'pattern model: broken');
+  assert.equal(modelProblem({ pattern: { path: '/m/q.pt', status: 'error' } }), 'pattern model: q.pt');
 });
 
-test('a preview click starts its mode, or stops it when it runs', () => {
-  assert.deepEqual(previewArgs('off', 'loop', 'keep'), { mode: 'loop', bank: false });
-  assert.deepEqual(previewArgs('loop', 'bank', 'generate'), { mode: 'bank', bank: true });
-  assert.deepEqual(previewArgs('bank', 'bank', 'generate'), { mode: null });
-});
-
-test('candidates and seed', () => {
-  assert.equal(clampCandidates(0), 1);
-  assert.equal(clampCandidates(40), 32);
-  assert.equal(clampCandidates(7.6), 8);
-  assert.equal(clampCandidates('x'), 8);
-  assert.equal(parseSeed(''), null);
-  assert.equal(parseSeed(' 42 '), 42);
-  assert.equal(parseSeed('-3'), null);
-  assert.equal(parseSeed('1.5'), null);
-  assert.equal(parseSeed(String(2 ** 31)), null);
-  assert.equal(randomSeed(() => 0), 0);
-  assert.equal(randomSeed(() => 0.9999999999), 2 ** 31 - 1);
-});
-
-test('the leave question names the tried lanes', () => {
+test('the leave question names the new sounds and patterns', () => {
   assert.deepEqual(leaveQuestion([2], { 2: 'SD 4' }), {
-    title: 'Keep the tried sounds?',
-    text: 'CH2 SD 4 is trying AI candidates. Keep them (one undo step), or revert to the old sounds.',
+    title: 'Keep what is new?',
+    text: 'CH2 SD 4 plays on the face. Keep (one undo step), or revert to what was there.',
   });
-  assert.match(leaveQuestion([1, 3], { 1: 'BD 1' }).text, /^CH1 BD 1, CH3 are trying/);
-  assert.equal(keptText({ kept: [1, 3] }), 'kept ch 1, 3');
-  assert.equal(keptText({ kept: [] }), 'nothing tried');
+  assert.match(leaveQuestion([1, 3], { 1: 'BD 1' }).text, /^CH1 BD 1 and CH3 play on the face/);
+  assert.match(leaveQuestion([1], {}, true).text, /^CH1 and the 12 new patterns play/);
+  assert.match(leaveQuestion([], {}, true).text, /^The 12 new patterns play on the face/);
+});
+
+test('what keep says', () => {
+  assert.equal(keptText({ kept: [3] }), 'kept ch 3');
+  assert.equal(keptText({ kept: [1, 3] }), 'kept 2 sounds');
+  assert.equal(keptText({ kept: [1, 2], patterns: 12 }), 'kept 2 sounds + 12 patterns');
+  assert.equal(keptText({ kept: [], patterns: 12 }), 'kept 12 patterns');
+  assert.equal(keptText({ kept: [] }), 'nothing new');
 });

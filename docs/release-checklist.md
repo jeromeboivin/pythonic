@@ -38,7 +38,7 @@ without Python or a checkout.
 - [ ] **MIDI in:** a connected controller triggers channels (the channel button flashes), learned CCs move their controls (the amber ghost marker until pickup), MIDI clock sync follows.
 - [ ] **Modulation:** an LFO aimed at a strip's decay draws a moving arc on the strip and in the rack.
 - [ ] **File dialogs:** open and save a preset, load and save a drum patch, choose the preset folder; the dialogs are native (a sheet on macOS; KDE portal where it runs) and the panel keeps playing while they are open.
-- [ ] **AI (with `[ml]`):** the AI page loads the bundled models (the stream keeps playing; the worker runs at a lower priority), generate fills a lane and the strip tab shows the tried name; keep tried is one undo step.
+- [ ] **AI (with `[ml]`):** the AI page loads the bundled models (the stream keeps playing; the worker runs at a lower priority), gen puts one new sound on a lane and the strip tab shows its name; generate patterns plays 12 new patterns on the face; keep is one undo step.
 - [ ] **PO-32:** a transfer plays through the output; an import from a recording or a WAV decodes and imports in one undo step.
 - [ ] **Fonts:** without the fonts the panel uses system fonts (labels condensed, display and tempo monospace) and stays legible at 1280x800; after `python tools/fetch_fonts.py`, labels are in Barlow Condensed, the green display in Doto, the tempo in DSEG7.
 - [ ] **Looks:** compare the face with the hardware-look prototype (branch `prototype/hardware-look`, `prototypes/hardware-look.html`): black panel, green accents, lit faders per channel, white patch-name tabs, no third-party names or logos.

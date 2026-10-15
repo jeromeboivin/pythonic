@@ -307,7 +307,7 @@ def test_revert_restores_the_old_sounds_without_an_undo_step(make_core):
     assert [sound(core, c) for c in range(1, 9)] == before
     assert core.get('ai.tried') == []
     assert core.get('undo.can_undo') is False
-    assert lane(core, 4)['candidates'] == 8  # the candidates stay
+    assert lane(core, 4)['candidates'] == 1  # the candidate stays
 
 
 def test_knob_edits_while_trying_go_into_the_tried_sound(make_core):
@@ -402,6 +402,54 @@ def test_loop_preview_plays_the_ai_version_and_stop_restores_the_preset(make_cor
     assert core.get('pattern.A.ch2.step3.trig') is False
     changes = core.poll(version)['changes']
     assert changes['ai.preview'] == 'off' and changes['pattern.A.ch1.trig'] == preset
+
+
+def test_trying_the_bank_puts_all_twelve_on_the_face_until_put_back(make_core):
+    core = make_core()
+    core.set('pattern.C.ch1.step2.trig', True)
+    preset = [triggers(core, p) for p in 'ABCDEFGHIJKL']
+    assert act(core, 'ai.pattern_try', mode='try')['status'] == 'error'  # no bank yet
+    run(core, 'pattern.select', pattern='C')
+    run(core, 'ai.generate_patterns')
+    assert run(core, 'ai.pattern_try', mode='try') == {'preview': 'try', 'pattern': 'C', 'bank': True}
+    assert core.get('ai.preview') == 'try'
+    transport = core.poll()['transport']
+    assert transport['playing'] and transport['playing_pattern'] == 2
+    assert triggers(core, 'B') == [s % 2 == 0 for s in range(16)]  # every pattern is the bank's
+    assert triggers(core, 'C') == [s % 3 == 0 for s in range(16)]
+    run(core, 'transport.stop')  # stopping keeps the tried bank
+    assert core.get('ai.preview') == 'try' and triggers(core, 'B') == [s % 2 == 0 for s in range(16)]
+    run(core, 'transport.play')
+    assert run(core, 'ai.pattern_try', mode=None) == {'preview': 'off'}
+    assert core.get('ai.preview') == 'off'
+    assert core.poll()['transport']['playing'] is True  # put back without stopping
+    assert [triggers(core, p) for p in 'ABCDEFGHIJKL'] == preset
+
+
+def test_revert_puts_the_preset_patterns_back_after_trying_the_bank(make_core):
+    core = make_core()
+    preset = [triggers(core, p) for p in 'ABCDEFGHIJKL']
+    run(core, 'ai.generate_patterns')
+    run(core, 'ai.pattern_try', mode='try')
+    assert run(core, 'ai.revert') == {'reverted': [], 'preview': True}
+    assert core.get('ai.preview') == 'off' and core.poll()['transport']['playing'] is True
+    assert [triggers(core, p) for p in 'ABCDEFGHIJKL'] == preset
+
+
+def test_keeping_a_tried_bank_keeps_its_step_edits_in_one_step(make_core):
+    core = make_core()
+    preset = [triggers(core, p) for p in 'ABCDEFGHIJKL']
+    run(core, 'ai.generate', channel=1)
+    run(core, 'ai.generate_patterns')
+    run(core, 'ai.pattern_try', mode='try')
+    can_undo = core.get('undo.can_undo')
+    core.set('pattern.B.ch1.step2.trig', True)  # an edit on the tried bank
+    assert core.get('undo.can_undo') == can_undo
+    assert run(core, 'ai.replace_patterns') == {'kept': [1], 'patterns': 12}
+    assert core.get('ai.preview') == 'off' and core.get('ai.tried') == []
+    assert triggers(core, 'B')[:3] == [True, True, True]
+    assert run(core, 'undo')['label'] == 'AI sounds and patterns'
+    assert [triggers(core, p) for p in 'ABCDEFGHIJKL'] == preset
 
 
 def test_bank_preview_chains_all_twelve_from_a_and_ends_with_revert(make_core):
