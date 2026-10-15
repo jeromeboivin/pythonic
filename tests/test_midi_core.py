@@ -13,6 +13,7 @@ import time
 import pytest
 
 from pythonic.app import AppCore
+from pythonic.app.midi import import_mido
 from tests.fake_audio import FakeAudioBackend
 from tests.fake_midi import FakeMidiBackend, cc, message, note_on, pitchwheel, program_change
 
@@ -523,3 +524,25 @@ def test_normalisation_round_trips_on_every_learnable_curve(make_core):
             assert math.isfinite(back)
     assert core.registry['ch1.osc.attack'].denormalize(0.0) == 0.0
     assert core.registry['ch1.osc.attack'].denormalize(1.0) == 10000.0
+
+
+# ====================================================================== macOS: CoreMIDI first
+def test_on_macos_a_refused_coremidi_client_leaves_midi_off_instead_of_aborting(capsys):
+    asked = []
+    refuse = lambda: asked.append('asked') or -304  # noqa: E731
+    assert import_mido(platform='darwin', refusal=refuse) is None
+    assert asked == ['asked'] and 'macOS refused a MIDI connection: -304' in capsys.readouterr().out
+    assert import_mido(platform='darwin', refusal=lambda: None) is not None
+
+
+def test_coremidi_is_only_asked_on_macos():
+    def refuse():
+        raise AssertionError('asked off macOS')
+    assert import_mido(platform='linux', refusal=refuse) is not None
+    assert import_mido(platform='win32', refusal=refuse) is not None
+
+
+def test_when_coremidi_cannot_be_asked_rtmidi_tries_as_before():
+    def broken():
+        raise OSError('no CoreMIDI framework')
+    assert import_mido(platform='darwin', refusal=broken) is not None

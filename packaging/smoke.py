@@ -3,7 +3,7 @@ Start a built app the way a user would and check it comes up (release CI).
 
     python packaging/smoke.py dist/<edition>
 
-Starts the web interface and the tkinter interface for a few seconds each
+Starts the web interface and the tkinter interface for 20 seconds each
 (``--quit-after``), then the AI worker: it must answer ``hello`` and, in
 the ai edition (when the bundle holds the models), generate a drum patch
 from the bundled model. Exits non-zero on the first failure.
@@ -23,9 +23,14 @@ def executable(dist):
     raise SystemExit(f'no Pythonic executable in {dist}')
 
 
+# Seconds each interface stays open. The page must have loaded by then; a
+# first start can be slow (Windows Defender scans a fresh bundle).
+QUIT_AFTER = 20
+
+
 def start(exe, ui):
     print(f'--- {ui} interface', flush=True)
-    proc = subprocess.run([str(exe), '--ui', ui, '--quit-after', '5'], timeout=300)
+    proc = subprocess.run([str(exe), '--ui', ui, '--quit-after', str(QUIT_AFTER)], timeout=300)
     if proc.returncode:
         raise SystemExit(f'the {ui} interface exited with {proc.returncode}')
 

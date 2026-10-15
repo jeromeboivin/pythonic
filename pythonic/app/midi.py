@@ -32,7 +32,9 @@ ghost marker.
 """
 
 import queue
+import sys
 import threading
+import time
 from typing import List, Optional
 
 from .sound import (
@@ -71,13 +73,50 @@ def note_name(note):
     return f"{_NOTE_NAMES[note % 12]}{note // 12 - 1}"
 
 
-def import_mido():
+def coremidi_refusal(attempts=3, wait=0.5):
+    """macOS: None when CoreMIDI accepts a MIDI client, else its error code.
+
+    rtmidi creates its CoreMIDI client from a function declared not to throw,
+    so when CoreMIDI refuses (as on a machine whose MIDI server will not
+    start) its exception aborts the whole process. Asking CoreMIDI first, here,
+    fails safely. The client is kept: Apple asks apps not to dispose of them.
+    """
+    import ctypes
+    framework = '/System/Library/Frameworks/{0}.framework/{0}'
+    core_midi = ctypes.cdll.LoadLibrary(framework.format('CoreMIDI'))
+    foundation = ctypes.cdll.LoadLibrary(framework.format('CoreFoundation'))
+    foundation.CFStringCreateWithCString.restype = ctypes.c_void_p
+    foundation.CFStringCreateWithCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]
+    core_midi.MIDIClientCreate.restype = ctypes.c_int32
+    core_midi.MIDIClientCreate.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+                                           ctypes.POINTER(ctypes.c_uint32)]
+    name = foundation.CFStringCreateWithCString(None, b'Pythonic', 0x0600)  # ASCII
+    client = ctypes.c_uint32()
+    for attempt in range(attempts):
+        status = core_midi.MIDIClientCreate(name, None, None, ctypes.byref(client))
+        if status == 0:
+            return None
+        if attempt < attempts - 1:
+            time.sleep(wait)
+    return status
+
+
+def import_mido(platform=sys.platform, refusal=coremidi_refusal):
     try:
         import mido
-        return mido
     except Exception:  # missing library or MIDI backend
         print("MIDI input not available (mido library not installed)")
         return None
+    if platform == 'darwin':
+        try:
+            status = refusal()
+        except Exception as exc:  # CoreMIDI could not be asked: let rtmidi try
+            print(f"Could not check CoreMIDI first ({exc})")
+            status = None
+        if status is not None:
+            print(f"MIDI input not available (macOS refused a MIDI connection: {status})")
+            return None
+    return mido
 
 
 class ClockTempo:
@@ -298,7 +337,8 @@ class MidiInput:
     # ================================================================== devices
     def _require_backend(self):
         if self.backend is None:
-            raise RuntimeError('MIDI input not available (mido is not installed)')
+            raise RuntimeError('MIDI input not available (mido is not installed, '
+                               'or macOS refused a MIDI connection)')
 
     def _scan(self):
         try:
