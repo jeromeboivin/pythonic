@@ -1,3 +1,7 @@
+import faulthandler
+import os
+import sys
+
 import pytest
 
 from pythonic.preferences_manager import PreferencesManager
@@ -16,3 +20,26 @@ def prefs(tmp_path, monkeypatch):
     manager = PreferencesManager()
     manager.set('midi_enabled', False)
     return manager
+
+
+# faulthandler_timeout (pyproject.toml) dumps every thread's stack when a test
+# hangs, but pytest stops it once a test fails (it gets out of pdb's way): a
+# teardown that then hangs, a GUI whose event loop does not end, said nothing.
+_DUMP_FD = pytest.StashKey[int]()
+
+
+def pytest_configure(config):
+    config.stash[_DUMP_FD] = os.dup(sys.stderr.fileno())  # the terminal, not a test's capture
+
+
+def pytest_unconfigure(config):
+    os.close(config.stash[_DUMP_FD])
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_teardown(item):
+    """Arm the hang dump again for the teardown (pytest disarms it after a failure)."""
+    timeout = float(item.config.getini('faulthandler_timeout') or 0)
+    if timeout > 0 and not item.config.getoption('usepdb', False):
+        faulthandler.dump_traceback_later(timeout, file=item.config.stash[_DUMP_FD])
+    return (yield)
