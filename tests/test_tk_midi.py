@@ -14,6 +14,7 @@ from pythonic.app import AppCore
 from tests.fake_audio import FakeAudioBackend
 from tests.fake_midi import FakeMidiBackend, cc, note_on, program_change
 from tests.test_tk_smoke import _display_available
+from tests.tk_gui import close
 
 pytestmark = pytest.mark.skipif(not _display_available(), reason='no display for tkinter')
 
@@ -42,13 +43,7 @@ def app(prefs):
     assert core.wait(core.act('midi.open'))['status'] == 'done'
     gui.backend, gui.midi, gui.clock = backend, midi, clock
     yield gui
-
-    def close():
-        for job in gui.root.tk.splitlist(gui.root.tk.call('after', 'info')):
-            gui.root.after_cancel(job)
-        gui.root.destroy()
-    gui.root.after(10, close)
-    gui.run()
+    close(gui)
 
 
 def send(gui, *msgs):

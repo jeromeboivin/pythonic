@@ -14,8 +14,9 @@ import pytest
 from pythonic.po32_codec import save_wav
 from pythonic.po32_decoder import decode_wav_file
 from tests.test_po32_core import CARD_PATTERNS, CARD_SOUNDS, card_signal
-from tests.test_tk_presets import close, make_app
+from tests.test_tk_presets import make_app
 from tests.test_tk_smoke import _display_available
+from tests.tk_gui import close
 
 pytestmark = pytest.mark.skipif(not _display_available(), reason='no display for tkinter')
 

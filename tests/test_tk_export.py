@@ -12,8 +12,9 @@ from unittest import mock
 
 import pytest
 
-from tests.test_tk_presets import close, make_app
+from tests.test_tk_presets import make_app
 from tests.test_tk_smoke import _display_available
+from tests.tk_gui import close
 
 pytestmark = pytest.mark.skipif(not _display_available(), reason='no display for tkinter')
 

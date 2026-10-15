@@ -13,6 +13,7 @@ import pytest
 from pythonic.app import AppCore
 from tests.fake_audio import FakeAudioBackend
 from tests.test_tk_smoke import _display_available
+from tests.tk_gui import close
 
 pytestmark = pytest.mark.skipif(not _display_available(), reason='no display for tkinter')
 
@@ -39,13 +40,7 @@ def app(prefs):
     core.wait(gui._audio_start_action)
     gui.backend, gui.clock = backend, clock
     yield gui
-
-    def close():
-        for job in gui.root.tk.splitlist(gui.root.tk.call('after', 'info')):
-            gui.root.after_cancel(job)
-        gui.root.destroy()
-    gui.root.after(10, close)
-    gui.run()
+    close(gui)
 
 
 def tick(gui):

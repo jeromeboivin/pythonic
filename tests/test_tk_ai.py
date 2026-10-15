@@ -14,8 +14,8 @@ import pytest
 
 from pythonic.app import AppCore
 from tests.fake_audio import FakeAudioBackend
-from tests.test_tk_presets import close
 from tests.test_tk_smoke import _display_available
+from tests.tk_gui import close
 
 pytestmark = pytest.mark.skipif(not _display_available(), reason='no display for tkinter')
 
