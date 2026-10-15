@@ -84,8 +84,11 @@ a.datas = [d for d in a.datas if needed(d)]
 
 if sys.platform.startswith('linux'):
     # Every desktop has ALSA, and the system's own library finds its plugins
-    # (PipeWire, PulseAudio): never bundle it
-    a.binaries = [b for b in a.binaries if not os.path.basename(b[0]).startswith('libasound.so')]
+    # (PipeWire, PulseAudio): never bundle it. Same for GBM, which loads the
+    # system's Mesa drivers: the build machine's copy fails on another Mesa
+    # ("did not find extension DRI_Mesa") and the panel window stays black.
+    SYSTEM_ONLY = ('libasound.so', 'libgbm.so')
+    a.binaries = [b for b in a.binaries if not os.path.basename(b[0]).startswith(SYSTEM_ONLY)]
 
 pyz = PYZ(a.pure)
 
