@@ -41,8 +41,11 @@ def apply(gui):
 
 def test_every_sound_widget_has_an_address(app):
     assert set(app._sound_widgets) <= SOUND_SUFFIXES
-    # Not on the tkinter panel: LFO phase offsets and the pump tempo sync
-    assert SOUND_SUFFIXES - set(app._sound_widgets) == {'lfo1.phase', 'lfo2.phase', 'pump.sync'}
+    # Not on the tkinter panel: LFO phase offsets, the pump tempo sync and the metal
+    # section (new controls are on the web panel only)
+    metal = {s for s in SOUND_SUFFIXES if s.startswith('metal.')} | {'vel.metal'}
+    assert len(metal) == 19
+    assert SOUND_SUFFIXES - set(app._sound_widgets) == {'lfo1.phase', 'lfo2.phase', 'pump.sync', *metal}
 
 
 def test_no_handler_writes_the_engine_directly():

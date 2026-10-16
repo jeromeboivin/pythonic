@@ -19,6 +19,8 @@ import copy
 import numpy as np
 from typing import Dict, List, Any, Optional
 
+from .voice import METAL_DEFAULTS
+
 
 # Parameters that can be linearly interpolated
 INTERPOLATABLE_PARAMS = {
@@ -33,12 +35,15 @@ INTERPOLATABLE_PARAMS = {
     'vintage_amount',
     'reverb_decay', 'reverb_mix', 'reverb_width',
     'delay_feedback', 'delay_mix',
+    *METAL_DEFAULTS,
 }
 
 # Parameters that use logarithmic interpolation (frequencies)
 LOG_INTERPOLATABLE_PARAMS = {
     'osc_frequency', 'noise_filter_freq', 'eq_frequency',
     'pitch_mod_rate',
+    'metal_freq1', 'metal_freq2', 'metal_freq3', 'metal_freq4', 'metal_freq5', 'metal_freq6',
+    'metal_band1_freq', 'metal_band2_freq', 'metal_hp_freq',
 }
 
 # Discrete params: use nearest-endpoint value (snap at midpoint)

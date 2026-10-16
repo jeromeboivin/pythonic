@@ -11,6 +11,7 @@ from .drum_channel import DrumChannel
 from .oscillator import WaveformType, PitchModMode
 from .noise import NoiseFilterMode, NoiseEnvelopeMode
 from .lfo import ModTarget
+from .voice import METAL_DEFAULTS
 
 
 def _render_channel_audio(channel: DrumChannel, num_samples: int, actions=None):
@@ -565,4 +566,5 @@ class PythonicSynthesizer:
         if 'channels' in data:
             for i, ch_data in enumerate(data['channels']):
                 if i < self.NUM_CHANNELS:
-                    self.channels[i].set_parameters(ch_data)
+                    # sounds saved before the metal section leave it off
+                    self.channels[i].set_parameters({**METAL_DEFAULTS, **ch_data})

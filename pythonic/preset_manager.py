@@ -9,6 +9,7 @@ import os
 import numpy as np
 from typing import Dict, Any, List, Optional
 from .pattern_manager import DEFAULT_VELOCITY, clamp_velocity
+from .voice import METAL_DEFAULTS, METAL_PARAMS, METAL_PERCENT, metal_from_patch, metal_on
 
 
 # ─────────────────────────────────────────────
@@ -65,6 +66,7 @@ def convert_drum_patch_data(patch: Dict) -> Dict:
         'noise_vel_sensitivity': patch.get('NVel', 0.0) / 100.0,
         'mod_vel_sensitivity': patch.get('ModVel', 0.0) / 100.0,
         **({'choke_enabled': bool(patch['Choke'])} if 'Choke' in patch else {}),
+        **metal_from_patch(patch),
     }
 
 
@@ -151,6 +153,9 @@ def apply_drum_patch_to_channel(channel, data: Dict):
     channel.mod_vel_sensitivity = data.get('mod_vel_sensitivity', 0.0)
     if 'choke_enabled' in data:
         channel.choke_enabled = bool(data['choke_enabled'])
+    # a patch without the metal section turns it off
+    for name, default in METAL_DEFAULTS.items():
+        channel.set_metal(name, data.get(name, default))
 
 class PythonicPresetParser:
     """
@@ -828,6 +833,7 @@ class DrumPatchWriter:
         'OscFreq': ' Hz', 'OscAtk': ' ms', 'OscDcy': ' ms', 'ModAmt': ' sm',
         'NFilFrq': ' Hz', 'NEnvAtk': ' ms', 'NEnvDcy': ' ms', 'EQFreq': ' Hz',
         'EQGain': ' dB', 'Level': ' dB', 'OscVel': '%', 'NVel': '%', 'ModVel': '%',
+        **{spec[1]: spec[2] for spec in METAL_PARAMS.values()},
     }
 
     @staticmethod
@@ -862,7 +868,15 @@ class DrumPatchWriter:
             'OscVel': channel.osc_vel_sensitivity * 100.0,
             'NVel': channel.noise_vel_sensitivity * 100.0,
             'ModVel': channel.mod_vel_sensitivity * 100.0,
+            # the metal section only when it is on, so other patches stay plain V3 files
+            **(DrumPatchWriter.metal_keys(channel.metal) if metal_on(channel.metal) else {}),
         }
+
+    @staticmethod
+    def metal_keys(metal: Dict[str, float]) -> Dict[str, float]:
+        """The .mtdrum keys and display values of a metal section (VoiceParams field names)."""
+        return {spec[1]: metal[name] * (100.0 if name in METAL_PERCENT else 1.0)
+                for name, spec in METAL_PARAMS.items()}
 
     @staticmethod
     def _number(value) -> str:

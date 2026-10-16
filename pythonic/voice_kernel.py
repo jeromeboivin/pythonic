@@ -42,7 +42,20 @@ P_EQ_B = 29             # 3 values
 P_EQ_A = 32             # 3 values
 P_SMOOTH = 35
 P_RELEASE = 36
-NUM_P = 37
+# metal section (used only while it is on)
+P_M_INC = 37            # 6 square-wave phase increments (cycles/sample, 0 = silent)
+P_M_B1 = 43             # band 1 band-pass, 3 values
+P_M_A1 = 46             # 3 values
+P_M_B2 = 49             # band 2 band-pass, 3 values
+P_M_A2 = 52             # 3 values
+P_M_HB = 55             # high-pass, 3 values
+P_M_HA = 58             # 3 values
+P_M_DCY = 61            # 2 per-sample band decay coefficients
+P_M_LVL = 63            # 2 band levels
+P_M_LSTEP = 65          # 2 per-sample steps of the linear band envelopes
+P_M_CURVE = 67          # 0 exponential .. 1 linear band envelopes
+P_M_DRIVE = 68          # band saturation gain (0 = linear)
+NUM_P = 69
 
 # ---------------------------------------------------------------- int parameters
 IP_WAVE = 0
@@ -51,7 +64,8 @@ IP_NOISE_ENV = 2
 IP_STEREO = 3
 IP_MOD_HOLD8 = 4
 IP_N_BURSTS = 5
-NUM_IP = 6
+IP_METAL = 6            # 1 when the metal section is on
+NUM_IP = 7
 
 # ---------------------------------------------------------------- float state
 S_PHASE = 0
@@ -75,7 +89,15 @@ S_EQ_ZI = 21            # 2 channels x 2
 S_G = 25                # 6 smoothed gains
 S_DRIFT = 31
 S_ACC = 32              # phase increments summed since the segment start
-NUM_S = 33
+S_M_PH = 33             # 6 metal oscillator phases
+S_M_ENV = 39            # 2 band envelopes
+S_M_REL = 41            # 2 band release steps (choke)
+S_M_VEL = 43            # metal velocity gain
+S_M_Z1 = 44             # band 1 filter state, 2 values
+S_M_Z2 = 46             # band 2 filter state, 2 values
+S_M_ZH = 48             # high-pass state, 2 values
+S_M_LIN = 50            # 2 linear band envelopes (S_M_ENV holds the exponential ones)
+NUM_S = 52
 
 # ---------------------------------------------------------------- int state
 I_PMODE4 = 0
@@ -88,7 +110,8 @@ I_ORUNK = 6             # samples into the current osc envelope run
 I_NRUNK = 7
 I_LATCH = 8             # decay-mod latch inside the current segment
 I_SEGCUT = 9
-NUM_I = 10
+I_MSTAGE = 10           # metal section: 0 silent, 1 decaying, 2 released (choke)
+NUM_I = 11
 
 MOD_DECAY, MOD_SINE, MOD_NOISE = 0, 1, 2
 NENV_EXP, NENV_LINEAR, NENV_MOD = 0, 1, 2
@@ -97,6 +120,10 @@ SINE_AMP = 0.8164966
 TRI_HF_AMP = 0.8
 SAW_HF_AMP = 0.58
 DEC_A = 0.07314892858
+METAL_DUTY = 0.48       # duty cycle of the metal square waves
+METAL_END = 1e-5        # a band envelope this low has ended
+METAL_BIAS = 0.35       # asymmetry of the band saturation: even products, difference tones
+METAL_SCALE = 3.0       # band-pass output that reaches the saturation's knee at drive 0
 TWO_PI = 2.0 * np.pi
 
 
@@ -498,6 +525,82 @@ def _osc_block(p, ip, fs, ist, mod_rng, j, blk, w, out):
     fs[S_ACC] = acc
 
 
+# ---------------------------------------------------------------- metal section
+@njit(cache=True, nogil=True)
+def _blep(t, dt):
+    """PolyBLEP correction of a unit step at phase 0, for phase t and increment dt."""
+    if t < dt:
+        t = t / dt
+        return t + t - t * t - 1.0
+    if t > 1.0 - dt:
+        t = (t - 1.0) / dt
+        return t * t + t + t + 1.0
+    return 0.0
+
+
+@njit(cache=True, nogil=True)
+def _saturate(u, g):
+    """Asymmetric soft saturation of gain g (no change at g == 0), 0 at 0, slope 1 there for
+    small g: the swing of a transistor VCA, whose products fill the lows and mids."""
+    if g == 0.0:
+        return u
+    v = u / METAL_SCALE
+    return (math.tanh(g * (v + METAL_BIAS)) - math.tanh(g * METAL_BIAS)) / g * METAL_SCALE
+
+
+@njit(cache=True, nogil=True)
+def _metal_sample(p, fs, ist):
+    """One sample of the metal section: six free-running squares into two band-passes,
+    each saturated (drive) then under its own decay envelope, summed into a high-pass. A band
+    envelope blends
+    an exponential decay (-60 dB at the decay time) and a linear one (0 at it) by the curve."""
+    st = ist[I_MSTAGE]
+    if st == 0:
+        return 0.0
+    drift = fs[S_DRIFT]
+    x = 0.0
+    for i in range(6):
+        dt = p[P_M_INC + i] * drift
+        if dt <= 0.0:
+            continue
+        ph = fs[S_M_PH + i]
+        v = 1.0 if ph < METAL_DUTY else -1.0
+        x += v + _blep(ph, dt) - _blep((ph + 1.0 - METAL_DUTY) % 1.0, dt)
+        ph += dt
+        fs[S_M_PH + i] = ph - 1.0 if ph >= 1.0 else ph
+    c = p[P_M_CURVE]
+    x1 = fs[S_M_ENV]
+    x2 = fs[S_M_ENV + 1]
+    l1 = fs[S_M_LIN]
+    l2 = fs[S_M_LIN + 1]
+    e1 = x1 * (1.0 - c) + l1 * c
+    e2 = x2 * (1.0 - c) + l2 * c
+    g = p[P_M_DRIVE]
+    y = (_saturate(_biquad(p, P_M_B1, P_M_A1, x, fs, S_M_Z1), g) * e1 * p[P_M_LVL]
+         + _saturate(_biquad(p, P_M_B2, P_M_A2, x, fs, S_M_Z2), g) * e2 * p[P_M_LVL + 1])
+    y = _biquad(p, P_M_HB, P_M_HA, y, fs, S_M_ZH) * fs[S_M_VEL]
+    if st == 1:
+        x1 *= p[P_M_DCY]
+        x2 *= p[P_M_DCY + 1]
+        l1 = max(l1 - p[P_M_LSTEP], 0.0)
+        l2 = max(l2 - p[P_M_LSTEP + 1], 0.0)
+    else:
+        x1 = max(x1 - fs[S_M_REL], 0.0)
+        x2 = max(x2 - fs[S_M_REL + 1], 0.0)
+        l1 = x1
+        l2 = x2
+    fs[S_M_ENV] = x1
+    fs[S_M_ENV + 1] = x2
+    fs[S_M_LIN] = l1
+    fs[S_M_LIN + 1] = l2
+    if e1 * p[P_M_LVL] < METAL_END and e2 * p[P_M_LVL + 1] < METAL_END:
+        for i in range(2):
+            fs[S_M_ENV + i] = 0.0
+            fs[S_M_LIN + i] = 0.0
+        ist[I_MSTAGE] = 0
+    return y
+
+
 # ---------------------------------------------------------------- render
 @njit(cache=True, nogil=True)
 def _ring_eq(p, ip, fs, ist, out, n):
@@ -530,11 +633,12 @@ def render(p, ip, fs, ist, rng, mod_rng, nb, blk0, out):
     for i in range(n):
         out[i, 0] = 0.0
         out[i, 1] = 0.0
-    if ist[I_OSTAGE] == 4 and ist[I_NSTAGE] == 4:
+    if ist[I_OSTAGE] == 4 and ist[I_NSTAGE] == 4 and ist[I_MSTAGE] == 0:
         if ist[I_EQ_TAIL]:
             _ring_eq(p, ip, fs, ist, out, n)
         return
 
+    metal_on = ist[I_MSTAGE] != 0
     osc_alive = ist[I_OSTAGE] != 4
     noise_on = ist[I_NSTAGE] != 4 and (p[P_GAINS + 1] > 0.0 or fs[S_G + 1] > 0.0)
     chans = 2 if ip[IP_STEREO] else 1
@@ -598,6 +702,8 @@ def render(p, ip, fs, ist, rng, mod_rng, nb, blk0, out):
         go, gn, gd, gl, gr, ge = g[0], g[1], g[2], g[3], g[4], g[5]
         for k in range(4):
             s0 = osc[k] * oe[k] * go * gd
+            if metal_on:
+                s0 = s0 + _metal_sample(p, fs, ist) * gd
             for c in range(chans):
                 s = s0
                 if noise_on:

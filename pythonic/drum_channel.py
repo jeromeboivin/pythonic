@@ -7,7 +7,8 @@ objects hold the parameters so the GUI, presets and the
 drum generator keep working against the same attributes.
 
 Pythonic extras (LFO/pump modulation, vintage, delay, reverb) are applied
-around the voice.
+around the voice. The optional metal section lives in ``self.metal``, keyed by
+its VoiceParams field names (see ``voice.METAL_PARAMS``).
 """
 
 import numpy as np
@@ -19,7 +20,7 @@ from .lfo import LFO, PumpSource, ModTarget, LFORetrigger
 from .vintage import VintageProcessor
 from .reverb import FastStereoReverb
 from .delay import FastStereoDelay, DelayTime
-from .voice import DrumVoice, VoiceParams
+from .voice import DrumVoice, METAL_DEFAULTS, METAL_PARAMS, VoiceParams
 
 
 class DrumChannel:
@@ -81,8 +82,11 @@ class DrumChannel:
         self.noise_vel_sensitivity = 0.0
         self.mod_vel_sensitivity = 0.0
 
-        # Pitch offset in semitones (scales oscillator, noise filter and EQ)
+        # Pitch offset in semitones (scales oscillator, noise filter, EQ and metal)
         self.pitch_semitones = 0.0
+
+        # Metal section (off while both band levels are 0)
+        self.metal = dict(METAL_DEFAULTS)
 
         self.is_active = False
         self.current_velocity = 1.0
@@ -203,6 +207,7 @@ class DrumChannel:
             mod_vel=float(mvel),
             pitch_ratio=float(2.0 ** (pitch / 12.0)),
             mono=bool(self.mono),
+            **self.metal,
         )
 
     # ------------------------------------------------------------------ playback
@@ -447,7 +452,13 @@ class DrumChannel:
             'lfo1': self.lfo1.get_parameters(),
             'lfo2': self.lfo2.get_parameters(),
             'pump': self.pump.get_parameters(),
+            **self.metal,
         }
+
+    def set_metal(self, name: str, value: float):
+        """Set one metal section parameter (a key of voice.METAL_PARAMS), clamped to its range."""
+        lo, hi = METAL_PARAMS[name][3:]
+        self.metal[name] = float(np.clip(float(value), lo, hi))
 
     def reset_to_defaults(self):
         """Restore the init patch of a freshly created channel (name included)."""
@@ -566,3 +577,6 @@ class DrumChannel:
             self.lfo2.set_parameters(params['lfo2'])
         if 'pump' in params:
             self.pump.set_parameters(params['pump'])
+        for name in METAL_PARAMS:
+            if name in params:
+                self.set_metal(name, params[name])

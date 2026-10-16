@@ -10,8 +10,13 @@ Signal flow (per channel):
       -> polyphase decimator -> amplitude envelope
     noise (uniform white -> state-variable filter, power-normalised)
       -> noise envelope (exponential / linear / clap "mod")
-    mix (osc / noise gains) -> drive -> asymmetric soft shaper
+    metal (optional: six free-running square waves -> two band-passes, each
+      saturated (drive), with its own decay envelope and level -> high-pass)
+    mix (osc / noise gains, plus metal) -> drive -> asymmetric soft shaper
       -> SVF peaking EQ -> level / pan / makeup gains
+
+With both metal band levels at 0 the metal section is off and the voice
+renders exactly as without it.
 
 Everything is processed on a 4-sample block grid in absolute time: envelopes advance per sample but change stage only at block ends,
 triggers take effect at the next block boundary, and slow pitch modulation is
@@ -40,6 +45,43 @@ WAVE_SINE, WAVE_TRI, WAVE_SAW = 0, 1, 2
 MOD_DECAY, MOD_SINE, MOD_NOISE = K.MOD_DECAY, K.MOD_SINE, K.MOD_NOISE
 FILT_LP, FILT_BP, FILT_HP = 0, 1, 2
 NENV_EXP, NENV_LINEAR, NENV_MOD = K.NENV_EXP, K.NENV_LINEAR, K.NENV_MOD
+
+# Metal section: VoiceParams field -> (default, .mtdrum key, unit, minimum, maximum).
+# The default oscillator tuning is the classic six-square cymbal bank
+# (205.3 ... 800 Hz). Levels and velocity are ratios (percent in files); the
+# section is off while both band levels are 0, and a patch that leaves it off
+# has none of these keys.
+METAL_PARAMS = {
+    'metal_freq1': (205.3, 'MetalFreq1', ' Hz', 20.0, 2000.0),
+    'metal_freq2': (304.4, 'MetalFreq2', ' Hz', 20.0, 2000.0),
+    'metal_freq3': (369.6, 'MetalFreq3', ' Hz', 20.0, 2000.0),
+    'metal_freq4': (522.7, 'MetalFreq4', ' Hz', 20.0, 2000.0),
+    'metal_freq5': (540.0, 'MetalFreq5', ' Hz', 20.0, 2000.0),
+    'metal_freq6': (800.0, 'MetalFreq6', ' Hz', 20.0, 2000.0),
+    'metal_tune': (0.0, 'MetalTune', ' sm', -24.0, 24.0),
+    'metal_band1_freq': (3440.0, 'MetalB1Freq', ' Hz', 200.0, 16000.0),
+    'metal_band1_decay_ms': (300.0, 'MetalB1Dcy', ' ms', 10.0, 10000.0),
+    'metal_band1_level': (0.0, 'MetalB1Lvl', '%', 0.0, 1.0),
+    'metal_band1_q': (1.0, 'MetalB1Q', '', 0.5, 20.0),
+    'metal_band2_freq': (7100.0, 'MetalB2Freq', ' Hz', 200.0, 16000.0),
+    'metal_band2_decay_ms': (800.0, 'MetalB2Dcy', ' ms', 10.0, 10000.0),
+    'metal_band2_level': (0.0, 'MetalB2Lvl', '%', 0.0, 1.0),
+    'metal_band2_q': (1.0, 'MetalB2Q', '', 0.5, 20.0),
+    'metal_curve': (0.0, 'MetalCurve', '%', 0.0, 1.0),
+    'metal_drive': (0.0, 'MetalDrive', '%', 0.0, 1.0),
+    'metal_hp_freq': (2000.0, 'MetalHPFreq', ' Hz', 20.0, 16000.0),
+    'metal_vel': (0.0, 'MetalVel', '%', 0.0, 2.0),
+}
+METAL_DEFAULTS = {name: spec[0] for name, spec in METAL_PARAMS.items()}
+METAL_PERCENT = {'metal_band1_level', 'metal_band2_level', 'metal_curve', 'metal_drive', 'metal_vel'}
+METAL_FREQS = tuple(f'metal_freq{i}' for i in range(1, 7))
+METAL_GAIN = 0.6        # a band at level 1 is about as loud (RMS) as the noise at full mix
+
+
+def metal_on(params) -> bool:
+    """True when a VoiceParams or channel-format dict turns the metal section on."""
+    get = params.get if isinstance(params, dict) else lambda k, d: getattr(params, k, d)
+    return get('metal_band1_level', 0.0) > 0.0 or get('metal_band2_level', 0.0) > 0.0
 
 
 # --------------------------------------------------------------------------- helpers
@@ -181,8 +223,28 @@ class VoiceParams:
     osc_vel: float = 0.0                # 1.0 == 100 %
     noise_vel: float = 0.0
     mod_vel: float = 0.0
-    pitch_ratio: float = 1.0            # note pitch offset (scales osc, noise filter, EQ)
+    pitch_ratio: float = 1.0            # note pitch offset (scales osc, noise filter, EQ, metal)
     mono: bool = False
+    # metal section (off while both band levels are 0), see METAL_PARAMS
+    metal_freq1: float = 205.3          # Hz
+    metal_freq2: float = 304.4
+    metal_freq3: float = 369.6
+    metal_freq4: float = 522.7
+    metal_freq5: float = 540.0
+    metal_freq6: float = 800.0
+    metal_tune: float = 0.0             # semitones, on all six oscillators
+    metal_band1_freq: float = 3440.0    # Hz
+    metal_band1_decay_ms: float = 300.0
+    metal_band1_level: float = 0.0      # 0..1
+    metal_band1_q: float = 1.0
+    metal_band2_freq: float = 7100.0
+    metal_band2_decay_ms: float = 800.0
+    metal_band2_level: float = 0.0
+    metal_band2_q: float = 1.0
+    metal_curve: float = 0.0            # band envelopes: 0 exponential .. 1 linear
+    metal_drive: float = 0.0            # band saturation, 0..1 (0 = clean)
+    metal_hp_freq: float = 2000.0       # Hz
+    metal_vel: float = 0.0              # 1.0 == 100 %
 
 
 class _Derived:
@@ -283,6 +345,38 @@ class _Derived:
         self.smooth = 1.0 - math.exp(-2.0 * math.pi * min(40.0 / sr, 0.5))
         self.release_slope = -100.0 / sr
 
+        # metal section
+        self.metal = metal_on(p)
+        if self.metal:
+            ratio = p.pitch_ratio * 2.0 ** (min(max(p.metal_tune, -48.0), 48.0) / 12.0)
+            self.metal_inc = [min(max(getattr(p, f), 0.0) * ratio / sr, 0.25) for f in METAL_FREQS]
+            q = lambda v: min(max(v, 0.1), 50.0)
+            self.metal_bp1 = _rbj(p.metal_band1_freq * p.pitch_ratio / sr, q(p.metal_band1_q), 'bp')
+            self.metal_bp2 = _rbj(p.metal_band2_freq * p.pitch_ratio / sr, q(p.metal_band2_q), 'bp')
+            self.metal_hp = _rbj(p.metal_hp_freq * p.pitch_ratio / sr, 0.70710678, 'hp')
+            times = [max(min(max(t, 10.0), 10000.0) / 1000.0 * sr, 1.0)
+                     for t in (p.metal_band1_decay_ms, p.metal_band2_decay_ms)]
+            self.metal_dcy = [1000.0 ** (-1.0 / n) for n in times]
+            self.metal_lstep = [1.0 / n for n in times]
+            self.metal_curve = min(max(p.metal_curve, 0.0), 1.0)
+            self.metal_drive = 20.0 * min(max(p.metal_drive, 0.0), 1.0)
+            self.metal_lvl = [min(max(v, 0.0), 1.0) * METAL_GAIN
+                              for v in (p.metal_band1_level, p.metal_band2_level)]
+
+
+def _rbj(f: float, q: float, kind: str):
+    """(b, a) of a bilinear band-pass (0 dB at its centre) or high-pass, f in cycles/sample."""
+    w = 2.0 * math.pi * min(max(f, 1e-5), 0.45)
+    alpha = math.sin(w) / (2.0 * q)
+    c = math.cos(w)
+    a0 = 1.0 + alpha
+    a = np.array([1.0, -2.0 * c / a0, (1.0 - alpha) / a0])
+    if kind == 'bp':
+        b = np.array([alpha, 0.0, -alpha]) / a0
+    else:
+        b = np.array([(1.0 + c) / 2.0, -(1.0 + c), (1.0 + c) / 2.0]) / a0
+    return b, a
+
 
 # --------------------------------------------------------------------------- voice
 def _pack(d: _Derived):
@@ -319,6 +413,18 @@ def _pack(d: _Derived):
     ip[K.IP_STEREO] = int(d.stereo)
     ip[K.IP_MOD_HOLD8] = int(d.mod_hold8)
     ip[K.IP_N_BURSTS] = d.n_bursts
+    if d.metal:
+        ip[K.IP_METAL] = 1
+        p[K.P_M_INC:K.P_M_INC + 6] = d.metal_inc
+        for (b, a), ib, ia in ((d.metal_bp1, K.P_M_B1, K.P_M_A1), (d.metal_bp2, K.P_M_B2, K.P_M_A2),
+                               (d.metal_hp, K.P_M_HB, K.P_M_HA)):
+            p[ib:ib + 3] = b
+            p[ia:ia + 3] = a
+        p[K.P_M_DCY:K.P_M_DCY + 2] = d.metal_dcy
+        p[K.P_M_LVL:K.P_M_LVL + 2] = d.metal_lvl
+        p[K.P_M_LSTEP:K.P_M_LSTEP + 2] = d.metal_lstep
+        p[K.P_M_CURVE] = d.metal_curve
+        p[K.P_M_DRIVE] = d.metal_drive
     return p, ip
 
 
@@ -336,6 +442,9 @@ class DrumVoice:
         # the output does not depend on how the audio is split into blocks
         self._rng = np.random.default_rng(seed)
         self._mod_rng = np.random.default_rng((seed, 1))
+        # the metal section draws its oscillator phases from its own stream, so a
+        # patch without it renders as before
+        self._metal_rng = np.random.default_rng((seed, 2))
         self.params = VoiceParams()
         self.d = _Derived(self.params, self.sr)
         self._p, self._ip = _pack(self.d)
@@ -387,8 +496,8 @@ class DrumVoice:
     @property
     def is_active(self) -> bool:
         # a silent carry (block remainder) is not activity: idle() consumes it as well
-        return (self._is[K.I_OSTAGE] != 4 or self._is[K.I_NSTAGE] != 4 or len(self._pending) > 0
-                or bool(self._is[K.I_EQ_TAIL]) or bool(self._carry.any()))
+        return (self._is[K.I_OSTAGE] != 4 or self._is[K.I_NSTAGE] != 4 or self._is[K.I_MSTAGE] != 0
+                or len(self._pending) > 0 or bool(self._is[K.I_EQ_TAIL]) or bool(self._carry.any()))
 
     # ---------------------------------------------------------------- events
     def trigger(self, velocity: float = 127.0):
@@ -406,6 +515,13 @@ class DrumVoice:
                     if st[stage] != 4:
                         fs[slope] = max(fs[lvl], 1e-6) * self.d.release_slope
                         st[stage] = 3
+                if st[K.I_MSTAGE] != 0:
+                    c = self._p[K.P_M_CURVE]
+                    for i in range(2):
+                        level = fs[K.S_M_ENV + i] * (1.0 - c) + fs[K.S_M_LIN + i] * c
+                        fs[K.S_M_ENV + i] = fs[K.S_M_LIN + i] = level
+                        fs[K.S_M_REL + i] = -level * self.d.release_slope
+                    st[K.I_MSTAGE] = 2
             else:
                 self._do_trigger(ev[1])
         self._pending = []
@@ -435,6 +551,13 @@ class DrumVoice:
         else:
             st[K.I_NSTAGE] = 0
             fs[K.S_NSLOPE] = max(fs[K.S_NLVL], 1e-6) * (-1.0 / d.n_fade_n)
+        if d.metal:
+            # free-running oscillators: their phases at a hit are unrelated
+            fs[K.S_M_PH:K.S_M_PH + 6] = self._metal_rng.random(6)
+            fs[K.S_M_ENV:K.S_M_ENV + 2] = 1.0
+            fs[K.S_M_LIN:K.S_M_LIN + 2] = 1.0
+            fs[K.S_M_VEL] = velocity_gain(velocity, p.metal_vel)
+            st[K.I_MSTAGE] = 1
 
     # ---------------------------------------------------------------- render
     def _render_blocks(self, nb):
@@ -535,4 +658,15 @@ def params_from_patch(patch: dict, pitch_ratio: float = 1.0, mono: bool = False)
         mod_vel=_num(g('ModVel', 0.0)) / 100.0,
         pitch_ratio=pitch_ratio,
         mono=mono,
+        **metal_from_patch(patch),
     )
+
+
+def metal_from_patch(patch: dict) -> dict:
+    """Metal section fields of a parsed .mtdrum / .mtpreset patch (all defaults, so off,
+    when it has no metal keys)."""
+    out = {}
+    for name, (default, key, *_) in METAL_PARAMS.items():
+        v = _num(patch[key], default) if key in patch else default
+        out[name] = v / 100.0 if name in METAL_PERCENT and key in patch else v
+    return out

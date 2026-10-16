@@ -446,6 +446,17 @@ def test_import_writes_the_sounds_and_patterns_as_one_undo_step(make_core, card_
     assert core.get('pattern.B.length') == 8 and core.get('pattern.A.ch1.vel')[0] == 100
 
 
+def test_the_po32_has_no_metal_section(make_core, card_wav):
+    core = make_core()
+    core.set('ch2.metal.band1_level', 0.8)
+    # sent without it, and said so
+    assert run(core, 'po32.prepare')['metal_dropped'] == [2]
+    # an imported sound turns it off
+    run(core, 'po32.decode', path=str(card_wav))
+    run(core, 'po32.import')
+    assert core.get('ch2.metal.band1_level') == 0.0
+
+
 def test_import_sets_the_morph_endpoints(make_core, card_wav):
     core = make_core()
     run(core, 'po32.decode', path=str(card_wav))

@@ -21,6 +21,7 @@ from pythonic.delay import DelayTime
 from pythonic.lfo import LFOPolarity, LFORetrigger, LFOWaveform, ModTarget, SyncDivision
 from pythonic.noise import NoiseEnvelopeMode, NoiseFilterMode
 from pythonic.oscillator import PitchModMode, WaveformType
+from pythonic.voice import METAL_PARAMS
 
 
 @dataclass(frozen=True)
@@ -111,6 +112,33 @@ def _pump(ch):
     return ch.pump
 
 
+def _metal(suffix, name, unit, curve='linear'):
+    """One metal section parameter (a VoiceParams field of voice.METAL_PARAMS)."""
+    lo, hi = METAL_PARAMS[name][3:]
+    return _number(suffix, name, lambda ch: ch.metal[name],
+                   lambda ch, v: ch.set_metal(name, v), lo, hi, unit, curve)
+
+
+# Metal section: six square oscillators, two band-passes each with a decay and a
+# level (both levels at 0 turn the section off), then a high-pass
+METAL_SOUND_PARAMS = (
+    *[_metal(f'metal.freq{i}', f'metal_freq{i}', 'Hz', 'log') for i in range(1, 7)],
+    _metal('metal.tune', 'metal_tune', 'st'),
+    *[p for b in (1, 2) for p in (
+        _metal(f'metal.band{b}_freq', f'metal_band{b}_freq', 'Hz', 'log'),
+        _metal(f'metal.band{b}_q', f'metal_band{b}_q', '', 'log'),
+        _metal(f'metal.band{b}_decay', f'metal_band{b}_decay_ms', 'ms', 'log'),
+        _ratio(f'metal.band{b}_level', f'metal_band{b}_level',
+               lambda ch, n=f'metal_band{b}_level': ch.metal[n],
+               lambda ch, v, n=f'metal_band{b}_level': ch.set_metal(n, v)))],
+    _ratio('metal.curve', 'metal_curve', lambda ch: ch.metal['metal_curve'],
+           lambda ch, v: ch.set_metal('metal_curve', v)),
+    _ratio('metal.drive', 'metal_drive', lambda ch: ch.metal['metal_drive'],
+           lambda ch, v: ch.set_metal('metal_drive', v)),
+    _metal('metal.hp', 'metal_hp_freq', 'Hz', 'log'),
+)
+
+
 SOUND_PARAMS = tuple([
     # Oscillator
     _enum('osc.wave', 'osc_waveform', WaveformType,
@@ -146,6 +174,7 @@ SOUND_PARAMS = tuple([
             lambda ch, v: ch.set_noise_attack(v), 0.0, 10000.0, 'ms', 'log'),
     _number('noise.decay', 'noise_decay', lambda ch: ch.noise_gen.decay_ms,
             lambda ch, v: ch.set_noise_decay(v), 10.0, 10000.0, 'ms', 'log'),
+    *METAL_SOUND_PARAMS,
     # Mixing (1 = all oscillator, 0 = all noise)
     _ratio('mix.osc_noise', 'osc_noise_mix', lambda ch: ch.osc_noise_mix,
            lambda ch, v: ch.set_osc_noise_mix(v)),
@@ -188,6 +217,8 @@ SOUND_PARAMS = tuple([
            lambda ch, v: setattr(ch, 'noise_vel_sensitivity', v), maximum=2.0),
     _ratio('vel.mod', 'mod_vel_sensitivity', lambda ch: ch.mod_vel_sensitivity,
            lambda ch, v: setattr(ch, 'mod_vel_sensitivity', v), maximum=2.0),
+    _ratio('vel.metal', 'metal_vel', lambda ch: ch.metal['metal_vel'],
+           lambda ch, v: ch.set_metal('metal_vel', v), maximum=2.0),
     # Modulation
     *_modulation_params('lfo1'),
     *_modulation_params('lfo2'),
