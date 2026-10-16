@@ -16,6 +16,10 @@ _Avoid_: Track, instrument, voice
 The complete sound of one channel, saved or loaded on its own.
 _Avoid_: Drum, sound, instrument preset
 
+**Metal section**:
+The optional part of a drum patch for cymbals, hi-hats and cowbells: six square-wave oscillators that run freely, two band-pass filters each with its own Q, drive, decay and level, and a high-pass. It is off while both band levels are 0, and a drum patch saved with it off is the same file as before it existed.
+_Avoid_: Metal engine, cymbal mode, metal bank (for the whole section)
+
 **Drum type**:
 The kind of drum a drum patch is (bass drum, snare, closed hat, ...), guessed from its name. A channel has no fixed drum type: it is whatever its drum patch is, and some drum patches have none.
 _Avoid_: Instrument, role, slot

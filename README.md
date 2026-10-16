@@ -18,6 +18,11 @@ Perfect for producers, sound designers, and developers interested in audio synth
   - Low-pass, Band-pass, High-pass filtering
   - Stereo width control
   - Exponential, Linear, and Modulated envelope modes
+- **Metal Section** (optional, for cymbals, hi-hats and cowbells)
+  - Six free-running square-wave oscillators, each with its own frequency, plus a tune
+  - Two band-pass filters, each with its own Q, drive (an asymmetric saturation), decay and level, then a high-pass
+  - Decay curve, from exponential to linear (a hold, then a fall)
+  - Off while both band levels are at 0: drum patches without it load, sound and save as before
 - **Advanced Mixing**
   - Oscillator/Noise blend control
   - Soft-clipping distortion
@@ -281,8 +286,12 @@ MIDI/Key Input
    │ (Sine/Tri/Saw)     │               │
    └────────────────────┘               ├──→ Mix ──→ Distortion ──→ EQ ──→ Vintage ──→ Delay ──→ Reverb ──→ Output
    ┌────────────────────┐               │
-   │ Noise Generator    │──→ Filter ──→─┘
-   │ (LP/BP/HP)         │    Envelope
+   │ Noise Generator    │──→ Filter ──→─┤
+   │ (LP/BP/HP)         │    Envelope   │
+   └────────────────────┘               │
+   ┌────────────────────┐               │
+   │ Metal: 6 squares   │──→ 2 band-passes, each with ──→ High-pass ─┘
+   │ (optional)         │    its drive, decay and level
    └────────────────────┘
 ```
 
@@ -380,7 +389,8 @@ In the tkinter dialog, candidates are previewed per slot and **Apply Selected** 
 ### Drum Patches from Samples
 
 `tools/fit_samples.py` turns a folder of one-shot samples (WAV, AIFF or FLAC) into
-`.mtdrum` drum patches, one per sample, named after it:
+`.mtdrum` drum patches, one per sample, named after it and written in the same
+subfolders as the samples:
 
 ```bash
 pip install -e ".[ml,dev]"    # PyTorch for the starting-patch model, soundfile to read samples
@@ -389,14 +399,17 @@ python tools/fit_samples.py path/to/samples path/to/patches --wav
 
 For each sample it builds starting patches from the partials it finds and from
 the predictions of `fit_prior.pt`, then refines them with CMA-ES against the
-sample's spectrogram, its pitch below 2 kHz and its envelope. Level is set so
+sample's spectrogram, its pitch below 2 kHz, its envelope and, above 2 kHz, how
+much of its energy sits in partials rather than noise. A metallic sample (a
+cymbal, a hi-hat) gets the metal section: the six oscillator frequencies are the
+square waves whose harmonics explain its partials, found in the longest samples
+of the folder and shared with the short ones of the same machine. Level is set so
 every patch peaks at -10 dBFS (`--peak-db`); hi-hats get choke. `--wav` also writes
 `<name>.fit.wav`, the sample on the left and the patch on the right, to compare
 them by ear; `fit_report.csv` lists the scores (lower is closer). A sample takes
 from one minute (a short rim shot) to half an hour (a long crash) per CPU core;
 `--jobs` sets how many are fitted in parallel, `--evals` and `--screen-evals`
-trade time for accuracy. One oscillator and one filtered noise match kicks, toms,
-snares and other pitched drums closely, cymbals and metallic sounds less so.
+trade time for accuracy.
 
 `tools/fit_prior.py <patches dir>` retrains the starting-patch model on your own
 `.mtdrum` patches (one to two hours on 8 CPU cores for the default 60,000).
