@@ -416,7 +416,7 @@ def test_ai_models_browse_clear_and_temperatures(panel, tmp_path):
     assert wait_set(panel, 'pref.ai.pattern_model', 2)[-1] is None
     wheel_notches(panel, panel.qtbot, 'px-knob[data-address="pref.ai.pattern_temperature"]',
                   'pref.ai.pattern_temperature', 1)
-    assert sets_of(core, 'pref.ai.pattern_temperature')[-1] > 0.7
+    assert sets_of(core, 'pref.ai.pattern_temperature')[-1] > 1.0
 
 
 def test_ai_tab_says_when_the_ml_extras_are_missing(panel):

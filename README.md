@@ -358,7 +358,8 @@ The repository includes these pre-trained checkpoints, used by default:
 | File | Description |
 |------|-------------|
 | `drum_cvae_best.pt` | Bundled drum-patch CVAE checkpoint used by the AI Drum Generator |
-| `drum_patterns/pattern_cvae_best.pt` | Bundled pattern CVAE checkpoint used for AI pattern generation |
+| `drum_patterns/pattern_bank_best.pt` | Bundled pattern bank model: generates the 12 patterns A–L together, with their lengths and chains, matched to the kit |
+| `drum_patterns/pattern_cvae_best.pt` | The earlier single-pattern model (12 independent patterns, no chains); not bundled, can still be chosen in setup ▸ ai |
 | `fit_prior.pt` | Starting-patch model of `tools/fit_samples.py` (see below) |
 
 Other checkpoints can be chosen in setup ▸ ai (**models…** on the AI page opens it) (tkinter: **Load Model...** and Preset menu → **AI Settings**). The chosen paths are saved in preferences.
@@ -367,10 +368,12 @@ Other checkpoints can be chosen in setup ▸ ai (**models…** on the AI page op
 
 1. Open the PRESET menu and choose **AI drum generator…**: the page opens under the strips, one lane per channel
 2. Click **gen** in a lane (pick its drum type first if you like) or **generate 8 sounds**: each lane gets one new sound, which plays on the face at once; edit it with the panel's controls, click **gen** again for another
-3. Click **generate patterns**: 12 new patterns (A–L) for the sounds on the face start playing; pick any of them on the face
+3. Click **generate patterns**: 12 new patterns (A–L) for the sounds on the face start playing; they share a style, some are chained (the note names the chains, for example A–B, C–D) and a few are shorter; pick any of them on the face
 4. **old** / **new** switches a lane, or the patterns, back and forth to compare
 5. **keep** makes what plays part of the preset (one undo step); **revert** brings the old sounds and patterns back; leaving the page asks which
 6. The **temperature** knobs set how far the new sounds and patterns stray (lower = conservative, higher = experimental)
+
+The pattern menu's **randomize (AI)** redraws one pattern, or one channel of it, in the style of the 12 patterns already there.
 
 In the tkinter dialog, candidates are previewed per slot and **Apply Selected** copies the checked slots into the preset.
 

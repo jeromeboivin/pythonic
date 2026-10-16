@@ -1,5 +1,16 @@
 """
-Slim inference runtime for the drum pattern CVAE model.
+Slim inference runtime for the drum pattern models.
+
+Two kinds of checkpoint load:
+
+- **bank** (``model_config["kind"] == "pattern_bank"``, train_pattern_bank.py):
+  generates a whole bank of 12 patterns A-L at once, with their lengths and
+  chain flags, conditioned on the kit and the timing. Its latents are drawn
+  through the kit prior stored in the checkpoint; triggers play above 0.5,
+  accents and fills are drawn from their probabilities. One pattern can be
+  re-rolled in the style of an existing bank.
+- **single** (train_patterns.py): one pattern per draw; a bank is 12
+  independent draws, every pattern 16 steps, no chains.
 
 All torch imports are lazy so the base app launches without ML packages.
 Only numpy is imported at module level (already a core dependency).
@@ -41,10 +52,16 @@ CONDITION_DIM = KIT_CONTINUOUS_DIM + GLOBAL_META_DIM
 
 PATTERN_NAMES = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L']
 
+# Bank model (mirrored from train_pattern_bank.py)
+NUM_SLOTS   = len(PATTERN_NAMES)
+NUM_CHAINS  = NUM_SLOTS - 1     # A→B … K→L
+NUM_LENGTHS = NUM_STEPS         # length classes 1..16
+BANK_KIND   = "pattern_bank"
+
 # Default bundled checkpoint path (relative to project root)
 _BUNDLED_CHECKPOINT = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "drum_patterns", "pattern_cvae_best.pt",
+    "drum_patterns", "pattern_bank_best.pt",
 )
 
 
@@ -274,6 +291,126 @@ def _build_pattern_model(pattern_dim, cond_dim, latent_dim, hidden_dim, dropout=
 
 
 # ─────────────────────────────────────────────
+# Bank model (lazy torch import; the modules and their parameter names
+# mirror BankCVAE and KitPrior of train_pattern_bank.py)
+# ─────────────────────────────────────────────
+
+def _build_bank_model(cfg: dict):
+    """Build the bank CVAE of a checkpoint's model_config."""
+    import torch
+    import torch.nn as nn
+
+    d_model, n_heads = cfg["d_model"], cfg["n_heads"]
+    pattern_dim, cond_dim = cfg["pattern_dim"], cfg["cond_dim"]
+    bank_latent, slot_latent = cfg["bank_latent"], cfg["slot_latent"]
+
+    def mlp(n_in):
+        return nn.Sequential(nn.Linear(n_in, d_model), nn.GELU(), nn.Linear(d_model, d_model))
+
+    def stack(n_layers):
+        layer = nn.TransformerEncoderLayer(d_model, n_heads, 4 * d_model, 0.0, activation="gelu",
+                                           batch_first=True, norm_first=True)
+        return nn.TransformerEncoder(layer, n_layers, enable_nested_tensor=False)
+
+    class BankCVAE(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.bank_latent, self.slot_latent = bank_latent, slot_latent
+            self.enc_grid = mlp(pattern_dim)
+            self.enc_length = nn.Embedding(NUM_LENGTHS, d_model)
+            self.enc_chain = nn.Embedding(3, d_model)  # not chained, chained, none (slot L)
+            self.enc_slot = nn.Parameter(torch.zeros(NUM_SLOTS, d_model))
+            self.enc_cond = mlp(cond_dim)
+            self.encoder = stack(cfg["enc_layers"])
+            self.enc_norm = nn.LayerNorm(d_model)
+            self.bank_head = nn.Linear(d_model, 2 * bank_latent)
+            self.slot_head = nn.Linear(d_model, 2 * slot_latent)
+            self.dec_cond = mlp(cond_dim)
+            self.dec_bank = nn.Linear(bank_latent, d_model)
+            self.dec_z = nn.Linear(slot_latent, d_model)
+            self.dec_slot = nn.Parameter(torch.zeros(NUM_SLOTS, d_model))
+            self.decoder = stack(cfg["dec_layers"])
+            self.dec_norm = nn.LayerNorm(d_model)
+            self.grid_head = nn.Sequential(nn.Linear(d_model, 2 * d_model), nn.GELU(),
+                                           nn.Linear(2 * d_model, pattern_dim))
+            self.length_head = nn.Linear(d_model, NUM_LENGTHS)
+            self.chain_head = nn.Linear(d_model, 1)
+
+        def encode(self, grid, length, chain, cond):
+            """grid [B, 12, 384], length classes [B, 12], chain [B, 11],
+            cond [B, 48] → the posterior means: bank [B, Zb], slots [B, 12, Zs]."""
+            none = torch.full((grid.shape[0], 1), 2, dtype=torch.long)
+            chain_in = torch.cat([chain.long(), none], dim=1)
+            slots = (self.enc_grid(grid) + self.enc_length(length) + self.enc_chain(chain_in)
+                     + self.enc_slot)
+            h = self.enc_norm(self.encoder(torch.cat([self.enc_cond(cond).unsqueeze(1), slots], 1)))
+            return self.bank_head(h[:, 0]).chunk(2, -1)[0], self.slot_head(h[:, 1:]).chunk(2, -1)[0]
+
+        def decode(self, z_bank, z_slot, cond):
+            bank = self.dec_bank(z_bank)
+            slots = self.dec_slot + self.dec_z(z_slot) + bank.unsqueeze(1)
+            tokens = torch.cat([self.dec_cond(cond).unsqueeze(1), bank.unsqueeze(1), slots], 1)
+            h = self.dec_norm(self.decoder(tokens))[:, 2:]
+            return self.grid_head(h), self.length_head(h), self.chain_head(h[:, :NUM_CHAINS]).squeeze(-1)
+
+    return BankCVAE()
+
+
+def _build_kit_prior(latent_dim: int, hidden: int, cond_dim: int = CONDITION_DIM):
+    """The kit prior p(z | condition): an MLP mean and a Cholesky factor."""
+    import torch
+    import torch.nn as nn
+
+    class KitPrior(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.net = nn.Sequential(nn.Linear(cond_dim, hidden), nn.GELU(), nn.Linear(hidden, hidden),
+                                     nn.GELU(), nn.Linear(hidden, latent_dim))
+            self.register_buffer("scale_tril", torch.eye(latent_dim))
+
+    return KitPrior()
+
+
+def encode_bank_patterns(patterns: list) -> tuple:
+    """12 pattern dicts (Length, Chained, "1"-"8" with Triggers / Accents /
+    Fills) → (grid float32 [12, 384], length classes int64 [12] (length - 1,
+    at most 16 steps), chain float32 [11]). Steps past a length are zero."""
+    if len(patterns) != NUM_SLOTS:
+        raise ValueError(f"a bank has {NUM_SLOTS} patterns, not {len(patterns)}")
+    grid = np.zeros((NUM_SLOTS, NUM_CHANNELS, NUM_STEPS, NUM_FEATURES), dtype=np.float32)
+    length = np.zeros(NUM_SLOTS, dtype=np.int64)
+    chain = np.zeros(NUM_CHAINS, dtype=np.float32)
+    for s, pat in enumerate(patterns):
+        n = max(1, min(NUM_STEPS, int(pat.get("Length", NUM_STEPS))))
+        length[s] = n - 1
+        if s < NUM_CHAINS:
+            chain[s] = float(bool(pat.get("Chained", False)))
+        for ch in range(NUM_CHANNELS):
+            ch_data = pat.get(str(ch + 1), {})
+            if not isinstance(ch_data, dict):
+                continue
+            for f, name in enumerate(("Triggers", "Accents", "Fills")):
+                for step, char in enumerate(str(ch_data.get(name, ""))[:n]):
+                    grid[s, ch, step, f] = char == "#"
+    return grid.reshape(NUM_SLOTS, PATTERN_DIM), length, chain
+
+
+def decode_bank_arrays(grid: np.ndarray, length: np.ndarray, chain: np.ndarray) -> list:
+    """grid bool [12, 8, 16, 3], length [12] (1..16), chain [11] → 12 pattern
+    dicts ("-" past each length, L never chained)."""
+    bank = []
+    for s in range(NUM_SLOTS):
+        n = int(length[s])
+        pat = {"Length": n, "Chained": bool(chain[s]) if s < NUM_CHAINS else False}
+        for ch in range(NUM_CHANNELS):
+            pat[str(ch + 1)] = {
+                name: "".join("#" if grid[s, ch, step, f] and step < n else "-" for step in range(NUM_STEPS))
+                for f, name in enumerate(("Triggers", "Accents", "Fills"))}
+        bank.append(pat)
+    return bank
+
+
+# ─────────────────────────────────────────────
 # Generator service
 # ─────────────────────────────────────────────
 
@@ -287,13 +424,27 @@ class PatternGenerator:
 
     def __init__(self):
         self._model = None
+        self._bank = None           # the bank model, when the checkpoint is one
+        self._prior = None          # its kit prior (None: latents from N(0, I))
         self._preprocessor = PatternPreprocessor()
         self._device = None
         self._loaded_path = None
 
     @property
     def is_loaded(self) -> bool:
-        return self._model is not None
+        return self._model is not None or self._bank is not None
+
+    @property
+    def is_bank(self) -> bool:
+        """True when the loaded checkpoint generates whole banks."""
+        return self._bank is not None
+
+    @property
+    def sampling_summary(self) -> str | None:
+        """How the loaded model samples, for the model line ("bank" models)."""
+        if self._bank is None:
+            return None
+        return "bank" if self._prior is not None else "bank, no kit prior"
 
     @property
     def loaded_path(self) -> str | None:
@@ -305,7 +456,7 @@ class PatternGenerator:
 
         Priority:
         1. Saved preference ``drum_generator_pattern_model_path`` (if file exists).
-        2. Bundled checkpoint ``drum_patterns/pattern_cvae_best.pt``.
+        2. Bundled checkpoint ``drum_patterns/pattern_bank_best.pt``.
         3. ``None`` when neither is available.
         """
         if preferences_manager is not None:
@@ -341,6 +492,21 @@ class PatternGenerator:
         ckpt = torch.load(path, map_location=self._device, weights_only=False)
 
         cfg = ckpt["model_config"]
+        if cfg.get("kind") == BANK_KIND:
+            bank = _build_bank_model(cfg)
+            bank.load_state_dict(ckpt["model_state"])
+            bank.eval()
+            prior = None
+            entry = ckpt.get("kit_prior")
+            if entry:
+                prior = _build_kit_prior(entry["latent_dim"], entry["hidden"], cfg["cond_dim"])
+                prior.load_state_dict(entry["state"])
+                prior.eval()
+            self._preprocessor.load_scaler_state(ckpt["scaler"])
+            self._model, self._bank, self._prior = None, bank, prior
+            self._loaded_path = path
+            return
+
         model = _build_pattern_model(
             pattern_dim=cfg["pattern_dim"],
             cond_dim=cfg["cond_dim"],
@@ -352,7 +518,7 @@ class PatternGenerator:
         model.eval()
 
         self._preprocessor.load_scaler_state(ckpt["scaler"])
-        self._model = model
+        self._model, self._bank, self._prior = model, None, None
         self._loaded_path = path
 
     def generate(self, raw_patches: list[dict],
@@ -386,6 +552,11 @@ class PatternGenerator:
         cond = self._preprocessor.encode_condition(
             raw_patches, tempo, swing, fill_rate, step_rate
         )
+        if self._bank is not None:
+            # Whole banks: n = 12 is one bank (with its lengths and chains)
+            banks = -(-n // NUM_SLOTS)
+            patterns = [p for bank in self._sample_banks(cond, banks, temperature, seed) for p in bank]
+            return patterns[:n]
         c = (torch.tensor(cond, dtype=torch.float32)
              .unsqueeze(0).repeat(n, 1).to(self._device))
 
@@ -422,3 +593,89 @@ class PatternGenerator:
             n=12, temperature=temperature, threshold=threshold, seed=seed,
         )
         return {name: pat for name, pat in zip(PATTERN_NAMES, patterns)}
+
+    def reroll(self, raw_patches: list[dict], bank: list[dict], slot: int,
+               tempo: float = 120.0, swing: float = 0.0, fill_rate: float = 4.0,
+               step_rate: str = "1/16", temperature: float = 1.0,
+               seed: int | None = None) -> dict:
+        """A new pattern for one slot (0-11) of an existing bank (12 pattern
+        dicts), in the style of the bank: the bank model encodes the bank
+        and draws only that slot's latent, given the others (the kit
+        prior's Gaussian conditioned on them). The slot keeps its chain
+        flag. A single-pattern model draws one pattern, as generate(n=1)."""
+        if not self.is_loaded:
+            raise RuntimeError("No model loaded. Call load_model() first.")
+        if not 0 <= int(slot) < NUM_SLOTS:
+            raise ValueError(f"not a slot: {slot!r} (0-{NUM_SLOTS - 1})")
+        if self._bank is None:
+            return self.generate(raw_patches, tempo, swing, fill_rate, step_rate, n=1,
+                                 temperature=temperature, seed=seed)[0]
+        import torch
+
+        slot = int(slot)
+        model, gen = self._bank, self._generator(seed)
+        cond = torch.tensor(self._preprocessor.encode_condition(raw_patches, tempo, swing, fill_rate,
+                                                                step_rate), dtype=torch.float32)[None]
+        grid, length, chain = (torch.from_numpy(a)[None] for a in encode_bank_patterns(bank))
+        zb, zs = model.bank_latent, model.slot_latent
+        with torch.no_grad():
+            bank_mu, slot_mu = model.encode(grid, length, chain, cond)
+            z = torch.cat([bank_mu, slot_mu.flatten(1)], 1).double()[0]
+            mine = torch.zeros(z.shape[0], dtype=torch.bool)
+            mine[zb + slot * zs: zb + (slot + 1) * zs] = True
+            noise = torch.randn(zs, generator=gen, dtype=torch.float64) * float(temperature)
+            if self._prior is not None:
+                mean = self._prior.net(cond)[0].double()
+                tril = self._prior.scale_tril.double()
+                cov = tril @ tril.T
+                gain = cov[mine][:, ~mine] @ torch.linalg.inv(cov[~mine][:, ~mine])
+                cond_mean = mean[mine] + gain @ (z[~mine] - mean[~mine])
+                cond_cov = cov[mine][:, mine] - gain @ cov[~mine][:, mine]
+                cond_cov = (cond_cov + cond_cov.T) / 2 + 1e-6 * torch.eye(zs, dtype=torch.float64)
+                z[mine] = cond_mean + torch.linalg.cholesky(cond_cov) @ noise
+            else:
+                z[mine] = noise
+            z = z.float()[None]
+            out = self._decode_banks(z[:, :zb], z[:, zb:].reshape(1, NUM_SLOTS, zs), cond, gen)[0]
+        pattern = out[slot]
+        pattern["Chained"] = bool(bank[slot].get("Chained", False)) if slot < NUM_CHAINS else False
+        return pattern
+
+    # ── bank sampling ─────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _generator(seed):
+        import torch
+        gen = torch.Generator()
+        if seed is not None:
+            gen.manual_seed(int(seed))
+        else:
+            gen.seed()
+        return gen
+
+    def _sample_banks(self, cond: np.ndarray, n: int, temperature: float, seed) -> list:
+        """n banks for one condition: latents through the kit prior."""
+        import torch
+
+        model, gen = self._bank, self._generator(seed)
+        zb, zs = model.bank_latent, model.slot_latent
+        c = torch.tensor(cond, dtype=torch.float32)[None].repeat(n, 1)
+        with torch.no_grad():
+            z = torch.randn(n, zb + NUM_SLOTS * zs, generator=gen) * float(temperature)
+            if self._prior is not None:
+                z = self._prior.net(c) + z @ self._prior.scale_tril.T
+            return self._decode_banks(z[:, :zb], z[:, zb:].reshape(n, NUM_SLOTS, zs), c, gen)
+
+    def _decode_banks(self, z_bank, z_slot, cond, gen) -> list:
+        """Decode latents to banks: triggers above 0.5, accents and fills
+        drawn, the most likely length, chains above 0.5."""
+        import torch
+
+        n = cond.shape[0]
+        grid_logits, length_logits, chain_logits = self._bank.decode(z_bank, z_slot, cond)
+        probs = torch.sigmoid(grid_logits).reshape(n, NUM_SLOTS, NUM_CHANNELS, NUM_STEPS, NUM_FEATURES)
+        drawn = torch.rand(probs.shape, generator=gen) < probs
+        grid = torch.cat([probs[..., :1] >= 0.5, drawn[..., 1:]], dim=-1).numpy()
+        length = (length_logits.argmax(-1) + 1).numpy()
+        chain = (torch.sigmoid(chain_logits) >= 0.5).numpy()
+        return [decode_bank_arrays(grid[i], length[i], chain[i]) for i in range(n)]

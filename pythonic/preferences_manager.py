@@ -63,7 +63,7 @@ class PreferencesManager:
         'drum_generator_model_path': None,  # Path to patch CVAE checkpoint (.pt)
         'drum_generator_pattern_model_path': None,  # Path to pattern CVAE checkpoint (.pt)
         'drum_generator_patch_temperature': 1.0,
-        'drum_generator_pattern_temperature': 0.7,
+        'drum_generator_pattern_temperature': 1.0,
     }
     
     def __init__(self):

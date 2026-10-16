@@ -28,14 +28,14 @@ jobs:
           path: .git/lfs
           key: lfs-${{ hashFiles('.lfs-objects') }}
       - name: Fetch the models
-        run: git lfs pull --include "drum_cvae_best.pt,drum_patterns/pattern_cvae_best.pt"
+        run: git lfs pull --include "drum_cvae_best.pt,drum_patterns/pattern_bank_best.pt"
 
       - uses: actions/upload-artifact@v4
         with:
           name: models
           path: |
             drum_cvae_best.pt
-            drum_patterns/pattern_cvae_best.pt
+            drum_patterns/pattern_bank_best.pt
           retention-days: 1
 
   build:

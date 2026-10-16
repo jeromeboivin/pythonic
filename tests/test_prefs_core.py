@@ -87,7 +87,7 @@ def test_the_setup_values_are_described(make_core):
     assert (smoothing['minimum'], smoothing['maximum'], smoothing['default'],
             smoothing['unit']) == (5.0, 100.0, 30.0, 'ms')
     temperature = core.describe('pref.ai.pattern_temperature')
-    assert (temperature['minimum'], temperature['maximum'], temperature['default']) == (0.1, 3.0, 0.7)
+    assert (temperature['minimum'], temperature['maximum'], temperature['default']) == (0.1, 3.0, 1.0)
     assert core.describe('pref.ai.patch_temperature')['default'] == 1.0
     assert core.get('audio.default_input') == 'Fake In'
 
@@ -341,7 +341,7 @@ def test_a_file_from_an_older_version_is_read(make_core, prefs, tmp_path):
     assert core.get('pref.audio.mono') is False
     assert core.get('pref.smoothing_ms') == 30.0
     assert core.get('pref.ai.pattern_model') is None
-    assert core.get('pref.ai.pattern_temperature') == 0.7
+    assert core.get('pref.ai.pattern_temperature') == 1.0  # the bank model's data-like setting
     assert core.get('pref.preset_folder') == str(folder)
     assert core.get('midi.base_note') == 40
     assert core.get('midi.cc_map') == {1: 'selected.osc.freq', 74: 'selected.noise.freq'}

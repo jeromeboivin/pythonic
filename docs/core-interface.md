@@ -262,6 +262,7 @@ sounds as **one undo step**; `ai.revert` puts the old sounds back.
 | `ai.ch<N>.name`, `ai.ch<N>.trying`, `ai.ch<N>.generating`, `ai.ch<N>.error` | | the current candidate's name, the lane is trying it, generating…, the last error |
 | `ai.tried` | list | channels trying a candidate (for keep tried and the leave prompt) |
 | `ai.bank` | enum | AI patterns: `none`, `generating`, `ready` |
+| `ai.bank_chains` | str | the bank's chains as runs (`"a-b c-d"`), `""` without chains or bank; a bank model sets each pattern's length and chain, which the `try` preview plays and `ai.replace_patterns` keeps |
 | `ai.preview` | enum | pattern preview: `off`, `try`, `loop`, `bank` |
 
 | Verb | Arguments | Result |
@@ -277,7 +278,7 @@ sounds as **one undo step**; `ai.revert` puts the old sounds back.
 | `ai.clear_patterns` | | drops the bank |
 | `ai.pattern_try` | mode `'try'` / `'loop'` / `'bank'` / None (end), bank=True | try (needs a bank): all 12 bank patterns on the face as they will be kept, until None puts the preset's back (the transport keeps running, stop and start keep the preview; step edits go into it); loop: the AI version of the playing (else selected) pattern; bank: all 12 chained from A; without a bank, loop and bank play the preset's patterns. Starts the transport; stopping it ends a loop or bank preview and puts the preset's patterns back |
 | `ai.replace_patterns` | channels=None (as `ai.keep`) | `{'kept', 'patterns'}`: kept sounds plus all 12 bank patterns (during a `try` preview, the patterns as they play, step edits included), one undo step |
-| `ai.randomize_pattern` | pattern=None, channel=None (the whole pattern) | `{'pattern', 'channel'}`: one AI pattern (tempo, swing, fill and step rate, `pref.ai.pattern_temperature`) over the pattern or one lane, one undo step |
+| `ai.randomize_pattern` | pattern=None, channel=None (the whole pattern) | `{'pattern', 'channel'}`: one AI pattern (tempo, swing, fill and step rate, `pref.ai.pattern_temperature`) over the pattern or one lane, one undo step; a bank model draws it in the style of the 12 patterns on the face (the worker gets them with the slot) and keeps the chains |
 | `ai.install` | | `{'installed', 'output'}` (the last lines); runs in the background, the worker uses the new packages without a restart |
 
 ## PO-32 transfer and import (`po32.*`)

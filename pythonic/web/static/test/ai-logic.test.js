@@ -3,14 +3,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  aiAddresses, fileName, hasTrial, keptText, laneAddress, laneView, leaveQuestion, modelProblem,
+  aiAddresses, chainsText, fileName, hasTrial, keptText, laneAddress, laneView, leaveQuestion, modelProblem,
   patternView, stateText, trialText,
 } from '../js/ai-logic.js';
 
 test('lane addresses and every address the page reads', () => {
   assert.equal(laneAddress(3, 'trying'), 'ai.ch3.trying');
   const all = aiAddresses();
-  assert.equal(all.length, 10 + 8 * 7);
+  assert.equal(all.length, 11 + 8 * 7);
+  assert.ok(all.includes('ai.bank_chains'));
   assert.ok(all.includes('ai.ch8.error') && all.includes('pref.ai.pattern_temperature'));
 });
 
@@ -42,6 +43,16 @@ test('the patterns column: none, generating, new patterns playing, back on the o
   assert.ok(trying.canSwitch && trying.trying);
   assert.match(trying.note, /^the new patterns play/);
   assert.equal(patternView('ready', 'off').note, 'the old patterns play');
+  // A bank model's chains are named while the new patterns play
+  assert.equal(patternView('ready', 'try', 'a-b c-e').note,
+    'the new patterns play (chains A–B, C–E): pick any of A–L on the face');
+  assert.equal(patternView('ready', 'off', 'a-b').note, 'the old patterns play');
+});
+
+test('chains as the page shows them', () => {
+  assert.equal(chainsText('a-b c-e i-l'), 'A–B, C–E, I–L');
+  assert.equal(chainsText(''), '');
+  assert.equal(chainsText(null), '');
 });
 
 test('what is new on the face', () => {

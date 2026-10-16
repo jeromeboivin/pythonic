@@ -20,7 +20,10 @@ prints goes to stderr. Ops:
 - ``patches`` (path, drum_type, n, temperature, seed): ``{"candidates": [raw
   patch dicts], "sampling"}``; the model is loaded first if needed.
 - ``patterns`` (path, raw_patches, tempo, swing, fill_rate, step_rate, n,
-  temperature, seed): ``{"patterns": [pattern dicts]}``.
+  temperature, seed): ``{"patterns": [pattern dicts], "sampling"}``; a bank model makes
+  whole banks (n = 12: one bank, with lengths and chain flags). With
+  ``bank`` (the 12 pattern dicts on the face) and ``slot`` (0-11): one
+  pattern for that slot, in the style of the bank (``PatternGenerator.reroll``).
 - ``quit``: replies, then exits.
 
 The worker ends when stdin closes.
@@ -93,12 +96,19 @@ class Models:
             return {'candidates': candidates, 'sampling': _sampling(generator)}
         if op == 'patterns':
             generator = self.get('pattern', request['path'])
+            if request.get('bank') is not None:
+                pattern = generator.reroll(
+                    request['raw_patches'], request['bank'], int(request['slot']),
+                    tempo=float(request['tempo']), swing=float(request['swing']),
+                    fill_rate=float(request['fill_rate']), step_rate=request['step_rate'],
+                    temperature=float(request['temperature']), seed=request.get('seed'))
+                return {'patterns': [pattern], 'sampling': _sampling(generator)}
             patterns = generator.generate(
                 request['raw_patches'], tempo=float(request['tempo']),
                 swing=float(request['swing']), fill_rate=float(request['fill_rate']),
                 step_rate=request['step_rate'], n=int(request['n']),
                 temperature=float(request['temperature']), seed=request.get('seed'))
-            return {'patterns': patterns}
+            return {'patterns': patterns, 'sampling': _sampling(generator)}
         raise ValueError(f'unknown op: {op!r}')
 
 

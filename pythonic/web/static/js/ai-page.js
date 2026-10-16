@@ -12,7 +12,8 @@
 // gen makes one new sound for its channel and plays it there (the core tries
 // it); generate patterns makes 12 (A-L) for the sounds on the face and plays
 // them (ai.pattern_try 'try': the transport starts, any pattern picked plays
-// its new version). old | new switches back and forth. The strip tab of a
+// its new version, chains included: the note names them, ai.bank_chains).
+// old | new switches back and forth. The strip tab of a
 // channel playing a new sound shows its name in italics, knob edits there go
 // into the new sound. keep commits what plays, sounds and patterns, as one
 // undo step (ai.keep or ai.replace_patterns), revert puts the old ones back;
@@ -180,6 +181,9 @@ export function mountAiPage({ panel, store, client, stage }) {
   patternAb.fresh.id = 'ai-pat-new';
   const patternNote = el('div', 'note ai-patnote');
   patternNote.dataset.address = 'ai.bank';
+  const patternText = el('span');
+  patternText.dataset.address = 'ai.bank_chains';
+  patternNote.append(patternText);
   const actions = el('div', 'ai-actions');
   const keep = button('keep', { id: 'ai-keep', cls: 'on', verb: 'ai.keep' });
   keep.title = 'keep the new sounds and patterns that play (one undo step)';
@@ -237,9 +241,9 @@ export function mountAiPage({ panel, store, client, stage }) {
     keep.disabled = revert.disabled = !hasTrial(tried, preview);
   };
   const renderPatterns = () => {
-    const v = patternView(value('ai.bank') || 'none', value('ai.preview') || 'off');
+    const v = patternView(value('ai.bank') || 'none', value('ai.preview') || 'off', value('ai.bank_chains'));
     patternAb.render(v.canSwitch, v.trying);
-    patternNote.textContent = v.note;
+    patternText.textContent = v.note;
     patternNote.classList.toggle('busy', v.generating);
     generatePatternsButton.disabled = v.generating || !value('ai.available');
     generatePatternsButton.textContent = v.generating ? 'generating…' : 'generate patterns';
@@ -264,6 +268,7 @@ export function mountAiPage({ panel, store, client, stage }) {
   watch('ai.state', renderState);
   watch('ai.tried', renderTrial);
   watch('ai.bank', renderPatterns);
+  watch('ai.bank_chains', renderPatterns);
   watch('ai.preview', renderPatterns);
   watch('global.channel', renderBack);
 

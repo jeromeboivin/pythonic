@@ -378,8 +378,9 @@ def test_generate_patterns_makes_a_bank_of_twelve(make_core, tmp_path):
     assert request['tempo'] == 133 and request['swing'] == 0.0 and request['seed'] == 7
     assert request['temperature'] == 0.5
     assert request['raw_patches'][0]['Name'] == 'BD 1'  # the tried kit
+    assert core.get('ai.bank_chains') == 'e-g'  # the stand-in's bank chains E-G
     run(core, 'ai.clear_patterns')
-    assert core.get('ai.bank') == 'none'
+    assert core.get('ai.bank') == 'none' and core.get('ai.bank_chains') == ''
 
 
 def test_loop_preview_plays_the_ai_version_and_stop_restores_the_preset(make_core):
@@ -416,6 +417,7 @@ def test_trying_the_bank_puts_all_twelve_on_the_face_until_put_back(make_core):
     transport = core.poll()['transport']
     assert transport['playing'] and transport['playing_pattern'] == 2
     assert triggers(core, 'B') == [s % 2 == 0 for s in range(16)]  # every pattern is the bank's
+    assert core.get('pattern.E.chained') and core.get('pattern.F.chained')  # and its chains
     assert triggers(core, 'C') == [s % 3 == 0 for s in range(16)]
     run(core, 'transport.stop')  # stopping keeps the tried bank
     assert core.get('ai.preview') == 'try' and triggers(core, 'B') == [s % 2 == 0 for s in range(16)]
@@ -516,6 +518,9 @@ def test_ai_randomize_replaces_a_pattern_or_a_lane_as_one_step(make_core, tmp_pa
     assert triggers(core, 'D', 2) == [s % 2 == 0 for s in range(16)]
     request = [json.loads(line) for line in log.read_text().splitlines()][-1]
     assert request['n'] == 1 and request['swing'] == 0.25
+    # A bank model re-rolls the slot in the style of the 12 patterns on the face
+    assert request['slot'] == 3 and len(request['bank']) == 12
+    assert request['bank'][3]['2']['Triggers'][0] == '#' and request['bank'][3]['Length'] == 16
     assert request['temperature'] == pytest.approx(core.get('pref.ai.pattern_temperature'))
     assert run(core, 'undo')['label'] == 'AI pattern'
     assert core.get('pattern.D.ch3.step2.trig') is True
@@ -615,5 +620,9 @@ def test_the_real_worker_generates_candidates_and_patterns(prefs):
         event = act(core, 'ai.randomize_pattern', timeout=300, pattern='B')
         assert event['status'] == 'done', event
         assert core.get('pattern.B.empty') is False
+        # The bundled pattern model makes whole banks, with their chains
+        assert run(core, 'ai.generate_patterns', seed=2) == {'patterns': 12}
+        assert core.get('ai.models')['pattern']['sampling'] == 'bank'
+        assert isinstance(core.get('ai.bank_chains'), str)
     finally:
         core.close()

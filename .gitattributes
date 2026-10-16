@@ -1,3 +1,4 @@
 drum_cvae_best.pt filter=lfs diff=lfs merge=lfs -text
 drum_patterns/pattern_cvae_best.pt filter=lfs diff=lfs merge=lfs -text
+drum_patterns/pattern_bank_best.pt filter=lfs diff=lfs merge=lfs -text
 fit_prior.pt filter=lfs diff=lfs merge=lfs -text

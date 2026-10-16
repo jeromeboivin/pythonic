@@ -17,7 +17,7 @@ export const laneAddress = (channel, field) => `ai.ch${channel}.${field}`;
 export function aiAddresses() {
   return [
     'ai.available', 'ai.install_command', 'ai.installing', 'ai.state', 'ai.models', 'ai.tried',
-    'ai.bank', 'ai.preview', 'pref.ai.patch_temperature', 'pref.ai.pattern_temperature',
+    'ai.bank', 'ai.bank_chains', 'ai.preview', 'pref.ai.patch_temperature', 'pref.ai.pattern_temperature',
     ...CHANNELS.flatMap((n) => LANE_FIELDS.map((f) => laneAddress(n, f))),
   ];
 }
@@ -46,17 +46,25 @@ export function laneView(lane = {}) {
   };
 }
 
+/** The chains of a bank (ai.bank_chains, "a-b c-e") as the page shows them: "A–B, C–E". */
+export function chainsText(chains) {
+  const runs = String(chains || '').trim().split(/\s+/).filter(Boolean);
+  return runs.map((run) => run.toUpperCase().replace('-', '–')).join(', ');
+}
+
 /**
  * What the patterns column shows, from ai.bank ('none' | 'generating' |
- * 'ready') and ai.preview: whether old / new can switch, whether the new
- * patterns play, and a note.
+ * 'ready'), ai.preview and ai.bank_chains: whether old / new can switch,
+ * whether the new patterns play, and a note (which names the chains).
  */
-export function patternView(bank, preview) {
+export function patternView(bank, preview, chains = '') {
   const trying = preview === 'try';
+  const chained = chainsText(chains);
   let note = 'make 12 patterns (A–L) for the sounds on the face';
   if (bank === 'generating') note = 'generating patterns…';
-  else if (trying) note = 'the new patterns play: pick any of A–L on the face';
-  else if (bank === 'ready') note = 'the old patterns play';
+  else if (trying) {
+    note = `the new patterns play${chained ? ` (chains ${chained})` : ''}: pick any of A–L on the face`;
+  } else if (bank === 'ready') note = 'the old patterns play';
   return { canSwitch: bank === 'ready', trying, generating: bank === 'generating', note };
 }
 

@@ -536,7 +536,7 @@ play on the face; old | new compares; keep or revert settles.
   **generate patterns** (`ai.generate_patterns`, then `ai.pattern_try`
   `try`: the 12 new patterns go on the face and the transport starts; any
   pattern picked plays its new version, stop and start keep them), old | new
-  (`ai.pattern_try` None / `try`), a note (`ai.bank`, `ai.preview`), keep
+  (`ai.pattern_try` None / `try`), a note (`ai.bank`, `ai.preview`; it names the chains, `ai.bank_chains`), keep
   (`ai.replace_patterns` while the new patterns play, else `ai.keep`: what
   plays, one undo step) and revert, both then `ai.clear` (the new ones are
   forgotten). Keep and revert are off while nothing new plays.

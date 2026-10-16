@@ -141,7 +141,7 @@ class Prefs:
             reg(Address(f'pref.ai.{name}_model', get=saved(key),
                         set=lambda v, k=key: self._save(k, str(v) if v else None),
                         kind='str', queued=False, undoable=False))
-        for name, key, default in (('pattern', 'drum_generator_pattern_temperature', 0.7),
+        for name, key, default in (('pattern', 'drum_generator_pattern_temperature', 1.0),
                                    ('patch', 'drum_generator_patch_temperature', 1.0)):
             reg(Address(f'pref.ai.{name}_temperature', get=saved(key, float, default),
                         set=lambda v, k=key: self._save(k, v), minimum=0.1, maximum=3.0,

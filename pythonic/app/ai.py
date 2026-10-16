@@ -38,7 +38,9 @@ undo step; ``ai.revert`` puts the kept sounds back.
   journals the tried values.
 
 **Patterns.** ``ai.generate_patterns`` makes a bank of 12 patterns (A-L)
-for the drum patches on the face (tried candidates included). ``ai.pattern_try``
+for the drum patches on the face (tried candidates included); a bank model
+also sets each pattern's length and the chains (``ai.bank_chains``), which
+the ``try`` preview plays and ``ai.replace_patterns`` keeps. ``ai.pattern_try``
 previews: ``try`` puts the whole bank on the face, as trying a candidate
 does for a sound: the transport starts if it was stopped, any pattern picked
 plays its AI version, stopping and starting the transport keeps it, and
@@ -51,7 +53,8 @@ patterns back. ``ai.replace_patterns`` keeps the tried sounds and replaces
 all 12 patterns with the bank (one undo step); during a ``try`` preview it
 keeps the patterns on the face, step edits included.
 ``ai.randomize_pattern`` replaces one pattern, or one channel's lane of it,
-with an AI pattern at once (one undo step).
+with an AI pattern at once (one undo step); a bank model draws it in the
+style of the 12 patterns on the face, keeping the chains.
 
 Addresses (read-only unless noted):
 
@@ -72,7 +75,9 @@ Addresses (read-only unless noted):
   none), ``ai.ch<N>.name`` (the current candidate's name),
   ``ai.ch<N>.trying``, ``ai.ch<N>.generating``, ``ai.ch<N>.error``.
 - ``ai.tried``: the channels trying a candidate (1..8).
-- ``ai.bank``: ``none``, ``generating`` or ``ready``. ``ai.preview``:
+- ``ai.bank``: ``none``, ``generating`` or ``ready``. ``ai.bank_chains``:
+  the chains of the bank as runs (``"a-b c-d"``; ``""`` without chains or
+  bank). ``ai.preview``:
   ``off``, ``try``, ``loop`` or ``bank``.
 
 Verbs (channels 1..8, candidates 1..n):
@@ -129,7 +134,7 @@ KINDS = ('patch', 'pattern')
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 BUNDLED_MODELS = {
     'patch': os.path.join(_ROOT, 'drum_cvae_best.pt'),
-    'pattern': os.path.join(_ROOT, 'drum_patterns', 'pattern_cvae_best.pt'),
+    'pattern': os.path.join(_ROOT, 'drum_patterns', 'pattern_bank_best.pt'),
 }
 WORKER_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ai_worker.py')
 NO_EXTRAS = ('the ML extras are not installed (torch): install them with '
@@ -137,7 +142,7 @@ NO_EXTRAS = ('the ML extras are not installed (torch): install them with '
 NO_AI_EDITION = ('this edition of Pythonic has no AI generator: download the '
                  'Pythonic + AI edition from https://github.com/jeromeboivin/pythonic/releases')
 NO_PATTERN_MODEL = ("No AI pattern model is available. Set one in the AI settings, "
-                    "or place 'pattern_cvae_best.pt' in the drum_patterns/ folder.")
+                    "or place 'pattern_bank_best.pt' in the drum_patterns/ folder.")
 NO_PATCH_MODEL = ("No drum patch model is available. Load one, "
                   "or place 'drum_cvae_best.pt' in the program folder.")
 
@@ -335,6 +340,7 @@ class Ai:
                                              if lane.trying], kind='list'))
         reg(Address('ai.bank', get=self._bank_state, kind='enum',
                     labels=('none', 'generating', 'ready')))
+        reg(Address('ai.bank_chains', get=lambda: chain_runs(self._bank), kind='str'))
         reg(Address('ai.preview', get=lambda: self._preview_mode, kind='enum',
                     labels=('off', 'try', 'loop', 'bank')))
         for i in range(NUM_CHANNELS):
@@ -808,7 +814,7 @@ class Ai:
             self._bank = None
             self._bank_token = None
             self._note_lanes(range(NUM_CHANNELS))
-            self._core.note_changes(['ai.bank'])
+            self._core.note_changes(['ai.bank', 'ai.bank_chains'])
             return result
 
     # ================================================================== verbs: patterns
@@ -820,6 +826,16 @@ class Ai:
         def read():
             return ([channel_to_raw_patch(ch) for ch in core.synth.channels],
                     float(pm.bpm), float(pm.swing), float(pm.fill_rate), pm.step_rate)
+        return core.at_block_start(read)
+
+    def _face_bank(self):
+        """The 12 patterns on the face as pattern dicts (Length, Chained,
+        "1"-"8" with Triggers / Accents / Fills), for re-rolling one of them
+        in the bank's style."""
+        core = self._core
+
+        def read():
+            return [_pattern_dict(p) for p in self._preset_patterns()]
         return core.at_block_start(read)
 
     def _pattern_model(self):
@@ -850,20 +866,20 @@ class Ai:
                                  {'patterns': len(self._bank)})
                 else:
                     self._finish(action_id, 'ai.generate_patterns', error=reply.get('error'))
-                self._core.note_changes(['ai.bank'])
+                self._core.note_changes(['ai.bank', 'ai.bank_chains'])
             # The bank is generated without swing (as the generator dialog always did)
             self._send('patterns', 'pattern', path, done, raw_patches=raw, tempo=tempo,
                        swing=0.0, fill_rate=fill_rate, step_rate=step_rate,
                        n=len(PATTERN_NAMES), temperature=temperature,
                        seed=None if seed is None else int(seed))
-            self._core.note_changes(['ai.bank'])
+            self._core.note_changes(['ai.bank', 'ai.bank_chains'])
         return self._core.DEFERRED
 
     def _verb_clear_patterns(self):
         with self._lock:
             self._bank = None
             self._bank_token = None
-            self._core.note_changes(['ai.bank'])
+            self._core.note_changes(['ai.bank', 'ai.bank_chains'])
         return {'cleared': True}
 
     def _stop_preview(self):
@@ -965,6 +981,7 @@ class Ai:
         ch = None if channel is None else channel_index(channel)
         path = self._pattern_model()
         raw, tempo, swing, fill_rate, step_rate = self._face_sounds()
+        bank = self._face_bank()
         temperature = core.get('pref.ai.pattern_temperature')
         action_id = core._running_action
         verb = 'ai.randomize_pattern'
@@ -991,7 +1008,7 @@ class Ai:
         with self._lock:
             self._send('patterns', 'pattern', path, done, raw_patches=raw, tempo=tempo,
                        swing=swing, fill_rate=fill_rate, step_rate=step_rate, n=1,
-                       temperature=temperature, seed=None)
+                       temperature=temperature, seed=None, bank=bank, slot=index)
         return core.DEFERRED
 
     # ================================================================== verbs: install
@@ -1027,6 +1044,34 @@ class Ai:
                 self._finish(action_id, 'ai.install', error=f'the install failed:\n{tail}')
         threading.Thread(target=run, name='pythonic-ai-install', daemon=True).start()
         return core.DEFERRED
+
+
+def _pattern_dict(pattern):
+    """A pattern as the pattern models read it (steps past 16 dropped)."""
+    data = {'Length': int(pattern.length), 'Chained': bool(pattern.chained_to_next)}
+    for ch, channel in enumerate(pattern.channels):
+        steps = channel.steps[:pattern.length]
+        data[str(ch + 1)] = {name: ''.join('#' if getattr(step, attr) else '-' for step in steps)
+                             for name, attr in (('Triggers', 'trigger'), ('Accents', 'accent'),
+                                                ('Fills', 'fill'))}
+    return data
+
+
+def chain_runs(bank):
+    """The chains of a bank ({letter: pattern dict}) as runs, e.g. "a-b
+    c-d" ("" without chains or bank)."""
+    if not bank:
+        return ''
+    chained = [bool((bank.get(name) or {}).get('Chained')) for name in PATTERN_NAMES[:-1]]
+    runs, s = [], 0
+    while s < len(PATTERN_NAMES):
+        e = s
+        while e < len(chained) and chained[e]:
+            e += 1
+        if e > s:
+            runs.append(f'{PATTERN_NAMES[s].lower()}-{PATTERN_NAMES[e].lower()}')
+        s = e + 1
+    return ' '.join(runs)
 
 
 def _name(lane):

@@ -5,7 +5,8 @@ JSON-lines protocol without torch or models, for the AI core tests.
 - ``patches`` answers n candidates named ``<TYPE> <i>`` (1-based) whose
   oscillator frequency is ``100 * i`` Hz, decay ``50 * i`` ms.
 - ``patterns`` answers n patterns: pattern k triggers channel c on every
-  (k + c + 1)-th step.
+  (k + c + 1)-th step; patterns E and F chain to the next (a bank chains
+  E-G). With ``bank`` and ``slot`` (a re-roll), one pattern, as k = 0.
 - ``--gate PATH``: while PATH exists, requests other than ``hello`` wait.
 - ``--crash TYPE``: a ``patches`` request of that drum type ends the process.
 - ``--log PATH``: every request is appended to PATH as a JSON line.
@@ -31,7 +32,7 @@ def patches(drum_type, n):
 
 
 def pattern(k):
-    data = {'Length': 16, 'Chained': False}
+    data = {'Length': 16, 'Chained': k in (4, 5)}
     for c in range(8):
         every = k + c + 1
         data[str(c + 1)] = {

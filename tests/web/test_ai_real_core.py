@@ -121,6 +121,8 @@ def test_new_patterns_play_on_the_face_and_keep_with_the_sounds(open_panel, ai_c
     page.wait_js("pythonic.store.value('ai.preview') === 'try'", timeout=10000, pump=pump)
     assert core.poll()['transport']['playing'] is True
     assert core.get('pattern.B.ch1.trig') == [s % 2 == 0 for s in range(16)]  # the stand-in's B
+    assert core.get('pattern.E.chained')  # and its chains, named on the page
+    page.wait_js("document.querySelector('.ai-patnote').textContent.includes('(chains E–G)')", pump=pump)
     page.click('#ai-pat-old')
     page.wait_js("pythonic.store.value('ai.preview') === 'off'", pump=pump)
     assert [core.get(f'pattern.{p}.ch1.trig') for p in 'ABCDEFGHIJKL'] == preset

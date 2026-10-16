@@ -4,7 +4,7 @@
 #
 # light: the app with both interfaces, no PyTorch. ai: also PyTorch and the
 # bundled models, laid out as in the source tree (drum_cvae_best.pt at the
-# root, drum_patterns/pattern_cvae_best.pt) so pythonic/app/ai.py finds them.
+# root, drum_patterns/pattern_bank_best.pt) so pythonic/app/ai.py finds them.
 #
 # The pythonic and gui packages are collected as .py files, not bytecode in
 # the archive: numba caches its kernels next to a real source file, and the
@@ -21,7 +21,7 @@ EDITION = os.environ.get('PYTHONIC_EDITION', 'light')
 if EDITION not in ('light', 'ai'):
     raise SystemExit(f'PYTHONIC_EDITION must be light or ai, not {EDITION!r}')
 ROOT = Path(SPECPATH).resolve().parent
-MODELS = [('drum_cvae_best.pt', '.'), ('drum_patterns/pattern_cvae_best.pt', 'drum_patterns')]
+MODELS = [('drum_cvae_best.pt', '.'), ('drum_patterns/pattern_bank_best.pt', 'drum_patterns')]
 
 datas = collect_data_files('pythonic', excludes=['**/__pycache__', 'web/static/test'])
 binaries = []
