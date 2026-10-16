@@ -1,9 +1,11 @@
 """
-The bank cache of train_pattern_bank.py: one preset is one bank of 12
+train_pattern_bank.py. The bank cache: one preset is one bank of 12
 patterns with their lengths and chain flags, packed and unpacked without
 loss, steps past a pattern's length masked, the condition as the app's
 runtime builds it, and the round-trip check against the parsed presets.
-The presets are written here, in the dataset's plain-number form.
+The model: a tiny bank CVAE trains, saves and loads, ignores steps past a
+pattern's length, and samples valid banks. The presets are written here,
+in the dataset's plain-number form.
 """
 
 import numpy as np
@@ -129,3 +131,71 @@ def test_the_split_holds_out_whole_gen_folders(dataset, tmp_path):
     assert grid.shape == (12, 384) and grid.dtype == torch.float32
     assert length.tolist()[:5] == [15, 7, 15, 15, 11]  # classes: length - 1
     assert chain.shape == (11,) and cond.shape == (48,)
+
+
+# ---------------------------------------------------------------- the model
+
+TINY = {'d_model': 32, 'n_heads': 2, 'enc_layers': 1, 'dec_layers': 1, 'bank_latent': 8,
+        'slot_latent': 4, 'dropout': 0.0}
+
+
+def batch(cache):
+    items = tpb.BankDataset(cache)
+    return next(items.batches(len(items)))
+
+
+def test_the_model_outputs_a_bank_and_its_loss_ignores_steps_past_a_length(dataset, tmp_path):
+    cache = tpb.build_bank_cache(str(dataset), str(tmp_path / 'cache.pt'), workers=1)
+    grid, length, chain, cond = batch(cache)
+    torch.manual_seed(0)
+    model = tpb.BankCVAE(**TINY)
+    out = model(grid, length, chain, cond)
+    assert out[0].shape == (3, 12, 384) and out[1].shape == (3, 12, 16) and out[2].shape == (3, 11)
+    assert out[3].shape == (3, 8) and out[5].shape == (3, 12, 4)
+
+    logits = out[0].detach().requires_grad_()
+    loss, parts = tpb.bank_loss((logits, *out[1:]), grid, length, chain, beta=0.5)
+    assert torch.isfinite(loss) and set(parts) >= {'grid', 'length', 'chain', 'kl_bank', 'kl_slot', 'objective'}
+    loss.backward()
+    steps = logits.grad.reshape(3, 12, 8, 16, 3)
+    assert not steps[2, 1, :, 8:].any()  # pattern B of the short preset plays 8 steps
+    assert steps[2, 1, :, :8].abs().sum() > 0 and steps[1, 1, :, 8:].abs().sum() > 0
+
+
+def test_a_short_training_run_saves_a_checkpoint_the_sampler_loads(dataset, tmp_path):
+    cache = tpb.build_bank_cache(str(dataset), str(tmp_path / 'cache.pt'), workers=1)
+    train, valid = tpb.split_indexes(cache, valid_gens=('gen_002',))
+    best, final = tmp_path / 'best.pt', tmp_path / 'final.pt'
+    model, history = tpb.train_bank_model(cache, train, valid, epochs=4, device='cpu', best_path=str(best),
+                                          final_path=str(final), model_kwargs=TINY, batch_size=2)
+    assert len(history) == 4 and all(np.isfinite(h['train_loss']) for h in history)
+    assert {'val_f1_trigger', 'val_length_acc', 'val_chain_acc', 'val_au_bank'} <= set(history[-1])
+    assert best.exists() and final.exists()
+
+    loaded, ckpt = tpb.load_bank_model(str(best))
+    assert ckpt['model_config']['kind'] == 'pattern_bank' and ckpt['scaler'] == cache['scaler']
+    assert set(ckpt) >= {'model_state', 'model_config', 'scaler'}  # what the app's runtime reads
+    # Saved and loaded, the decoder gives the same output
+    model.eval()
+    z_bank, z_slot = torch.randn(2, 8), torch.randn(2, 12, 4)
+    again, _ = tpb.load_bank_model(str(final))
+    with torch.no_grad():
+        assert torch.allclose(model.decode(z_bank, z_slot, cache['cond'][:2])[0],
+                              again.decode(z_bank, z_slot, cache['cond'][:2])[0], atol=1e-5)
+
+    banks = tpb.sample_banks(loaded, cache['cond'][:3], generator=torch.Generator().manual_seed(1))
+    assert len(banks) == 3
+    for bank in banks:
+        assert len(bank) == 12 and bank[11]['Chained'] is False
+        for pattern in bank:
+            assert 1 <= pattern['Length'] <= 16 and isinstance(pattern['Chained'], bool)
+            for ch in range(1, 9):
+                assert all(len(pattern[str(ch)][f]) == 16 for f in ('Triggers', 'Accents', 'Fills'))
+                assert set(pattern[str(ch)]['Triggers'][pattern['Length']:]) <= {'-'}
+        assert isinstance(tpb.chain_text(bank), str)
+
+
+def test_chain_text_names_the_runs():
+    bank = [{'Chained': s in (0, 2, 3, 8, 9, 10)} for s in range(12)]
+    assert tpb.chain_text(bank) == 'a-b c-e i-l'
+    assert tpb.chain_text([{'Chained': False}] * 12) == '-'
