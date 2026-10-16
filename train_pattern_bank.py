@@ -782,27 +782,52 @@ def train_bank_model(cache: dict, train_idx, valid_idx, epochs: int = EPOCHS, de
 #
 # Generation draws the bank latent with the bank temperature and the slot
 # latents with the slot temperature (how far the 12 patterns stray from
-# one another), then decodes: a grid step plays above the threshold, the
-# length is the most likely one, a chain is set above its threshold.
+# one another), then decodes: a grid step plays above the threshold; the
+# length is the most likely one ("argmax") or drawn from its distribution
+# ("sample"); a chain is set above its threshold ("threshold") or drawn
+# ("bernoulli").
 
 # %%
 
 @torch.no_grad()
-def sample_banks(model: BankCVAE, cond, bank_temperature: float = 1.0, slot_temperature: float = 1.0,
-                 threshold: float = 0.5, chain_threshold: float = 0.5, generator=None) -> list:
-    """cond [N, 48] → N banks, each 12 pattern dicts (decode_bank)."""
+def sample_bank_arrays(model: BankCVAE, cond, bank_temperature: float = 1.0, slot_temperature: float = 1.0,
+                       threshold: float = 0.5, chain_threshold: float = 0.5, length_mode: str = "argmax",
+                       chain_mode: str = "threshold", generator=None, z_bank=None) -> tuple:
+    """cond [N, 48] → (grid bool [N, 12, 8, 16, 3] (zero past each length),
+    length [N, 12] (1..16), chain bool [N, 11]) as numpy arrays. z_bank
+    [N, Zb] fixes the bank latents (the kit-sensitivity check)."""
+    if length_mode not in ("argmax", "sample") or chain_mode not in ("threshold", "bernoulli"):
+        raise ValueError(f"length_mode argmax|sample, chain_mode threshold|bernoulli: {length_mode}, {chain_mode}")
     model.eval()
     device = next(model.parameters()).device
     cond = torch.as_tensor(cond, dtype=torch.float32).to(device)
     n = cond.shape[0]
-    z_bank = torch.randn(n, model.bank_latent, generator=generator).to(device) * bank_temperature
-    z_slot = torch.randn(n, NUM_SLOTS, model.slot_latent, generator=generator).to(device) * slot_temperature
-    grid_logits, length_logits, chain_logits = model.decode(z_bank, z_slot, cond)
-    grid = (torch.sigmoid(grid_logits) >= threshold).reshape(n, NUM_SLOTS, NUM_CHANNELS, NUM_STEPS,
-                                                             NUM_FEATURES).cpu().numpy()
-    length = (length_logits.argmax(-1) + 1).cpu().numpy()
-    chain = (torch.sigmoid(chain_logits) >= chain_threshold).cpu().numpy()
-    return [decode_bank(grid[i], length[i], chain[i]) for i in range(n)]
+    if z_bank is None:
+        z_bank = torch.randn(n, model.bank_latent, generator=generator) * bank_temperature
+    z_slot = torch.randn(n, NUM_SLOTS, model.slot_latent, generator=generator) * slot_temperature
+    grid_logits, length_logits, chain_logits = model.decode(z_bank.to(device), z_slot.to(device), cond)
+    if length_mode == "argmax":
+        length = length_logits.argmax(-1) + 1
+    else:
+        probs = torch.softmax(length_logits.float(), -1).cpu().reshape(-1, NUM_LENGTHS)
+        length = (torch.multinomial(probs, 1, generator=generator).reshape(n, NUM_SLOTS) + 1).to(device)
+    chain_p = torch.sigmoid(chain_logits.float())
+    if chain_mode == "threshold":
+        chain = chain_p >= chain_threshold
+    else:
+        chain = (torch.rand(chain_p.shape, generator=generator).to(device) < chain_p)
+    grid = (torch.sigmoid(grid_logits.float()) >= threshold).reshape(n, NUM_SLOTS, NUM_CHANNELS, NUM_STEPS,
+                                                                     NUM_FEATURES)
+    plays = torch.arange(NUM_STEPS, device=device)[None, None, :] < length[..., None]
+    grid = grid & plays[:, :, None, :, None]
+    return grid.cpu().numpy(), length.cpu().numpy(), chain.cpu().numpy()
+
+
+def sample_banks(model: BankCVAE, cond, **options) -> list:
+    """cond [N, 48] → N banks, each 12 pattern dicts (decode_bank); the
+    options are sample_bank_arrays'."""
+    grid, length, chain = sample_bank_arrays(model, cond, **options)
+    return [decode_bank(grid[i], length[i], chain[i]) for i in range(len(grid))]
 
 
 def chain_text(bank: list) -> str:
