@@ -141,6 +141,7 @@ drum_dataset_cache.pt
 drum_cvae_final.pt
 pattern_dataset_cache.pt
 pattern_bank_cache.pt
+*.latents.pt
 fit_prior_data.npz
 # Local analysis toolkit
 /tools/local_analysis/

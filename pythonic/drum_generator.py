@@ -12,6 +12,11 @@ import numpy as np
 DEFAULT_DATASET_CACHE = "drum_dataset_cache.pt"
 EMPIRICAL_BLEND_SCALE = 0.35
 EMPIRICAL_JITTER_SCALE = 0.15
+# The data-guided latent bank is saved next to the checkpoint once built
+# (<checkpoint>.latents.pt): building it runs the encoder over the whole
+# dataset cache, about a minute on a CPU
+LATENT_BANK_SUFFIX = ".latents.pt"
+LATENT_BANK_VERSION = 1
 
 # ─────────────────────────────────────────────
 # Constants (mirrored from drum_patches/train.py)
@@ -348,6 +353,7 @@ class PatchGenerator:
         self._training_config = {}
         self._latent_bank = {}
         self._latent_jitter = {}
+        self._latent_source = None  # the dataset cache the bank is built from, until it is
 
     @property
     def is_loaded(self) -> bool:
@@ -359,6 +365,7 @@ class PatchGenerator:
 
     @property
     def has_empirical_bank(self) -> bool:
+        self._ensure_latent_bank()
         return bool(self._latent_bank)
 
     @property
@@ -369,6 +376,13 @@ class PatchGenerator:
         self._training_config = {}
         self._latent_bank = {}
         self._latent_jitter = {}
+        self._latent_source = None
+
+    def _ensure_latent_bank(self):
+        """Build (or read back) the data-guided latent bank on first need."""
+        if self._latent_source is not None:
+            source, self._latent_source = self._latent_source, None
+            self._build_empirical_latent_bank(source)
 
     def _auto_sampling_mode(self) -> str:
         beta = float(self._training_config.get("beta", 0.0) or 0.0)
@@ -382,7 +396,11 @@ class PatchGenerator:
                 f"Unknown sampling_mode '{sampling_mode}'. Use 'auto', 'prior', or 'empirical'."
             )
         if sampling_mode == "auto":
-            return self._auto_sampling_mode() if drum_type in self._latent_bank else "prior"
+            # A model trained with a KL term samples its prior: no bank needed
+            if self._auto_sampling_mode() == "empirical" and drum_type in self._latent_bank:
+                return "empirical"
+            return "prior"
+        self._ensure_latent_bank()
         if sampling_mode == "empirical" and drum_type not in self._latent_bank:
             raise RuntimeError(
                 f"No empirical latent bank available for drum type '{drum_type}'."
@@ -410,6 +428,12 @@ class PatchGenerator:
             if cached is not None:
                 self._latent_bank, self._latent_jitter = cached
                 return
+
+        saved_key = self._latent_bank_key(cache_path)
+        if self._load_saved_latent_bank(saved_key):
+            if cache_key is not None:
+                self._EMPIRICAL_BANK_CACHE[cache_key] = (self._latent_bank, self._latent_jitter)
+            return
 
         cache = torch.load(cache_path, map_location="cpu", weights_only=False)
         train_x = cache.get("train_x")
@@ -458,6 +482,63 @@ class PatchGenerator:
                 self._latent_bank,
                 self._latent_jitter,
             )
+        if self._latent_bank:
+            self._save_latent_bank(saved_key)
+
+    # ── the latent bank on disk ───────────────────────────────────────────────
+
+    def _latent_bank_path(self) -> str | None:
+        if not self._loaded_path:
+            return None
+        import os
+        return os.path.splitext(self._loaded_path)[0] + LATENT_BANK_SUFFIX
+
+    def _latent_bank_key(self, cache_path: str) -> dict | None:
+        """What a saved latent bank must have been built from: the format,
+        the jitter scale, and the size and modification time of the
+        checkpoint and of the dataset cache."""
+        import os
+        try:
+            model, cache = os.stat(self._loaded_path), os.stat(cache_path)
+        except (OSError, TypeError):
+            return None
+        return {"version": LATENT_BANK_VERSION, "jitter_scale": EMPIRICAL_JITTER_SCALE,
+                "model": [model.st_size, model.st_mtime_ns], "cache": [cache.st_size, cache.st_mtime_ns]}
+
+    def _load_saved_latent_bank(self, key: dict | None) -> bool:
+        """Use the saved latent bank when it was built from the same files."""
+        import os
+        import torch
+        path = self._latent_bank_path()
+        if key is None or path is None or not os.path.isfile(path):
+            return False
+        try:
+            saved = torch.load(path, map_location=self._device, weights_only=False)
+        except Exception:
+            return False
+        if not isinstance(saved, dict) or saved.get("key") != key or not saved.get("bank"):
+            return False
+        self._latent_bank, self._latent_jitter = saved["bank"], saved["jitter"]
+        return True
+
+    def _save_latent_bank(self, key: dict | None):
+        """Save the latent bank next to the checkpoint; a folder that cannot
+        be written (an installed app) only means the next load builds it
+        again."""
+        import os
+        import torch
+        path = self._latent_bank_path()
+        if key is None or path is None:
+            return
+        temp = f"{path}.{os.getpid()}.tmp"
+        try:
+            torch.save({"key": key, "bank": self._latent_bank, "jitter": self._latent_jitter}, temp)
+            os.replace(temp, path)
+        except OSError:
+            try:
+                os.remove(temp)
+            except OSError:
+                pass
 
     def _sample_prior_latents(self, n: int, temperature: float, gen):
         import torch
@@ -525,9 +606,11 @@ class PatchGenerator:
         self._training_config = ckpt.get("training_config", {})
         self._model = model
         self._loaded_path = path
-        self._build_empirical_latent_bank(
-            os.path.join(os.path.dirname(path), DEFAULT_DATASET_CACHE)
-        )
+        # The data-guided bank is built when first needed: a model trained
+        # with a KL term samples its prior in auto mode and never needs it
+        self._latent_source = os.path.join(os.path.dirname(path), DEFAULT_DATASET_CACHE)
+        if float(self._training_config.get("beta", 0.0) or 0.0) <= 0.0:
+            self._ensure_latent_bank()
 
     def generate(self, drum_type: str, n: int = 1,
                  temperature: float = 1.0, seed: int | None = None,
