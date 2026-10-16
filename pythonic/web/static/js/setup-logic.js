@@ -99,8 +99,8 @@ export function freeCc(map, taken = []) {
 // ---------------------------------------------------------------- targets
 
 const SELECTED = 'selected.';
-const SECTION_TITLES = { osc: 'oscillator', noise: 'noise', env: 'envelopes', mix: 'mix', vel: 'velocity',
-  fx: 'fx', mod: 'modulation' };
+const SECTION_TITLES = { osc: 'oscillator', noise: 'noise', metal: 'metal', env: 'envelopes', mix: 'mix',
+  vel: 'velocity', fx: 'fx', mod: 'modulation' };
 const FACE_NAMES = { 'osc.pitch': 'tune', 'osc.decay': 'osc decay', 'mix.level': 'level' };
 
 /** Global controls a CC can drive: [address, name]. */
@@ -121,7 +121,7 @@ const SOUND_NAMES = soundNames();
 export function targetGroups() {
   const sections = [
     ['face strip', FACE_ONLY],
-    ...['osc', 'noise', 'env', 'mix', 'vel', 'fx'].map((key) => [SECTION_TITLES[key],
+    ...['osc', 'noise', 'metal', 'env', 'mix', 'vel', 'fx'].map((key) => [SECTION_TITLES[key],
       rackControls().filter((c) => sectionOf(c.s) === key && c.type !== 'target').map((c) => c.s)]),
     ['lfo 1', rackControls().filter((c) => c.s.startsWith('lfo1.') && c.type !== 'target').map((c) => c.s)],
     ['lfo 2', rackControls().filter((c) => c.s.startsWith('lfo2.') && c.type !== 'target').map((c) => c.s)],

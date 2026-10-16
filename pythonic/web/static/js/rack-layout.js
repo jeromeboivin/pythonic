@@ -27,6 +27,7 @@ const fader = (s, label, name) => ({ s, type: 'fader', label, name, length: 112 
 const toggle = (s, label, name) => ({ s, type: 'toggle', label, name });
 const sw = (s, label, name, options, extra = {}) => ({ s, type: 'switch', label, name, options, ...extra });
 const list = (s, label, name, options) => ({ s, type: 'list', label, name, options });
+const mk = (s, label, name) => knob(s, label, name, { size: 22 });  // the metal section's small knobs
 
 const LFO_WAVES = 'sin,tri,saw▲,saw▼,sq,s&h';
 const SYNCS = 'free,1/1,1/2,1/4,1/8,1/16,1/4.,1/8.,1/4T,1/8T,2 bar,4 bar';
@@ -62,6 +63,20 @@ export const RACK_SECTIONS = [
     [sw('noise.filter', 'filter', 'noise filter', 'LP,BP,HP'), toggle('noise.stereo', 'stereo', 'noise stereo')],
     [knob('noise.freq', 'freq', 'noise freq'), knob('noise.q', 'Q', 'noise q')],
   ] },
+  // Six square oscillators into two band-passes (each with its decay and
+  // level: both levels at 0 turn the section off), then a high-pass
+  { key: 'metal', title: 'metal', rows: [
+    [mk('metal.freq1', 'osc 1', 'metal osc 1 freq'), mk('metal.freq2', 'osc 2', 'metal osc 2 freq'),
+      mk('metal.freq3', 'osc 3', 'metal osc 3 freq'), mk('metal.hp', 'HP', 'metal high-pass')],
+    [mk('metal.freq4', 'osc 4', 'metal osc 4 freq'), mk('metal.freq5', 'osc 5', 'metal osc 5 freq'),
+      mk('metal.freq6', 'osc 6', 'metal osc 6 freq'), mk('metal.tune', 'tune', 'metal tune')],
+    [mk('metal.band1_freq', 'BP1', 'metal band 1 freq'), mk('metal.band1_q', 'Q', 'metal band 1 Q'),
+      mk('metal.band1_decay', 'decay', 'metal band 1 decay'),
+      mk('metal.band1_level', 'level', 'metal band 1 level'), mk('metal.drive', 'drive', 'metal drive')],
+    [mk('metal.band2_freq', 'BP2', 'metal band 2 freq'), mk('metal.band2_q', 'Q', 'metal band 2 Q'),
+      mk('metal.band2_decay', 'decay', 'metal band 2 decay'),
+      mk('metal.band2_level', 'level', 'metal band 2 level'), mk('metal.curve', 'curve', 'metal decay curve')],
+  ] },
   { key: 'env', title: 'envelopes', rows: [
     [sw('noise.env', 'noise env', 'noise envelope', 'exp,lin,mod')],
     [fader('osc.attack', 'osc atk', 'osc attack'), fader('noise.attack', 'nse atk', 'noise attack'),
@@ -75,7 +90,7 @@ export const RACK_SECTIONS = [
   ] },
   { key: 'vel', title: 'velocity', rows: [
     [fader('vel.osc', 'osc', 'osc velocity'), fader('vel.noise', 'noise', 'noise velocity'),
-      fader('vel.mod', 'mod', 'mod velocity')],
+      fader('vel.mod', 'mod', 'mod velocity'), fader('vel.metal', 'metal', 'metal velocity')],
   ] },
   { key: 'fx', title: 'fx', rows: [
     [knob('fx.vintage', 'vintage'), knob('fx.reverb_decay', 'rvb time', 'reverb time'),

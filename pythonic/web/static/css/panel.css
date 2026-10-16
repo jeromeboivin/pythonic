@@ -314,6 +314,11 @@ px-switch .other {
 .rack px-knob .lbl, .rack px-fader .lbl, .rack px-switch .lbl, .rack px-list .lbl, .rack px-target .lbl { font-size: 10px; color: var(--dim); }
 .rack .val { font-size: 10px; min-height: 12px; }
 .rack px-knob { min-width: 38px; }
+.sec-metal { padding-left: 2px; padding-right: 2px; }
+.sec-metal .r { gap: 0; }
+.rack .sec-metal px-knob { min-width: 24px; }
+.sec-metal.off px-knob:not([data-suffix$="_level"]) { opacity: .45; }
+.rack .sec-vel px-fader .track { margin: 9px 6px; }
 .rack px-fader .track { width: 12px; margin: 9px 13px 9px; box-shadow: none; }
 .rack px-fader:not(.h) .track .cap { width: 30px; height: 16px; margin: -8px 0 0 -15px; }
 .rack px-fader.h .track { width: auto; }

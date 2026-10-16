@@ -121,6 +121,8 @@ export function mountRack({ store, client, ctx, display, stage, slot, drawer, fi
   rack.append(head, sections);
   const bound = [...rack.querySelectorAll('[data-suffix]')];
   const rows = [...rack.querySelectorAll('.modrow')];
+  const metal = rack.querySelector('.sec-metal');
+  const METAL_LEVELS = ['metal.band1_level', 'metal.band2_level'];
 
   let armed = null; // the source whose destination click to assign sets
   let swallowClick = false;
@@ -146,11 +148,16 @@ export function mountRack({ store, client, ctx, display, stage, slot, drawer, fi
       ...rows.map((row) => store.watch(`ch${n}.${row.dataset.source}.on`, (on) => {
         row.classList.toggle('off', !on);
       })),
+      // The metal section is off (dimmed but for its levels) while both band levels are 0
+      ...METAL_LEVELS.map((suffix) => store.watch(`ch${n}.${suffix}`, () => {
+        metal.classList.toggle('off', METAL_LEVELS.every((s) => !(store.value(`ch${n}.${s}`) > 0)));
+      })),
       // The outline of the current destination follows the target
       ...MOD_SOURCES.map((src) => store.watch(`ch${n}.${src}.target`, () => { if (armed) mark(); },
         { now: false })),
     ];
-    for (const a of [`ch${n}.name`, ...rows.map((row) => `ch${n}.${row.dataset.source}.on`)]) ctx.ensure(a);
+    for (const a of [`ch${n}.name`, ...rows.map((row) => `ch${n}.${row.dataset.source}.on`),
+      ...METAL_LEVELS.map((suffix) => `ch${n}.${suffix}`)]) ctx.ensure(a);
   };
   bindChannel(selected());
   watch('global.channel', (n) => bindChannel(n || 1));

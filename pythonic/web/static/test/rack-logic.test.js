@@ -82,11 +82,12 @@ test('the rack holds every sound parameter once, except those on the face', () =
   for (const s of FACE_ONLY) assert.ok(!suffixes.includes(s), s);
   assert.deepEqual(FACE_ONLY, ['osc.pitch', 'osc.decay', 'mix.level']);
   for (const s of ['osc.attack', 'noise.attack', 'noise.decay', 'mix.pan', 'mix.output', 'fx.delay_time',
-    'lfo1.target', 'lfo2.phase', 'pump.sync', 'pump.target', 'vel.mod']) {
+    'lfo1.target', 'lfo2.phase', 'pump.sync', 'pump.target', 'vel.mod', 'vel.metal', 'metal.freq6',
+    'metal.band2_level', 'metal.hp']) {
     assert.ok(suffixes.includes(s), s);
   }
   assert.deepEqual(RACK_SECTIONS.map((s) => s.title),
-    ['oscillator', 'noise', 'envelopes', 'mix', 'velocity', 'fx', 'modulation']);
+    ['oscillator', 'noise', 'metal', 'envelopes', 'mix', 'velocity', 'fx', 'modulation']);
 });
 
 test('closing the drawer leaves the face; the scale stays when the window follows', () => {

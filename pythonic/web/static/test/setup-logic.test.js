@@ -68,12 +68,12 @@ test('target names and the target menu groups', () => {
   assert.equal(targetLabel(null), '(none)');
   const groups = targetGroups();
   const titles = groups.map(([t]) => t);
-  assert.deepEqual(titles, ['face strip', 'oscillator', 'noise', 'envelopes', 'mix', 'velocity', 'fx',
+  assert.deepEqual(titles, ['face strip', 'oscillator', 'noise', 'metal', 'envelopes', 'mix', 'velocity', 'fx',
     'lfo 1', 'lfo 2', 'pump', 'global']);
   const targets = groups.flatMap(([, xs]) => xs.map(([t]) => t));
   assert.equal(new Set(targets).size, targets.length);
   // every sound parameter but the three → destination buttons, plus six globals
-  assert.equal(targets.filter((t) => t.startsWith('selected.')).length, 59 - 3);
+  assert.equal(targets.filter((t) => t.startsWith('selected.')).length, 78 - 3);
   assert.ok(targets.includes('selected.lfo1.phase') && targets.includes('global.master'));
   assert.ok(!targets.includes('selected.lfo1.target'));
 });
