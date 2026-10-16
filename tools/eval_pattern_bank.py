@@ -17,13 +17,15 @@ up with the validation banks of those same kits and timings:
   channel lanes that neighbours share;
 - conditioning: how per-channel trigger density follows the bank of the
   same condition (Pearson r), and how much a bank changes with the kit (the
-  same latent, another condition) against with the latent (the same
-  condition, another latent);
+  same latent noise, another condition) against with the noise (the same
+  condition, another noise);
 - novelty: each pattern's closest training pattern (Jaccard), and the
   share of near copies (≥ 0.95).
 
-The legacy model is the single-pattern CVAE: 12 independent draws, every
-pattern 16 steps, no chains.
+The bank model samples through the kit prior stored in its checkpoint
+(--prior normal: from N(0, I)), with triggers thresholded and accents and
+fills drawn (--grid-mode). The legacy model is the single-pattern CVAE: 12
+independent draws, every pattern 16 steps, no chains.
 """
 
 from __future__ import annotations
@@ -146,21 +148,26 @@ def novelty(trig: np.ndarray, train_trig: np.ndarray, chunk: int = 256) -> dict:
 # ---------------------------------------------------------------- models
 
 class BankSampler:
-    """The bank CVAE of train_pattern_bank.py."""
+    """The bank CVAE of train_pattern_bank.py, through its kit prior when
+    the checkpoint has one (prior "kit"), or from N(0, I) (prior "normal")."""
 
     name = "bank"
 
-    def __init__(self, path, bank_temperature=1.0, slot_temperature=1.0, length_mode="argmax",
-                 chain_mode="threshold"):
-        self.model, _ = tpb.load_bank_model(str(path))
+    def __init__(self, path, prior="kit", bank_temperature=1.0, slot_temperature=1.0, grid_mode="mixed",
+                 length_mode="argmax", chain_mode="threshold"):
+        self.model, ckpt = tpb.load_bank_model(str(path))
+        self.prior = tpb.load_kit_prior(ckpt) if prior == "kit" else None
+        if prior == "kit" and self.prior is None:
+            print(f"{path} has no kit prior: sampling from N(0, I)")
         self.options = {"bank_temperature": bank_temperature, "slot_temperature": slot_temperature,
-                        "length_mode": length_mode, "chain_mode": chain_mode}
-
-    def sample(self, cond, generator, z_bank=None):
-        return tpb.sample_bank_arrays(self.model, cond, generator=generator, z_bank=z_bank, **self.options)
+                        "grid_mode": grid_mode, "length_mode": length_mode, "chain_mode": chain_mode}
 
     def latent(self, n, generator):
-        return torch.randn(n, self.model.bank_latent, generator=generator) * self.options["bank_temperature"]
+        return tpb.latent_noise(self.model, n, generator)
+
+    def sample(self, cond, generator, noise=None):
+        return tpb.sample_bank_arrays(self.model, cond, prior=self.prior, generator=generator, noise=noise,
+                                      **self.options)
 
 
 class LegacySampler:
@@ -177,13 +184,13 @@ class LegacySampler:
         self.temperature = temperature
 
     def latent(self, n, generator):
-        return torch.randn(n, tpb.NUM_SLOTS, self.model.latent_dim, generator=generator) * self.temperature
+        return torch.randn(n, tpb.NUM_SLOTS, self.model.latent_dim, generator=generator)
 
     @torch.no_grad()
-    def sample(self, cond, generator, z_bank=None):
+    def sample(self, cond, generator, noise=None):
         cond = torch.as_tensor(cond, dtype=torch.float32)
         n = cond.shape[0]
-        z = self.latent(n, generator) if z_bank is None else z_bank
+        z = (self.latent(n, generator) if noise is None else noise) * self.temperature
         c = cond[:, None, :].expand(-1, tpb.NUM_SLOTS, -1).reshape(n * tpb.NUM_SLOTS, -1)
         probs = torch.sigmoid(self.model.decoder(z.reshape(n * tpb.NUM_SLOTS, -1), c))
         grid = (probs >= 0.5).reshape(n, tpb.NUM_SLOTS, tpb.NUM_CHANNELS, tpb.NUM_STEPS,
@@ -193,17 +200,18 @@ class LegacySampler:
 
 
 def kit_sensitivity(sampler, cond, generator) -> dict:
-    """Trigger Jaccard between banks decoded from the same latent with two
-    conditions (low: the kit matters), and from the same condition with
-    two latents (low: the latent matters)."""
+    """Trigger Jaccard between banks decoded from the same latent noise
+    with two conditions (low: the kit matters), and from the same
+    condition with two noises (low: the noise matters)."""
     n = cond.shape[0]
     other = torch.roll(cond, 1, dims=0)
-    z = sampler.latent(n, generator)
-    a = sampler.sample(cond, generator, z_bank=z)[0][..., 0].reshape(n, tpb.NUM_SLOTS, -1)
-    b = sampler.sample(other, generator, z_bank=z)[0][..., 0].reshape(n, tpb.NUM_SLOTS, -1)
-    c = sampler.sample(cond, generator, z_bank=sampler.latent(n, generator))[0][..., 0].reshape(n, tpb.NUM_SLOTS, -1)
-    return {"same_latent_other_kit": float(jaccard(a, b).mean()),
-            "same_kit_other_latent": float(jaccard(a, c).mean())}
+    noise = sampler.latent(n, generator)
+
+    def triggers(c, z):
+        return sampler.sample(c, generator, noise=z)[0][..., 0].reshape(n, tpb.NUM_SLOTS, -1)
+    a = triggers(cond, noise)
+    return {"same_latent_other_kit": float(jaccard(a, triggers(other, noise)).mean()),
+            "same_kit_other_latent": float(jaccard(a, triggers(cond, sampler.latent(n, generator))).mean())}
 
 
 # ---------------------------------------------------------------- report
@@ -279,6 +287,9 @@ def main() -> None:
     ap.add_argument("--legacy", default=str(ROOT / "drum_patterns" / "pattern_cvae_best.pt"),
                     help="single-pattern checkpoint (skipped when missing)")
     ap.add_argument("--no-legacy", action="store_true")
+    ap.add_argument("--prior", choices=("kit", "normal"), default="kit",
+                    help="the checkpoint's kit prior, or N(0, I)")
+    ap.add_argument("--grid-mode", choices=tpb.GRID_MODES, default="mixed")
     ap.add_argument("--bank-temperature", type=float, default=1.0)
     ap.add_argument("--slot-temperature", type=float, default=1.0)
     ap.add_argument("--legacy-temperature", type=float, default=0.7, help="the app's default")
@@ -293,8 +304,8 @@ def main() -> None:
     cache = tpb.load_bank_cache(args.cache)
     samplers = []
     if pathlib.Path(args.bank).is_file():
-        samplers.append(BankSampler(args.bank, args.bank_temperature, args.slot_temperature,
-                                    args.length_mode, args.chain_mode))
+        samplers.append(BankSampler(args.bank, args.prior, args.bank_temperature, args.slot_temperature,
+                                    args.grid_mode, args.length_mode, args.chain_mode))
     else:
         print(f"no bank checkpoint at {args.bank}")
     if not args.no_legacy and pathlib.Path(args.legacy).is_file():

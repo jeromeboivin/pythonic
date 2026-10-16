@@ -15,11 +15,12 @@
 #   (builds the cache once; on Colab only the cache is uploaded)
 #
 #   Environment overrides for short runs: BANK_EPOCHS, BANK_SUBSET (train on
-#   the first N banks), BANK_BETA, BANK_TRAIN=0 (cache only), DRIVE_DIR.
+#   the first N banks), BANK_BETA, BANK_TRAIN=0 (no training: only fit the
+#   kit prior of an existing best checkpoint that has none), DRIVE_DIR.
 #
 # **Outputs (in DRIVE_DIR):**
 #   - pattern_bank_cache.pt  — preprocessed tensors (built locally, uploaded)
-#   - pattern_bank_best.pt   — best checkpoint (validation ELBO)
+#   - pattern_bank_best.pt   — best checkpoint (validation ELBO), with its kit prior
 #   - pattern_bank_final.pt  — last checkpoint
 
 # %% [markdown]
@@ -70,6 +71,10 @@ GRAD_CLIP        = 1.0
 LOG_EVERY        = 5
 EARLY_STOPPING_PATIENCE = 60  # epochs without a better validation ELBO (after the KL warm-up)
 SEED             = 0
+
+# ── Kit prior (fitted after training, stored in the best checkpoint) ──────────
+PRIOR_HIDDEN     = 512
+PRIOR_EPOCHS     = 60
 
 # %% [markdown]
 # ## Cell 2 — Imports
@@ -778,34 +783,148 @@ def train_bank_model(cache: dict, train_idx, valid_idx, epochs: int = EPOCHS, de
 
 
 # %% [markdown]
-# ## Cell 11 — Sampling
+# ## Cell 11 — Kit prior
 #
-# Generation draws the bank latent with the bank temperature and the slot
-# latents with the slot temperature (how far the 12 patterns stray from
-# one another), then decodes: a grid step plays above the threshold; the
-# length is the most likely one ("argmax") or drawn from its distribution
-# ("sample"); a chain is set above its threshold ("threshold") or drawn
-# ("bernoulli").
+# The latents of real banks do not fill N(0, I), and the decoder hardly
+# reads the condition itself: decoding N(0, I) latents gives average banks
+# that ignore the kit. The kit prior p(z | condition) is fitted after
+# training on the encoded training banks: an MLP gives the mean of the
+# latents (the bank latent, then the 12 slot latents), a fixed Cholesky
+# factor their spread (the residual covariance plus the mean posterior
+# variance). Drawing z from it keeps the latents where real banks are, and
+# the kit picks them.
 
 # %%
 
+class KitPrior(nn.Module):
+    def __init__(self, latent_dim: int, hidden: int = PRIOR_HIDDEN):
+        super().__init__()
+        self.latent_dim, self.hidden = latent_dim, hidden
+        self.net = nn.Sequential(nn.Linear(CONDITION_DIM, hidden), nn.GELU(), nn.Linear(hidden, hidden),
+                                 nn.GELU(), nn.Linear(hidden, latent_dim))
+        self.register_buffer("scale_tril", torch.eye(latent_dim))
+
+    def forward(self, cond, noise):
+        """cond [N, 48], noise [N, D] (standard normal, scaled by the
+        temperatures) → latents [N, D]."""
+        return self.net(cond) + noise @ self.scale_tril.T
+
+
 @torch.no_grad()
-def sample_bank_arrays(model: BankCVAE, cond, bank_temperature: float = 1.0, slot_temperature: float = 1.0,
-                       threshold: float = 0.5, chain_threshold: float = 0.5, length_mode: str = "argmax",
-                       chain_mode: str = "threshold", generator=None, z_bank=None) -> tuple:
+def encode_banks(model: BankCVAE, data: BankDataset, batch_size: int = 512) -> tuple:
+    """Posterior means and variances of banks: [N, D] each, D = bank
+    latent + 12 × slot latent."""
+    model.eval()
+    means, variances = [], []
+    for grid, length, chain, cond in data.batches(batch_size):
+        bank_mu, bank_logvar, slot_mu, slot_logvar = model.encode(grid, length, chain, cond)
+        means.append(torch.cat([bank_mu, slot_mu.flatten(1)], 1).float().cpu())
+        variances.append(torch.cat([bank_logvar, slot_logvar.flatten(1)], 1).float().exp().cpu())
+    return torch.cat(means), torch.cat(variances)
+
+
+def fit_kit_prior(model: BankCVAE, cache: dict, train_idx, epochs: int = PRIOR_EPOCHS,
+                  hidden: int = PRIOR_HIDDEN, batch_size: int = 512, device=None) -> tuple:
+    """Fit the kit prior on the training banks. Returns (prior, stats);
+    stats["r2"] is the share of the latent variance the condition explains
+    on 5% of the banks held out."""
+    device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    data = BankDataset(cache, train_idx).to(device)
+    model = model.to(device)
+    means, variances = encode_banks(model, data, batch_size)
+    cond = data.cond.float().cpu()
+    torch.manual_seed(SEED)
+    prior = KitPrior(means.shape[1], hidden).to(device)
+    order = torch.randperm(len(means))
+    held, fit = order[:max(1, len(order) // 20)], order[max(1, len(order) // 20):]
+    optimizer = torch.optim.AdamW(prior.net.parameters(), lr=1e-3, weight_decay=1e-4)
+    for _ in range(epochs):
+        shuffled = fit[torch.randperm(len(fit))]
+        for start in range(0, len(shuffled), batch_size):
+            idx = shuffled[start:start + batch_size]
+            loss = (prior.net(cond[idx].to(device)) - means[idx].to(device)).pow(2).mean()
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
+    with torch.no_grad():
+        predicted = prior.net(cond.to(device)).cpu()
+        base = means[fit].mean(0)
+        r2 = 1 - (predicted[held] - means[held]).pow(2).sum() / (means[held] - base).pow(2).sum().clamp(min=1e-12)
+        residual = (means - predicted).double()
+        cov = residual.T @ residual / len(residual) + torch.diag(variances.double().mean(0))
+        cov += 1e-6 * torch.eye(cov.shape[0], dtype=torch.float64)
+        prior.scale_tril.copy_(torch.linalg.cholesky(cov).float().to(device))
+    stats = {"r2": float(r2), "banks": len(means)}
+    print(f"Kit prior: fitted on {len(means)} banks; the condition explains {stats['r2']:.1%} "
+          f"of the latent variance (held out)")
+    return prior.cpu().eval(), stats
+
+
+def save_kit_prior(path: str, prior: KitPrior, stats: dict):
+    """Store the kit prior in a bank checkpoint (the "kit_prior" entry)."""
+    ckpt = torch.load(path, map_location="cpu", weights_only=False)
+    ckpt["kit_prior"] = {"state": prior.state_dict(), "latent_dim": prior.latent_dim,
+                         "hidden": prior.hidden, "stats": stats}
+    torch.save(ckpt, path)
+
+
+def load_kit_prior(ckpt: dict):
+    """The kit prior of a loaded checkpoint, or None when it has none."""
+    entry = ckpt.get("kit_prior")
+    if not entry:
+        return None
+    prior = KitPrior(entry["latent_dim"], entry["hidden"])
+    prior.load_state_dict(entry["state"])
+    return prior.eval()
+
+
+# %% [markdown]
+# ## Cell 12 — Sampling
+#
+# Generation draws standard normal noise for the latents: scaled by the bank
+# temperature (the bank latent) and the slot temperature (the slot latents:
+# how far the 12 patterns stray from one another), then mapped through the
+# kit prior when there is one. Decoding: a grid step plays above the
+# threshold ("threshold"), is drawn from its probability ("sample"), or
+# triggers by threshold and accents and fills drawn ("mixed": the 0.5
+# threshold loses most accents and fills); the length is the most likely
+# one ("argmax") or drawn ("sample"); a chain is set above its threshold
+# ("threshold") or drawn ("bernoulli").
+
+# %%
+
+GRID_MODES = ("threshold", "sample", "mixed")
+
+
+def latent_noise(model: BankCVAE, n: int, generator=None):
+    """Standard normal noise for n banks' latents: [n, bank + 12 × slot]."""
+    return torch.randn(n, model.bank_latent + NUM_SLOTS * model.slot_latent, generator=generator)
+
+
+@torch.no_grad()
+def sample_bank_arrays(model: BankCVAE, cond, prior: KitPrior = None, bank_temperature: float = 1.0,
+                       slot_temperature: float = 1.0, grid_mode: str = "threshold", threshold: float = 0.5,
+                       length_mode: str = "argmax", chain_mode: str = "threshold", chain_threshold: float = 0.5,
+                       generator=None, noise=None) -> tuple:
     """cond [N, 48] → (grid bool [N, 12, 8, 16, 3] (zero past each length),
-    length [N, 12] (1..16), chain bool [N, 11]) as numpy arrays. z_bank
-    [N, Zb] fixes the bank latents (the kit-sensitivity check)."""
-    if length_mode not in ("argmax", "sample") or chain_mode not in ("threshold", "bernoulli"):
-        raise ValueError(f"length_mode argmax|sample, chain_mode threshold|bernoulli: {length_mode}, {chain_mode}")
+    length [N, 12] (1..16), chain bool [N, 11]) as numpy arrays. noise
+    fixes the latent noise (latent_noise), e.g. to decode the same noise
+    with two kits."""
+    if grid_mode not in GRID_MODES or length_mode not in ("argmax", "sample") \
+            or chain_mode not in ("threshold", "bernoulli"):
+        raise ValueError(f"grid_mode {GRID_MODES}, length_mode argmax|sample, chain_mode threshold|bernoulli: "
+                         f"{grid_mode}, {length_mode}, {chain_mode}")
     model.eval()
     device = next(model.parameters()).device
     cond = torch.as_tensor(cond, dtype=torch.float32).to(device)
-    n = cond.shape[0]
-    if z_bank is None:
-        z_bank = torch.randn(n, model.bank_latent, generator=generator) * bank_temperature
-    z_slot = torch.randn(n, NUM_SLOTS, model.slot_latent, generator=generator) * slot_temperature
-    grid_logits, length_logits, chain_logits = model.decode(z_bank.to(device), z_slot.to(device), cond)
+    n, zb = cond.shape[0], model.bank_latent
+    noise = latent_noise(model, n, generator) if noise is None else torch.as_tensor(noise, dtype=torch.float32)
+    scale = torch.cat([torch.full((zb,), float(bank_temperature)),
+                       torch.full((noise.shape[1] - zb,), float(slot_temperature))])
+    z = (noise * scale).to(device)
+    if prior is not None:
+        z = prior.to(device)(cond, z)
+    grid_logits, length_logits, chain_logits = model.decode(z[:, :zb], z[:, zb:].reshape(n, NUM_SLOTS, -1), cond)
     if length_mode == "argmax":
         length = length_logits.argmax(-1) + 1
     else:
@@ -815,9 +934,14 @@ def sample_bank_arrays(model: BankCVAE, cond, bank_temperature: float = 1.0, slo
     if chain_mode == "threshold":
         chain = chain_p >= chain_threshold
     else:
-        chain = (torch.rand(chain_p.shape, generator=generator).to(device) < chain_p)
-    grid = (torch.sigmoid(grid_logits.float()) >= threshold).reshape(n, NUM_SLOTS, NUM_CHANNELS, NUM_STEPS,
-                                                                     NUM_FEATURES)
+        chain = torch.rand(chain_p.shape, generator=generator).to(device) < chain_p
+    grid_p = torch.sigmoid(grid_logits.float()).reshape(n, NUM_SLOTS, NUM_CHANNELS, NUM_STEPS, NUM_FEATURES)
+    drawn = torch.rand(grid_p.shape, generator=generator).to(device) < grid_p
+    grid = grid_p >= threshold
+    if grid_mode == "sample":
+        grid = drawn
+    elif grid_mode == "mixed":
+        grid = torch.cat([grid[..., :1], drawn[..., 1:]], dim=-1)
     plays = torch.arange(NUM_STEPS, device=device)[None, None, :] < length[..., None]
     grid = grid & plays[:, :, None, :, None]
     return grid.cpu().numpy(), length.cpu().numpy(), chain.cpu().numpy()
@@ -844,7 +968,7 @@ def chain_text(bank: list) -> str:
 
 
 # %% [markdown]
-# ## Cell 12 — Build or load the dataset, then train
+# ## Cell 13 — Build or load the dataset, train, fit the kit prior
 
 # %%
 if __name__ == "__main__":
@@ -859,10 +983,14 @@ if __name__ == "__main__":
         assert round_trip_check(bank_cache, PATTERNARIUM_DIR) == 0, "the cache does not match the presets"
 
     if TRAIN:
-        if TRAIN_SUBSET:
-            train_idx = train_idx[:TRAIN_SUBSET]
-        model, history = train_bank_model(bank_cache, train_idx, valid_idx)
-        best_model, _ = load_bank_model(BEST_CKPT) if os.path.exists(BEST_CKPT) else (model.cpu(), None)
-        for bank in sample_banks(best_model.cpu(), bank_cache["cond"][valid_idx[:8]],
-                                 generator=torch.Generator().manual_seed(SEED)):
+        train_bank_model(bank_cache, train_idx[:TRAIN_SUBSET] if TRAIN_SUBSET else train_idx, valid_idx)
+    if os.path.exists(BEST_CKPT):
+        best_model, best_ckpt = load_bank_model(BEST_CKPT)
+        kit_prior = load_kit_prior(best_ckpt)
+        if TRAIN or kit_prior is None:
+            kit_prior, prior_stats = fit_kit_prior(best_model, bank_cache, train_idx)
+            save_kit_prior(BEST_CKPT, kit_prior, prior_stats)
+            print(f"Kit prior saved in {BEST_CKPT}")
+        for bank in sample_banks(best_model.cpu(), bank_cache["cond"][valid_idx[:8]], prior=kit_prior,
+                                 grid_mode="mixed", generator=torch.Generator().manual_seed(SEED)):
             print(f"lengths {[p['Length'] for p in bank]}  chains {chain_text(bank)}")

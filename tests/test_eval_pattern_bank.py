@@ -81,7 +81,12 @@ def test_a_report_over_a_tiny_model_and_the_legacy_model(dataset, tmp_path, monk
                 'model_config': {'pattern_dim': 384, 'cond_dim': 48, 'latent_dim': 8, 'hidden_dim': 32}},
                legacy_path)
 
-    samplers = [ev.BankSampler(best, length_mode='sample', chain_mode='bernoulli'), ev.LegacySampler(legacy_path)]
+    prior, stats = tpb.fit_kit_prior(tpb.load_bank_model(str(best))[0], cache, train, epochs=1, hidden=16,
+                                     device='cpu')
+    tpb.save_kit_prior(str(best), prior, stats)
+    bank = ev.BankSampler(best, length_mode='sample', chain_mode='bernoulli')
+    assert bank.prior is not None and ev.BankSampler(best, prior='normal').prior is None
+    samplers = [bank, ev.LegacySampler(legacy_path)]
     report = ev.evaluate(cache, samplers, novelty_banks=5, valid_gens=('gen_002',))
     assert set(report) == {'data', 'bank', 'legacy'}
     assert report['data']['banks'] == 1 and report['data']['chain_rate_by_link'][10] == 1.0

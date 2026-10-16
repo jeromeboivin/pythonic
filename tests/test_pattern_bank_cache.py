@@ -199,3 +199,48 @@ def test_chain_text_names_the_runs():
     bank = [{'Chained': s in (0, 2, 3, 8, 9, 10)} for s in range(12)]
     assert tpb.chain_text(bank) == 'a-b c-e i-l'
     assert tpb.chain_text([{'Chained': False}] * 12) == '-'
+
+
+def test_the_kit_prior_is_fitted_stored_and_used_for_sampling(dataset, tmp_path):
+    cache = tpb.build_bank_cache(str(dataset), str(tmp_path / 'cache.pt'), workers=1)
+    train, valid = tpb.split_indexes(cache, valid_gens=('gen_002',))
+    best = tmp_path / 'best.pt'
+    model, _ = tpb.train_bank_model(cache, train, valid, epochs=2, device='cpu', best_path=str(best),
+                                    final_path=str(tmp_path / 'final.pt'), model_kwargs=TINY, batch_size=2)
+    assert tpb.load_kit_prior(torch.load(best, weights_only=False)) is None
+
+    prior, stats = tpb.fit_kit_prior(model, cache, train, epochs=2, hidden=16, device='cpu')
+    assert stats['banks'] == 2 and np.isfinite(stats['r2'])
+    tril = prior.scale_tril
+    assert tril.shape == (8 + 12 * 4,) * 2 and torch.equal(tril, torch.tril(tril)) and (tril.diagonal() > 0).all()
+    tpb.save_kit_prior(str(best), prior, stats)
+
+    loaded, ckpt = tpb.load_bank_model(str(best))
+    again = tpb.load_kit_prior(ckpt)
+    assert ckpt['kit_prior']['stats'] == stats
+    noise = tpb.latent_noise(loaded, 3, torch.Generator().manual_seed(2))
+    with torch.no_grad():
+        assert torch.allclose(prior(cache['cond'], noise), again(cache['cond'], noise))
+    first = tpb.sample_bank_arrays(loaded, cache['cond'], prior=again, noise=noise)
+    second = tpb.sample_bank_arrays(loaded, cache['cond'], prior=again, noise=noise)
+    assert all((a == b).all() for a, b in zip(first, second))  # the same noise, the same banks
+    # The temperatures scale the noise: at 0 every bank sits on the prior's mean
+    flat = tpb.sample_bank_arrays(loaded, cache['cond'][:1].repeat(2, 1), prior=again, bank_temperature=0,
+                                  slot_temperature=0, generator=torch.Generator().manual_seed(3))
+    assert (flat[0][0] == flat[0][1]).all()
+
+
+def test_grid_modes_threshold_triggers_and_draw_the_rest(dataset, tmp_path):
+    cache = tpb.build_bank_cache(str(dataset), str(tmp_path / 'cache.pt'), workers=1)
+    torch.manual_seed(0)
+    model = tpb.BankCVAE(**TINY)
+    noise = tpb.latent_noise(model, 3, torch.Generator().manual_seed(4))
+
+    def grid(mode):
+        return tpb.sample_bank_arrays(model, cache['cond'], grid_mode=mode, noise=noise,
+                                      generator=torch.Generator().manual_seed(5))[0]
+    threshold, mixed, drawn = grid('threshold'), grid('mixed'), grid('sample')
+    assert (mixed[..., 0] == threshold[..., 0]).all()
+    assert (mixed[..., 1:] == drawn[..., 1:]).all()
+    with pytest.raises(ValueError):
+        tpb.sample_bank_arrays(model, cache['cond'], grid_mode='round')
