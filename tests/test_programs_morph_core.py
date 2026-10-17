@@ -256,6 +256,27 @@ def test_stopping_learn_is_one_undo_step_and_starting_it_none(make_core):
     assert core.get('morph.differs') is False
 
 
+def test_the_morph_leaves_the_sounds_alone_until_the_endpoints_differ(make_core):
+    core = make_core()
+    core.set('ch1.osc.decay', 250.0)  # an edit made after the endpoints were taken
+    for position in (1.0, 0.5, 0.0):
+        core.set('morph.position', position)
+        assert core.get('ch1.osc.decay') == pytest.approx(250.0)
+
+
+def test_learning_from_same_endpoints_starts_from_the_sounds(make_core):
+    core = make_core()
+    core.set('ch1.osc.decay', 250.0)
+    run(core, 'morph.learn', endpoint='a')
+    assert core.get('ch1.osc.decay') == pytest.approx(250.0)  # no jump back
+    core.set('ch1.osc.decay', 100.0)
+    run(core, 'morph.learn', endpoint=None)
+    core.set('morph.position', 1.0)
+    assert core.get('ch1.osc.decay') == pytest.approx(250.0)  # B: the sounds learn started from
+    core.set('morph.position', 0.0)
+    assert core.get('ch1.osc.decay') == pytest.approx(100.0)
+
+
 def test_morph_position_is_undone_and_the_sound_follows(make_core):
     core = make_core()
     make_endpoints(core)

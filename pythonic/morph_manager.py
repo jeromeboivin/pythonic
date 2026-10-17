@@ -112,12 +112,21 @@ class MorphManager:
     def start_learn_a(self):
         """Start learning mode for endpoint A.
         All parameter changes will be captured as endpoint A."""
+        self._follow_sounds_if_same()
         self._learn_mode = 'a'
     
     def start_learn_b(self):
         """Start learning mode for endpoint B.
         All parameter changes will be captured as endpoint B."""
+        self._follow_sounds_if_same()
         self._learn_mode = 'b'
+    
+    def _follow_sounds_if_same(self):
+        """Same endpoints hold no morph, only the sounds of when they were
+        taken: take the current sounds into both, so learn starts from what
+        plays rather than jumping back."""
+        if not self.has_different_endpoints():
+            self._init_endpoints()
     
     def stop_learn(self):
         """Stop learning mode."""
@@ -213,6 +222,8 @@ class MorphManager:
             return
         if self._updating:
             return
+        if not self.has_different_endpoints():
+            return  # nothing to blend: the sounds stay as edited since
         
         self._updating = True
         try:
