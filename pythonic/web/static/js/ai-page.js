@@ -11,8 +11,9 @@
 //
 // gen makes one new sound for its channel and plays it there (the core tries
 // it); generate patterns makes 12 (A-L) for the sounds on the face and plays
-// them (ai.pattern_try 'try': the transport starts, any pattern picked plays
-// its new version, chains included: the note names them, ai.bank_chains).
+// them (ai.pattern_try 'try': the transport starts, on the first chain when
+// the playing pattern is in none; any pattern picked plays its new version,
+// chains included: the note names them, ai.bank_chains).
 // old | new switches back and forth. The strip tab of a
 // channel playing a new sound shows its name in italics, knob edits there go
 // into the new sound. keep commits what plays, sounds and patterns, as one
@@ -328,9 +329,9 @@ export function mountAiPage({ panel, store, client, stage }) {
     display.show('AI PATTERNS', 'generating…');
     const r = await run('ai.generate_patterns', {}, 'Could not generate the patterns');
     if (!r) return;
-    if (await run('ai.pattern_try', { mode: 'try' }, 'Could not play the patterns')) {
-      display.show('AI PATTERNS', `${r.patterns} new patterns`);
-    }
+    const played = await run('ai.pattern_try', { mode: 'try' }, 'Could not play the patterns');
+    // The core starts on the first chain when the playing pattern is in none
+    if (played) display.show('AI PATTERNS', played.pattern ? `${r.patterns} new, from ${played.pattern}` : `${r.patterns} new patterns`);
   }
 
   generatePatternsButton.addEventListener('click', generatePatterns);

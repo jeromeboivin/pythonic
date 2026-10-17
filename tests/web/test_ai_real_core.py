@@ -119,7 +119,9 @@ def test_new_patterns_play_on_the_face_and_keep_with_the_sounds(open_panel, ai_c
     page.wait_js("pythonic.store.value('ai.tried').includes(2)", timeout=10000, pump=pump)
     page.click('#ai-gen-patterns')
     page.wait_js("pythonic.store.value('ai.preview') === 'try'", timeout=10000, pump=pump)
-    assert core.poll()['transport']['playing'] is True
+    transport = core.poll()['transport']
+    assert transport['playing'] is True and transport['chain'] == [4, 5, 6]  # A is in no chain: E-G plays
+    page.wait_js("pythonic.panel.display.text()[1] === '12 new, from E'", pump=pump)
     assert core.get('pattern.B.ch1.trig') == [s % 2 == 0 for s in range(16)]  # the stand-in's B
     assert core.get('pattern.E.chained')  # and its chains, named on the page
     page.wait_js("document.querySelector('.ai-patnote').textContent.includes('(chains E–G)')", pump=pump)

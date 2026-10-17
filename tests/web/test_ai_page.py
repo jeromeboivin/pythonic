@@ -278,7 +278,7 @@ def test_generate_patterns_plays_them_and_old_new_switches(panel):
     panel.wait_js("document.querySelector('.ai-patnote').textContent.startsWith('the new patterns play (chains A–B, E–G)')")
     assert text(panel, '.ai-tried') == 'new patterns'
     assert not panel.js("document.querySelector('#ai-keep').disabled")
-    panel.wait_js("pythonic.panel.display.text()[1] === '12 new patterns'")
+    panel.wait_js("pythonic.panel.display.text()[1] === '12 new, from A'")
 
     panel.click('#ai-pat-old')
     assert wait_act(panel, 'ai.pattern_try', 2)[1] == {'mode': None}

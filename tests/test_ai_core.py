@@ -20,7 +20,7 @@ import time
 import pytest
 
 from pythonic.app import AppCore
-from pythonic.app.ai import BUNDLED_MODELS, torch_installed
+from pythonic.app.ai import BUNDLED_MODELS, FORMER_BUNDLED_MODELS, torch_installed
 from tests.fake_audio import FakeAudioBackend
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -365,6 +365,29 @@ def test_clear_reverts_and_forgets_the_candidates(make_core):
     assert core.get('ai.bank') == 'none'
 
 
+def test_a_preference_for_the_former_bundled_pattern_model_gives_way(prefs, models):
+    """The old load... saved the bundled single-pattern checkpoint as the
+    preference: the current bundled model replaces it; a chosen file stays."""
+    prefs.set('drum_generator_pattern_model_path', FORMER_BUNDLED_MODELS['pattern'])
+    core = AppCore(preferences=prefs, audio_backend=None, stall_timeout=None, midi_backend=None,
+                   ai_worker=[sys.executable, FAKE_WORKER])
+    try:
+        assert core.get('pref.ai.pattern_model') is None
+        assert prefs.get('drum_generator_pattern_model_path', None) is None
+        bundled = BUNDLED_MODELS['pattern']
+        assert core.get('ai.models')['pattern']['path'] == (bundled if os.path.isfile(bundled) else None)
+    finally:
+        core.close()
+    mine = str(models / 'pattern.pt')
+    prefs.set('drum_generator_pattern_model_path', mine)
+    core = AppCore(preferences=prefs, audio_backend=None, stall_timeout=None, midi_backend=None,
+                   ai_worker=[sys.executable, FAKE_WORKER])
+    try:
+        assert core.get('pref.ai.pattern_model') == mine
+    finally:
+        core.close()
+
+
 # ====================================================================== patterns
 def test_generate_patterns_makes_a_bank_of_twelve(make_core, tmp_path):
     log = tmp_path / 'log'
@@ -410,12 +433,12 @@ def test_trying_the_bank_puts_all_twelve_on_the_face_until_put_back(make_core):
     core.set('pattern.C.ch1.step2.trig', True)
     preset = [triggers(core, p) for p in 'ABCDEFGHIJKL']
     assert act(core, 'ai.pattern_try', mode='try')['status'] == 'error'  # no bank yet
-    run(core, 'pattern.select', pattern='C')
+    run(core, 'pattern.select', pattern='F')
     run(core, 'ai.generate_patterns')
-    assert run(core, 'ai.pattern_try', mode='try') == {'preview': 'try', 'pattern': 'C', 'bank': True}
+    assert run(core, 'ai.pattern_try', mode='try') == {'preview': 'try', 'pattern': 'F', 'bank': True}
     assert core.get('ai.preview') == 'try'
     transport = core.poll()['transport']
-    assert transport['playing'] and transport['playing_pattern'] == 2
+    assert transport['playing'] and transport['playing_pattern'] == 5
     assert triggers(core, 'B') == [s % 2 == 0 for s in range(16)]  # every pattern is the bank's
     assert core.get('pattern.E.chained') and core.get('pattern.F.chained')  # and its chains
     assert triggers(core, 'C') == [s % 3 == 0 for s in range(16)]
@@ -426,6 +449,29 @@ def test_trying_the_bank_puts_all_twelve_on_the_face_until_put_back(make_core):
     assert core.get('ai.preview') == 'off'
     assert core.poll()['transport']['playing'] is True  # put back without stopping
     assert [triggers(core, p) for p in 'ABCDEFGHIJKL'] == preset
+
+
+def test_trying_the_bank_plays_its_chains(make_core):
+    """The playing pattern in no chain would loop on its own: the tried bank
+    starts on its first chain (the stand-in's bank chains E-G)."""
+    core = make_core()
+    run(core, 'ai.generate_patterns')
+    assert run(core, 'ai.pattern_try', mode='try')['pattern'] == 'E'  # A is in no chain
+    transport = core.poll()['transport']
+    assert transport['playing'] and transport['playing_pattern'] == 4 and transport['chain'] == [4, 5, 6]
+    assert core.get('pattern.selected') == 'E'
+    run(core, 'ai.pattern_try', mode=None)
+    run(core, 'transport.stop')
+
+    run(core, 'pattern.select', pattern='F')  # in a chain: it stays
+    assert run(core, 'ai.pattern_try', mode='try')['pattern'] == 'F'
+    assert core.poll()['transport']['playing_pattern'] == 5
+    run(core, 'ai.pattern_try', mode=None)
+
+    run(core, 'transport.play', pattern='B')  # playing: the chain is queued to the end of the bar
+    run(core, 'ai.pattern_try', mode='try')
+    transport = core.poll()['transport']
+    assert transport['playing_pattern'] == 1 and transport['queued_pattern'] == 4
 
 
 def test_revert_puts_the_preset_patterns_back_after_trying_the_bank(make_core):

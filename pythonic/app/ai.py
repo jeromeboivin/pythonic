@@ -42,8 +42,10 @@ for the drum patches on the face (tried candidates included); a bank model
 also sets each pattern's length and the chains (``ai.bank_chains``), which
 the ``try`` preview plays and ``ai.replace_patterns`` keeps. ``ai.pattern_try``
 previews: ``try`` puts the whole bank on the face, as trying a candidate
-does for a sound: the transport starts if it was stopped, any pattern picked
-plays its AI version, stopping and starting the transport keeps it, and
+does for a sound: the transport starts if it was stopped (on the first
+chain when the playing pattern is in none: queued to the end of the bar
+when playing), any pattern picked plays its AI version, stopping and
+starting the transport keeps it, and
 ``ai.pattern_try(mode=None)`` puts the preset's patterns back without
 stopping. ``loop`` plays the AI version of the playing pattern (the selected
 one when stopped), ``bank`` plays all 12 chained from A; without a bank (or
@@ -67,7 +69,10 @@ Addresses (read-only unless noted):
 - ``ai.models``: ``{'patch': {...}, 'pattern': {...}}``, each ``{'path'
   (the checkpoint used: pref.ai.<kind>_model, else the bundled one, else
   None), 'bundled' (a bundled checkpoint exists), 'status' ('missing',
-  'unloaded', 'loading', 'loaded', 'error'), 'error', 'sampling'}``.
+  'unloaded', 'loading', 'loaded', 'error'), 'error', 'sampling'}``. A
+  preference naming a formerly bundled checkpoint (the single-pattern
+  ``pattern_cvae_best.pt``) is cleared when the core starts, so the current
+  bundled model is used.
 - ``ai.ch<N>.type`` (settable enum of the 18 drum types): the lane's drum
   type; until set, the channel's drum type, else the slot default (BD, SD,
   CH, OH, TOM, TOM, CLAP, CY).
@@ -135,6 +140,11 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 BUNDLED_MODELS = {
     'patch': os.path.join(_ROOT, 'drum_cvae_best.pt'),
     'pattern': os.path.join(_ROOT, 'drum_patterns', 'pattern_bank_best.pt'),
+}
+# Checkpoints bundled before: a preference naming one was the default of its
+# day (the old load... saved it), so the current bundled model replaces it
+FORMER_BUNDLED_MODELS = {
+    'pattern': os.path.join(_ROOT, 'drum_patterns', 'pattern_cvae_best.pt'),
 }
 WORKER_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ai_worker.py')
 NO_EXTRAS = ('the ML extras are not installed (torch): install them with '
@@ -343,6 +353,7 @@ class Ai:
         reg(Address('ai.bank_chains', get=lambda: chain_runs(self._bank), kind='str'))
         reg(Address('ai.preview', get=lambda: self._preview_mode, kind='enum',
                     labels=('off', 'try', 'loop', 'bank')))
+        self._forget_former_models()
         for i in range(NUM_CHANNELS):
             prefix = f'ai.ch{i + 1}'
             lane = self._lanes[i]
@@ -399,6 +410,14 @@ class Ai:
         if self._bank_token is not None:
             return 'generating'
         return 'ready' if self._bank is not None else 'none'
+
+    def _forget_former_models(self):
+        """A model preference naming a formerly bundled checkpoint is cleared:
+        the current bundled model is used. Other chosen files are kept."""
+        for kind, former in FORMER_BUNDLED_MODELS.items():
+            saved = self._core.get(f'pref.ai.{kind}_model')
+            if saved and _same_path(saved, former):
+                self._core.set(f'pref.ai.{kind}_model', None)
 
     def model_path(self, kind):
         """The checkpoint a kind uses: the preference if the file exists,
@@ -910,8 +929,10 @@ class Ai:
             base = self._preset_patterns()
             index = pm.playing_pattern_index if pm.is_playing else pm.selected_pattern_index
             new = None
+            start = index
             if mode == 'try':
                 new = self._apply_bank(base, self._bank)
+                start = _chain_start(new, index)
             elif mode == 'loop' and use_bank:
                 new = list(base)
                 temp = PatternManager(num_channels=NUM_CHANNELS)
@@ -935,12 +956,19 @@ class Ai:
                 if mode == 'bank':
                     pm.select_pattern(0)
                     patterns._apply_play(0)
+                elif start != index:
+                    # The playing pattern is in no chain: the chains are heard
+                    # from the first one (queued to the end of the bar)
+                    patterns._apply_select(start)
+                    if not pm.is_playing:
+                        patterns._apply_play(start)
                 elif not pm.is_playing:
                     patterns._apply_play(index)
             core.at_block_start(apply)
             self._note_patterns()
+            self._core.note_changes(['pattern.selected'])
             gc.freeze()
-            return {'preview': mode, 'pattern': 'A' if mode == 'bank' else PATTERN_NAMES[index],
+            return {'preview': mode, 'pattern': 'A' if mode == 'bank' else PATTERN_NAMES[start],
                     'bank': use_bank or mode == 'try'}
 
     def _verb_replace_patterns(self, channels=None):
@@ -1046,6 +1074,12 @@ class Ai:
         return core.DEFERRED
 
 
+def _same_path(a, b):
+    def norm(path):
+        return os.path.normcase(os.path.realpath(os.path.expanduser(str(path))))
+    return norm(a) == norm(b)
+
+
 def _pattern_dict(pattern):
     """A pattern as the pattern models read it (steps past 16 dropped)."""
     data = {'Length': int(pattern.length), 'Chained': bool(pattern.chained_to_next)}
@@ -1055,6 +1089,19 @@ def _pattern_dict(pattern):
                              for name, attr in (('Triggers', 'trigger'), ('Accents', 'accent'),
                                                 ('Fills', 'fill'))}
     return data
+
+
+def _chain_start(patterns, index):
+    """Where a tried bank starts playing: the playing (or selected) pattern
+    when it is in a chain or the bank has none, else the first chain's
+    first pattern."""
+    here = patterns[index]
+    if here.chained_to_next or here.chained_from_prev:
+        return index
+    for i, pattern in enumerate(patterns[:-1]):
+        if pattern.chained_to_next:
+            return i
+    return index
 
 
 def chain_runs(bank):

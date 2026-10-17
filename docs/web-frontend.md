@@ -534,7 +534,8 @@ play on the face; old | new compares; keep or revert settles.
   italics with a dashed outline).
 - **right**: the pattern temperature knob (`pref.ai.pattern_temperature`),
   **generate patterns** (`ai.generate_patterns`, then `ai.pattern_try`
-  `try`: the 12 new patterns go on the face and the transport starts; any
+  `try`: the 12 new patterns go on the face and the transport starts, on
+  the first chain when the playing pattern is in none; any
   pattern picked plays its new version, stop and start keep them), old | new
   (`ai.pattern_try` None / `try`), a note (`ai.bank`, `ai.preview`; it names the chains, `ai.bank_chains`), keep
   (`ai.replace_patterns` while the new patterns play, else `ai.keep`: what
