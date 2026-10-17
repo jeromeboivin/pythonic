@@ -401,6 +401,28 @@ def test_a_drum_patch_round_trips_into_another_channel(make_core, tmp_path):
     assert sounds(core)[4] == old5
 
 
+def test_loading_a_drum_patch_unmutes_its_channel(make_core, tmp_path):
+    core = make_core()
+    path = tmp_path / 'snare'
+    run(core, 'drum_patch.save', path=str(path), channel=2)
+    core.set('ch5.mute', True)
+    core.set('ch6.mute', True)
+    version = core.poll()['version']
+
+    run(core, 'drum_patch.load', path=str(path) + '.mtdrum', channel=5)
+    assert core.get('ch5.mute') is False
+    assert core.get('ch6.mute') is True  # only the channel loaded
+    assert core.poll(version)['changes']['ch5.mute'] is False
+
+    core.set('ch6.mute', True)
+    run(core, 'drum_patch.load', factory='909 BD', channel=6)
+    assert core.get('ch6.mute') is False
+
+    # the sound comes back on undo, the mute stays off (mutes are not undone)
+    run(core, 'undo')
+    assert core.get('ch6.mute') is False
+
+
 # ---------------------------------------------------------------------------
 # clipboard, initialize, randomize all
 # ---------------------------------------------------------------------------

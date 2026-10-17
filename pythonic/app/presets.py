@@ -46,8 +46,9 @@ Verbs (results and errors arrive through ``poll`` as action events):
 - ``drum_patch.load`` (path=None, channel=None, factory=None): load a .mtdrum
   drum patch, or a factory drum patch by name (``factory='808 BD'``: the
   whole channel sound of that kit), into a channel (1..8, default the
-  selected one); one undo step. Result ``{'channel', 'name', 'path'}`` (path
-  None for a factory drum patch).
+  selected one); one undo step. The channel is unmuted, so the new sound is
+  heard (the mute is not undone). Result ``{'channel', 'name', 'path'}``
+  (path None for a factory drum patch).
 - ``drum_patch.save`` (path, channel=None, overwrite=False): save a channel's
   drum patch (``.mtdrum`` added when the path has no extension); overwrite
   works as for ``preset.save``.
@@ -451,20 +452,24 @@ class Presets:
         if name is not None:
             patch['Name'] = name
         data = convert_drum_patch_data(patch)
-        core = self._core
-        core.undo.snapshot_op(
-            (CHANNELS,), 'load drum patch',
-            lambda: apply_drum_patch_to_channel(core.synth.channels[index], data), merge=merge)
-        core.note_changes(channel_addresses(index + 1))
+        self._load_into(index, lambda channel: apply_drum_patch_to_channel(channel, data), merge)
         return {'channel': index + 1, 'name': data['name'], 'path': path}
 
     def _load_factory_patch(self, index, name, merge=None):
         sound = self._sound(_factory_patch(name))
-        core = self._core
-        core.undo.snapshot_op((CHANNELS,), 'load drum patch',
-                              lambda: core.synth.channels[index].set_parameters(sound), merge=merge)
-        core.note_changes(channel_addresses(index + 1))
+        self._load_into(index, lambda channel: channel.set_parameters(sound), merge)
         return {'channel': index + 1, 'name': sound['name'], 'path': None}
+
+    def _load_into(self, index, apply, merge):
+        """Apply a drum patch to a channel as one undo step and unmute the
+        channel, so the sound loaded is heard."""
+        core = self._core
+
+        def load():
+            apply(core.synth.channels[index])
+            core.synth.mute_channel(index, False)
+        core.undo.snapshot_op((CHANNELS,), 'load drum patch', load, merge=merge)
+        core.note_changes(channel_addresses(index + 1) + [f'ch{index + 1}.mute'])
 
     def _verb_save_patch(self, path, channel=None, overwrite=False):
         index = self.channel_index(channel)
