@@ -20,7 +20,7 @@ from .lfo import LFO, PumpSource, ModTarget, LFORetrigger
 from .vintage import VintageProcessor
 from .reverb import FastStereoReverb
 from .delay import FastStereoDelay, DelayTime
-from .voice import DrumVoice, METAL_DEFAULTS, METAL_PARAMS, VoiceParams
+from .voice import DrumVoice, METAL_DEFAULTS, METAL_PARAMS, MOD_HOLD_MAX_MS, VoiceParams
 
 
 class DrumChannel:
@@ -84,6 +84,9 @@ class DrumChannel:
 
         # Pitch offset in semitones (scales oscillator, noise filter, EQ and metal)
         self.pitch_semitones = 0.0
+
+        # Decay pitch modulation: ms the start pitch holds before it decays
+        self.pitch_mod_hold = 0.0
 
         # Metal section (off while both band levels are 0)
         self.metal = dict(METAL_DEFAULTS)
@@ -189,6 +192,7 @@ class DrumChannel:
             mod_mode=osc.pitch_mod_mode.value,
             mod_rate=float(mod_rate),
             mod_amount=float(mod_amt),
+            mod_hold_ms=float(self.pitch_mod_hold),
             noise_filter=noise.filter_mode.value,
             noise_freq=float(noise_freq),
             noise_q=float(noise_q),
@@ -349,6 +353,10 @@ class DrumChannel:
         """Pitch modulation rate: ms in Decay mode, Hz in Sine / Noise mode."""
         self.oscillator.set_pitch_mod_rate(rate)
 
+    def set_pitch_mod_hold(self, hold_ms: float):
+        """Decay mode: how long (ms) the start pitch holds before it decays."""
+        self.pitch_mod_hold = float(np.clip(hold_ms, 0.0, MOD_HOLD_MAX_MS))
+
     def set_osc_attack(self, attack_ms: float):
         self._osc_attack_base_ms = float(np.clip(attack_ms, 0.0, 10000.0))
         self.osc_envelope.set_attack(self._osc_attack_base_ms)
@@ -421,6 +429,7 @@ class DrumChannel:
             'pitch_mod_mode': self.oscillator.pitch_mod_mode.value,
             'pitch_mod_amount': self.oscillator.pitch_mod_amount,
             'pitch_mod_rate': self.oscillator.pitch_mod_rate,
+            'pitch_mod_hold': self.pitch_mod_hold,
             'osc_attack': self._osc_attack_base_ms,
             'osc_decay': self.osc_envelope.decay_ms,
             'noise_filter_mode': self.noise_gen.filter_mode.value,
@@ -515,6 +524,8 @@ class DrumChannel:
             self.set_pitch_mod_amount(params['pitch_mod_amount'])
         if 'pitch_mod_rate' in params:
             self.set_pitch_mod_rate(params['pitch_mod_rate'])
+        if 'pitch_mod_hold' in params:
+            self.set_pitch_mod_hold(params['pitch_mod_hold'])
         if 'osc_attack' in params:
             self.set_osc_attack(params['osc_attack'])
         if 'osc_decay' in params:

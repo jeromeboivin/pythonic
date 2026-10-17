@@ -24,7 +24,7 @@ from .voice import METAL_DEFAULTS
 
 # Parameters that can be linearly interpolated
 INTERPOLATABLE_PARAMS = {
-    'osc_frequency', 'pitch_mod_amount', 'pitch_mod_rate',
+    'osc_frequency', 'pitch_mod_amount', 'pitch_mod_rate', 'pitch_mod_hold',
     'osc_attack', 'osc_decay',
     'noise_filter_freq', 'noise_filter_q',
     'noise_attack', 'noise_decay',

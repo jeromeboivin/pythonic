@@ -21,7 +21,7 @@ from pythonic.delay import DelayTime
 from pythonic.lfo import LFOPolarity, LFORetrigger, LFOWaveform, ModTarget, SyncDivision
 from pythonic.noise import NoiseEnvelopeMode, NoiseFilterMode
 from pythonic.oscillator import PitchModMode, WaveformType
-from pythonic.voice import METAL_PARAMS
+from pythonic.voice import METAL_PARAMS, MOD_HOLD_MAX_MS
 
 
 @dataclass(frozen=True)
@@ -155,6 +155,9 @@ SOUND_PARAMS = tuple([
     # ms in decaying mode, Hz in sine and random mode
     _number('osc.mod_rate', 'pitch_mod_rate', lambda ch: ch.oscillator.pitch_mod_rate,
             lambda ch, v: ch.set_pitch_mod_rate(v), 1.0, 2000.0, '', 'log'),
+    # decaying mode: the start pitch holds this long before it decays
+    _number('osc.mod_hold', 'pitch_mod_hold', lambda ch: ch.pitch_mod_hold,
+            lambda ch, v: ch.set_pitch_mod_hold(v), 0.0, MOD_HOLD_MAX_MS, 'ms'),
     _number('osc.attack', 'osc_attack', lambda ch: ch._osc_attack_base_ms,
             lambda ch, v: ch.set_osc_attack(v), 0.0, 10000.0, 'ms', 'log'),
     _number('osc.decay', 'osc_decay', lambda ch: ch.osc_envelope.decay_ms,

@@ -55,7 +55,8 @@ P_M_LVL = 63            # 2 band levels
 P_M_LSTEP = 65          # 2 per-sample steps of the linear band envelopes
 P_M_CURVE = 67          # 0 exponential .. 1 linear band envelopes
 P_M_DRIVE = 68          # band saturation gain (0 = linear)
-NUM_P = 69
+P_MOD_HOLD = 69         # blocks the decay pitch modulation holds before it decays
+NUM_P = 70
 
 # ---------------------------------------------------------------- int parameters
 IP_WAVE = 0
@@ -97,7 +98,8 @@ S_M_Z1 = 44             # band 1 filter state, 2 values
 S_M_Z2 = 46             # band 2 filter state, 2 values
 S_M_ZH = 48             # high-pass state, 2 values
 S_M_LIN = 50            # 2 linear band envelopes (S_M_ENV holds the exponential ones)
-NUM_S = 52
+S_PHOLD = 52            # blocks of pitch-modulation hold left at the segment start
+NUM_S = 53
 
 # ---------------------------------------------------------------- int state
 I_PMODE4 = 0
@@ -120,7 +122,7 @@ SINE_AMP = 0.8164966
 TRI_HF_AMP = 0.8
 SAW_HF_AMP = 0.58
 DEC_A = 0.07314892858
-METAL_DUTY = 0.48       # duty cycle of the metal square waves
+METAL_DUTY = 0.49       # duty cycle of the metal square waves (measured on a TR-606: 0.487-0.495)
 METAL_END = 1e-5        # a band envelope this low has ended
 METAL_BIAS = 0.35       # asymmetry of the band saturation: even products, difference tones
 METAL_SCALE = 3.0       # band-pass output that reaches the saturation's knee at drive 0
@@ -267,6 +269,7 @@ def reset_osc(p, ip, fs, ist, mod_rng):
     fs[S_DEC_Y] = 0.0
     fs[S_LFO] = 0.0
     fs[S_PENV] = 1.0
+    fs[S_PHOLD] = p[P_MOD_HOLD]
     ist[I_PMODE4] = 0
     r = mod_rng.uniform(-1.0, 1.0)
     fs[S_NLP] = r
@@ -426,7 +429,8 @@ def _increments(p, ip, fs, ist, mod_rng, j, blk, w):
     b0 = p[P_MOD_B0]
     if mode == MOD_DECAY:
         dc = p[P_MOD_DC]
-        env = fs[S_PENV] * dc ** (8.0 * j)
+        k = j - fs[S_PHOLD]     # blocks into the decay, after the hold
+        env = fs[S_PENV] * dc ** (8.0 * k) if k > 0.0 else fs[S_PENV]
         free = min(inc0 * pow2_dec(A * env), max_inc)
         # 64-sample (16-block) housekeeping: mode-4 latch and env cut-off
         if blk % 16 == 0:
@@ -489,10 +493,12 @@ def _segment_end(p, ip, fs, ist, nseg):
     mode = ip[IP_MOD_MODE]
     if mode == MOD_DECAY:
         ist[I_PMODE4] = ist[I_LATCH]
+        k = nseg - fs[S_PHOLD]
+        fs[S_PHOLD] = max(-k, 0.0)
         if ist[I_SEGCUT]:
             fs[S_PENV] = 0.0
-        else:
-            fs[S_PENV] = fs[S_PENV] * p[P_MOD_DC] ** (8.0 * nseg)
+        elif k > 0.0:
+            fs[S_PENV] = fs[S_PENV] * p[P_MOD_DC] ** (8.0 * k)
     elif mode == MOD_SINE and 1 <= ist[I_SMODE] <= 3:
         fs[S_LFO] = (fs[S_LFO] + nseg * 8 * p[P_MOD_B0]) % 1.0
 

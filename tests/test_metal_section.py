@@ -59,7 +59,7 @@ def test_the_section_adds_the_odd_harmonics_of_its_squares():
     one = {f'metal_freq{i}': 0.0 for i in range(2, 7)}  # 0 Hz silences an oscillator
     hz, spec = spectrum(render(metal(metal_freq1=500.0, **one), n=SR // 2))
     level = lambda f: spec[np.argmin(np.abs(hz - f))]
-    # a near-square (48 % duty): the low even harmonics are weak
+    # a near-square (49 % duty): the low even harmonics are weak
     assert level(1500.0) > 3.0 * level(1000.0) and level(1500.0) > 3.0 * level(2000.0)
     assert level(2500.0) > 2.5 * level(2000.0) and level(2500.0) > 2.5 * level(3000.0)
 

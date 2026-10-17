@@ -73,7 +73,7 @@ test('target names and the target menu groups', () => {
   const targets = groups.flatMap(([, xs]) => xs.map(([t]) => t));
   assert.equal(new Set(targets).size, targets.length);
   // every sound parameter but the three → destination buttons, plus six globals
-  assert.equal(targets.filter((t) => t.startsWith('selected.')).length, 78 - 3);
+  assert.equal(targets.filter((t) => t.startsWith('selected.')).length, 79 - 3);
   assert.ok(targets.includes('selected.lfo1.phase') && targets.includes('global.master'));
   assert.ok(!targets.includes('selected.lfo1.target'));
 });

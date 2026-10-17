@@ -135,6 +135,7 @@ export function targetGroups() {
 
 const SECTION_OF = {
   'osc.wave': 'osc', 'osc.mod_mode': 'osc', 'osc.freq': 'osc', 'osc.mod_amount': 'osc', 'osc.mod_rate': 'osc',
+  'osc.mod_hold': 'osc',
   'noise.filter': 'noise', 'noise.stereo': 'noise', 'noise.freq': 'noise', 'noise.q': 'noise',
   'noise.env': 'env', 'osc.attack': 'env', 'noise.attack': 'env', 'noise.decay': 'env',
 };

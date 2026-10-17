@@ -43,7 +43,7 @@ def test_the_rack_shows_the_selected_channel_and_follows_a_switch(panel):
     assert text(panel, '.rack .rch') == 'CH 3'
     assert text(panel, '.rack .rname') == core.values['ch3.name']
     bound = panel.js("[...document.querySelectorAll('.rack [data-suffix]')].map((e) => e.dataset.address)")
-    assert all(a.startswith('ch3.') for a in bound) and len(bound) == 75
+    assert all(a.startswith('ch3.') for a in bound) and len(bound) == 76
     for face_only in ('osc.pitch', 'osc.decay', 'mix.level'):  # on the strips only
         assert f'ch3.{face_only}' not in bound
     assert panel.js(f"document.querySelector({rack('noise.freq')!r}).getAttribute('name')") == 'ch3 noise freq'

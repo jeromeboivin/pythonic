@@ -55,7 +55,7 @@ function lfoRow(src, title) {
 export const RACK_SECTIONS = [
   { key: 'osc', title: 'oscillator', rows: [
     [sw('osc.wave', 'wave', 'osc wave', 'sin,tri,saw')],
-    [sw('osc.mod_mode', 'pitch mod', 'pitch mod', 'dec,sine,rand')],
+    [sw('osc.mod_mode', 'pitch mod', 'pitch mod', 'dec,sine,rand'), knob('osc.mod_hold', 'hold', 'pitch hold')],
     [knob('osc.freq', 'freq', 'osc freq'), knob('osc.mod_amount', 'amount', 'pitch amount'),
       knob('osc.mod_rate', 'rate', 'pitch rate')],
   ] },

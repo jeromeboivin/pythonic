@@ -48,6 +48,7 @@ def convert_drum_patch_data(patch: Dict) -> Dict:
         'pitch_mod_rate': (patch.get('ModRate', 100.0) / 1000.0
                            if patch.get('ModMode', 'Decay') == 'Decay'
                            else patch.get('ModRate', 100.0)),
+        'pitch_mod_hold': patch.get('ModHold', 0.0),
         'noise_filter_mode': FILTER_MODE_MAP.get(patch.get('NFilMod', 'LP'), 0),
         'noise_filter_freq': patch.get('NFilFrq', 20000.0),
         'noise_filter_q': patch.get('NFilQ', 0.707),
@@ -131,6 +132,7 @@ def apply_drum_patch_to_channel(channel, data: Dict):
     if pitch_mod_int == 0:
         rate = rate * 1000.0
     channel.set_pitch_mod_rate(rate)
+    channel.set_pitch_mod_hold(data.get('pitch_mod_hold', 0.0))
 
     channel.set_noise_filter_mode(NoiseFilterMode(data.get('noise_filter_mode', 0)))
     channel.set_noise_filter_freq(data.get('noise_filter_freq', 20000.0))
@@ -504,6 +506,7 @@ class PythonicPresetParser:
             'pitch_mod_mode': self.PITCH_MOD_MAP.get(patch.get('ModMode', 'Decay'), 0),
             'pitch_mod_amount': self._to_float(patch.get('ModAmt', 0.0)),
             'pitch_mod_rate': self._to_float(patch.get('ModRate', 100.0)),
+            'pitch_mod_hold': self._to_float(patch.get('ModHold', 0.0)),
             'noise_filter_mode': self.FILTER_MODE_MAP.get(patch.get('NFilMod', 'LP'), 0),
             'noise_filter_freq': self._to_float(patch.get('NFilFrq', 20000.0)),
             'noise_filter_q': self._to_float(patch.get('NFilQ', 0.707)),
@@ -571,6 +574,7 @@ class PythonicPresetParser:
             'pitch_mod_mode': 0,
             'pitch_mod_amount': 0.0,
             'pitch_mod_rate': 100.0,
+            'pitch_mod_hold': 0.0,
             'noise_filter_mode': 0,
             'noise_filter_freq': 20000.0,
             'noise_filter_q': 0.707,
@@ -832,7 +836,7 @@ class DrumPatchWriter:
     UNITS = {
         'OscFreq': ' Hz', 'OscAtk': ' ms', 'OscDcy': ' ms', 'ModAmt': ' sm',
         'NFilFrq': ' Hz', 'NEnvAtk': ' ms', 'NEnvDcy': ' ms', 'EQFreq': ' Hz',
-        'EQGain': ' dB', 'Level': ' dB', 'OscVel': '%', 'NVel': '%', 'ModVel': '%',
+        'EQGain': ' dB', 'Level': ' dB', 'OscVel': '%', 'NVel': '%', 'ModVel': '%', 'ModHold': ' ms',
         **{spec[1]: spec[2] for spec in METAL_PARAMS.values()},
     }
 
@@ -850,6 +854,8 @@ class DrumPatchWriter:
             'ModMode': ['Decay', 'Sine', 'Noise'][osc.pitch_mod_mode.value],
             'ModRate': osc.pitch_mod_rate,  # ms (Decay) or Hz, as displayed
             'ModAmt': osc.pitch_mod_amount,
+            # the pitch hold only when it is used, so other patches stay plain V3 files
+            **({'ModHold': channel.pitch_mod_hold} if channel.pitch_mod_hold > 0.0 else {}),
             'NFilMod': ['LP', 'BP', 'HP'][noise.filter_mode.value],
             'NFilFrq': noise.filter_frequency,
             'NFilQ': noise.filter_q,

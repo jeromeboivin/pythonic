@@ -6,7 +6,8 @@ per-sample render loop is compiled with numba (voice_kernel.py).
 
 Signal flow (per channel):
 
-    oscillator (2x oversampled, band-limited shapes, pitch modulation)
+    oscillator (2x oversampled, band-limited shapes, pitch modulation; the decay
+      mode can hold its start pitch before it decays)
       -> polyphase decimator -> amplitude envelope
     noise (uniform white -> state-variable filter, power-normalised)
       -> noise envelope (exponential / linear / clap "mod")
@@ -51,6 +52,8 @@ NENV_EXP, NENV_LINEAR, NENV_MOD = K.NENV_EXP, K.NENV_LINEAR, K.NENV_MOD
 # (205.3 ... 800 Hz). Levels and velocity are ratios (percent in files); the
 # section is off while both band levels are 0, and a patch that leaves it off
 # has none of these keys.
+MOD_HOLD_MAX_MS = 100.0  # longest hold of the decay pitch modulation
+
 METAL_PARAMS = {
     'metal_freq1': (205.3, 'MetalFreq1', ' Hz', 20.0, 2000.0),
     'metal_freq2': (304.4, 'MetalFreq2', ' Hz', 20.0, 2000.0),
@@ -207,6 +210,7 @@ class VoiceParams:
     mod_mode: int = MOD_DECAY
     mod_rate: float = 353.33            # ms (decay) or Hz (sine / noise)
     mod_amount: float = 0.0             # semitones
+    mod_hold_ms: float = 0.0            # decay mode: the start pitch holds this long, then decays
     noise_filter: int = FILT_LP
     noise_freq: float = 20000.0         # Hz
     noise_q: float = 0.70710683
@@ -275,7 +279,11 @@ class _Derived:
         self.mod_b4 = 0.0
         self.mod_lpc = 0.0
         self.mod_hold8 = False
+        self.mod_hold = 0.0     # 4-sample blocks
         if self.mod_mode == MOD_DECAY:
+            hold = float(p.mod_hold_ms)
+            if math.isfinite(hold) and hold > 0.0:
+                self.mod_hold = min(hold, MOD_HOLD_MAX_MS) / 1000.0 * sr / 4.0
             T = float(p.mod_rate) / 1000.0
             if math.isfinite(T) and T > 0.0:
                 self.mod_dc = 1000.0 ** (-1.0 / max(T * sr * 2.0, 1.0))
@@ -390,6 +398,7 @@ def _pack(d: _Derived):
     p[K.P_MOD_B0] = d.mod_b0
     p[K.P_MOD_B4] = d.mod_b4
     p[K.P_MOD_LPC] = d.mod_lpc
+    p[K.P_MOD_HOLD] = d.mod_hold
     p[K.P_NF_B:K.P_NF_B + 3] = d.nf_b
     p[K.P_NF_A:K.P_NF_A + 3] = d.nf_a
     p[K.P_NOISE_GAIN] = d.noise_gain
@@ -640,6 +649,7 @@ def params_from_patch(patch: dict, pitch_ratio: float = 1.0, mono: bool = False)
         mod_mode={'Decay': 0, 'Sine': 1, 'Noise': 2}.get(s('ModMode', 'Decay'), 0),
         mod_rate=_num(g('ModRate', 353.33)),
         mod_amount=_num(g('ModAmt', 0.0)),
+        mod_hold_ms=_num(g('ModHold', 0.0)),
         noise_filter={'LP': 0, 'BP': 1, 'HP': 2}.get(s('NFilMod', 'LP'), 0),
         noise_freq=_num(g('NFilFrq', 20000.0)),
         noise_q=_num(g('NFilQ', 0.70710683)),
