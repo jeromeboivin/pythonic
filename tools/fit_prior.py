@@ -36,7 +36,7 @@ SECONDS = 1.0
 FRAMES = int(SECONDS * F.SR) // HOP + 1
 WIN = np.hanning(N_FFT).astype(np.float32)
 BANK = F.mel_bank(N_FFT, N_MELS)
-N_CONT = len(F.CONTINUOUS)
+N_CONT = len(F.CONTINUOUS)   # a model trained on fewer predicts the first ones (decode leaves the rest)
 N_SW = len(F.SWITCHES)
 
 
@@ -87,7 +87,7 @@ def build(library: pathlib.Path, n: int, jobs: int, seed: int, path: pathlib.Pat
     print(f'{len(feats)} renders cached in {path}')
 
 
-def model():
+def model(n_cont: int = N_CONT):
     import torch.nn as nn
 
     def block(a, b):
@@ -99,7 +99,7 @@ def model():
             self.body = nn.Sequential(*block(1, 16), *block(16, 32), *block(32, 64), *block(64, 64),
                                       nn.AdaptiveAvgPool2d((2, 4)), nn.Flatten(),
                                       nn.Linear(64 * 8, 256), nn.ReLU(), nn.Dropout(0.2))
-            self.cont = nn.Linear(256, N_CONT)
+            self.cont = nn.Linear(256, n_cont)
             self.sw = nn.Linear(256, N_SW * F.SWITCH_CHOICES)
 
         def forward(self, x):
@@ -158,7 +158,7 @@ def load(path: str):
     ckpt = torch.load(path, map_location='cpu')
     if ckpt['features'] != [N_FFT, HOP, N_MELS, SECONDS]:
         raise ValueError(f'{path} was trained on other features: retrain it')
-    net = model()
+    net = model(int(ckpt['state']['cont.weight'].shape[0]))
     net.load_state_dict(ckpt['state'])
     return net.eval()
 

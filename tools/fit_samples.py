@@ -43,10 +43,21 @@ at --peak-db. It sums:
   by the share of the sample's energy above 2 kHz;
 - the dB difference of the octave bands from 125 Hz to 16 kHz frame by frame
   (x0.5), every octave counting the same however quiet, so the body under a
-  loud band (the lows of a cymbal under its sizzle) is matched too;
+  loud band (the lows of a cymbal under its sizzle) is matched too. Levels
+  stop at the sample's noise floor (its quietest level in each octave, and
+  at most 60 dB under its loudest band), so the hiss of the recording under
+  a quiet tail is not copied;
 - for a metal sample, the dB difference of each of its partials, summed over
   the sound (x0.4): the render has them at the same frequencies, and their
-  levels carry the shape of the sample's filters.
+  levels carry the shape of the sample's filters;
+- the dB difference of the RMS level re the peak over windows of the first
+  200 ms, finer at the strike (x1). The spectra ignore the waveform: a spiky
+  render scores as well as a dense one, then plays quieter once its level is
+  set by the peak, and a kick loses its punch;
+- for a pitched drum, the semitones between the pitches of the half cycles
+  over the first 50 ms, the first ones counting most (x1): the fine spectra
+  are too long to hear where a sweep starts, and a strike that starts too
+  high makes the drum sound small.
 
 Samples are mixed to mono and trimmed to their onset. The output folder gets
 one <sample name>.mtdrum per sample, in the same subfolder as the sample in
@@ -127,6 +138,8 @@ CONTINUOUS = [
     ('distortion', 0.0, 1.0, 'linear'),
     ('eq_freq', 20.0, 20000.0, 'log'),
     ('eq_gain_db', -40.0, 40.0, 'linear'),
+    # last, so the vectors of a prior model trained without it stay aligned
+    ('mod_hold_ms', 0.0, 40.0, 'linear'),
 ]
 # The metal section's controls, appended to the vector of a metal sample (its
 # oscillator frequencies come from the analysis and stay fixed)
@@ -287,7 +300,17 @@ PITCH_WEIGHT = 12.0    # score per octave of pitch distance below 2 kHz
 HIGH_WEIGHT = 0.25     # score per dB of summed high spectrum difference above 2 kHz
 BALANCE_WEIGHT = 0.5   # score per dB of octave band balance difference
 BALANCE_RANGE = 60.0   # dB under a frame's loudest octave that its balance reaches
+NOISE_MARGIN = 3.0     # dB over a sample's quietest level in an octave that counts as its noise floor
+NOISE_RANGE = 60.0     # dB under the sample's loudest octave band where its noise floor starts at most
 PARTIAL_WEIGHT = 0.4   # score per dB of partial level difference (metal samples)
+PUNCH_WEIGHT = 1.0     # score per dB of loudness difference re the peak over the first 200 ms
+# Windows of the punch term (ms after the onset): finer at the strike, where it is heard
+PUNCH_WINDOWS = ((0, 3), (3, 10), (10, 25), (25, 50), (50, 100), (100, 200))
+STRIKE_WEIGHT = 1.0    # score per semitone of strike pitch difference
+STRIKE_GRID = np.arange(1.0, 50.0)   # ms after the onset where the strike pitch is compared
+STRIKE_LP = scipy.signal.butter(4, 1500.0, 'low', fs=SR, output='sos')
+STRIKE_JITTER = 0.1    # octaves: a sample whose half cycles stray more from their neighbours
+                       # (noise, claps, hats) has no strike pitch
 
 
 def _octave_groups() -> np.ndarray:
@@ -332,6 +355,52 @@ def tonality(summed: np.ndarray) -> float:
     return float(high[peaks].sum() / max(high.sum(), 1e-30))
 
 
+def density(x: np.ndarray) -> np.ndarray:
+    """RMS level in dB re the peak of x over each of PUNCH_WINDOWS; NaN for a window past
+    the end of x. Two sounds of the same spectrum can differ here: the punch of a kick is a
+    body as loud as its strike, which a level set by the peak makes heard."""
+    x = x / max(float(np.abs(x).max()), 1e-30)
+    out = np.full(len(PUNCH_WINDOWS), np.nan)
+    for i, (a, b) in enumerate(PUNCH_WINDOWS):
+        a, b = int(a * SR / 1000), int(b * SR / 1000)
+        if b <= len(x):
+            out[i] = 10.0 * np.log10(np.mean(x[a:b] ** 2) + 1e-12)
+    return out
+
+
+def _half_cycles(x: np.ndarray) -> tuple:
+    """(centre times in ms, pitches in log2 Hz) of the half cycles of the low-passed sound
+    over its first 60 ms."""
+    s = scipy.signal.sosfilt(STRIKE_LP, x[:int(0.06 * SR)])
+    peak = float(np.abs(s).max()) if len(s) else 0.0
+    if peak <= 0.0:
+        return np.zeros(0), np.zeros(0)
+    on = int(np.argmax(np.abs(s) > 0.05 * peak))
+    z = on + np.where(np.diff(np.signbit(s[on:])))[0]
+    z = z[np.r_[True, np.diff(z) > 8]] if len(z) else z
+    if len(z) < 2:
+        return np.zeros(0), np.zeros(0)
+    return (z[1:] + z[:-1]) / 2.0 / SR * 1000.0, np.log2(SR / (2.0 * np.diff(z)))
+
+
+def strike_track(x: np.ndarray):
+    """Pitch (log2 Hz) of the half cycles of the low-passed sound on STRIKE_GRID (NaN where
+    it has none; single strays smoothed out), or None with fewer than 3 half cycles. The
+    fine spectra are 186 ms long: they hear where a pitch sweep ends, not where it starts."""
+    t, f = _half_cycles(x)
+    if len(f) < 3:
+        return None
+    return np.interp(STRIKE_GRID, t, scipy.ndimage.median_filter(f, 3, mode='nearest'),
+                     left=np.nan, right=np.nan)
+
+
+def strike_jitter(x: np.ndarray) -> float:
+    """Median distance (octaves) of each half cycle's pitch from its neighbours' mean: small
+    for a held or swept pitch, large for noise."""
+    f = _half_cycles(x)[1]
+    return float(np.median(np.abs(f[1:-1] - (f[:-2] + f[2:]) / 2.0))) if len(f) >= 6 else math.inf
+
+
 def _cdf(p: np.ndarray) -> np.ndarray:
     """Per-frame cumulative distribution of a (frames, bins) power spectrum."""
     c = np.cumsum(p, axis=1)
@@ -371,6 +440,21 @@ class Target:
         self.high_ref = self.high_log.max() - FLOOR_DB
         self.tonality = tonality(summed)
         self.octaves, self.octave_floor = self._octave_db(self.specs[0])
+        # The noise floor of the recording in each octave: its quietest level over the frames
+        # inside the sample (the windows of the first two and of the last ones reach into
+        # the padding), and no lower than NOISE_RANGE under its loudest band. The balance
+        # does not go under it, so the hiss of a quiet tail is not copied into the patch
+        n_fft, hop = RESOLUTIONS[0][0], RESOLUTIONS[0][1]
+        inside = self.octaves[2:max((len(x) - n_fft // 2) // hop + 1, 3)]
+        self.octave_noise = np.maximum((inside if len(inside) else self.octaves).min(axis=0) + NOISE_MARGIN,
+                                       self.octaves.max() - NOISE_RANGE)
+        self.balance = self._balance(self.octaves)
+        self.density = density(x)
+        self.punch_windows = np.isfinite(self.density)
+        # The strike pitch of a pitched drum (a smooth sweep of its half cycles): held or
+        # swept, high or low, it is how big the drum sounds
+        pitched = strike_jitter(x) < STRIKE_JITTER and self.low_share > 0.5
+        self.strike = strike_track(x) if pitched else None
         self.metal_freqs = ()
         self.partial_bins = None
 
@@ -399,12 +483,18 @@ class Target:
             floor = bands.max() * 1e-12 + 1e-30
         return 10.0 * np.log10(bands + floor), floor
 
+    def _balance(self, octaves: np.ndarray) -> np.ndarray:
+        """Each frame's octaves against its loudest one, down to BALANCE_RANGE under it, and no
+        lower than the sample's noise floor."""
+        o = np.maximum(octaves, self.octave_noise)
+        return np.maximum(o - o.max(axis=1, keepdims=True), -BALANCE_RANGE)
+
     def loss(self, y: np.ndarray, parts: bool = False):
         """Score of render y; with parts, (spectra dB, magnitude, pitch, high dB, tonality,
-        octave balance) before weighting."""
+        octave balance, partials, punch, strike) before weighting."""
         e = float(np.sum(y ** 2))
         if not math.isfinite(e) or e < 1e-20:
-            return (1e3,) * 7 if parts else 1e3
+            return (1e3,) * 9 if parts else 1e3
         specs, summed = spectra(y * math.sqrt(self.energy / e))
         high = summed[HIGH_IN_SUM]
         log_err = 0.0
@@ -429,10 +519,9 @@ class Target:
         octaves, _ = self._octave_db(specs[0], self.octave_floor)
         level = np.maximum(self.octaves, octaves).max(axis=1)
         w = np.clip((level - (self.octaves.max() - FLOOR_DB)) / FLOOR_DB, 0.0, 1.0)
-        # each frame's balance: its octaves against its loudest one, down to 60 dB under it,
-        # so a quiet band in the tail counts as much as at the strike
-        rel = lambda o: np.maximum(o - o.max(axis=1, keepdims=True), -BALANCE_RANGE)
-        diff = rel(octaves) - rel(self.octaves)
+        # each frame's balance (_balance): a quiet band in the tail counts as much as at
+        # the strike, down to the sample's noise floor
+        diff = self._balance(octaves) - self.balance
         balance_err = float(np.sum(w * np.abs(diff).mean(axis=1)) / max(w.sum(), 1e-9))
         partial_err = 0.0
         if self.partial_bins is not None:
@@ -440,11 +529,26 @@ class Target:
             got = np.maximum(np.maximum(summed[b - 1], summed[b]), summed[b + 1])
             partial_err = float(np.sum(self.partial_w * np.abs(10.0 * np.log10(got + self.partial_floor)
                                                                 - self.partial_db)) / self.partial_w.sum())
+        d = self.punch_windows
+        punch_err = float(np.mean(np.abs(density(y)[d] - self.density[d]))) if d.any() else 0.0
+        strike_err = self._strike_err(y) if self.strike is not None else 0.0
         if parts:
-            return log_err, mag_err, pitch_err, high_err, tonal_err, balance_err, partial_err
+            return (log_err, mag_err, pitch_err, high_err, tonal_err, balance_err, partial_err, punch_err,
+                    strike_err)
         return (log_err + MAG_WEIGHT * mag_err + PITCH_WEIGHT * pitch_err
                 + HIGH_WEIGHT * high_err + TONAL_WEIGHT * tonal_err + BALANCE_WEIGHT * balance_err
-                + PARTIAL_WEIGHT * partial_err)
+                + PARTIAL_WEIGHT * partial_err + PUNCH_WEIGHT * punch_err + STRIKE_WEIGHT * strike_err)
+
+    def _strike_err(self, y: np.ndarray) -> float:
+        """Semitones between the strike pitches, the first milliseconds counting most."""
+        got = strike_track(y)
+        if got is None:
+            return 12.0
+        m = np.isfinite(got) & np.isfinite(self.strike)
+        if not m.any():
+            return 12.0
+        w = 1.0 / (STRIKE_GRID[m] + 5.0)
+        return float(np.sum(w * np.abs(got[m] - self.strike[m])) / np.sum(w)) * 12.0
 
     def score(self, p: VoiceParams) -> float:
         return self.loss(render(p, self.n))
@@ -539,7 +643,7 @@ def _partials(x: np.ndarray) -> tuple:
     return hz[peaks] + shift * hz[1], pw[peaks] / pw[peaks].max(), SR / n
 
 
-EVEN_WEIGHT = 0.5       # a square of 48 % duty has weak even harmonics too
+EVEN_WEIGHT = 0.5       # a square of 49 % duty has weak even harmonics too
 
 
 def _odd_matches(freqs: np.ndarray, tol: np.ndarray, f0: float) -> tuple:
@@ -653,7 +757,7 @@ def metal_banks(paths, max_seconds: float) -> list:
     return [_consensus(g) for g in groups]
 
 
-SQUARE_DUTY = 0.48      # of the metal oscillators (voice_kernel.METAL_DUTY)
+SQUARE_DUTY = 0.49      # of the metal oscillators (voice_kernel.METAL_DUTY)
 
 
 def metal_response(x: np.ndarray, freqs: tuple) -> np.ndarray:
@@ -898,6 +1002,7 @@ def patch_dict(p: VoiceParams, name: str, choke: bool) -> dict:
         'ModMode': ['Decay', 'Sine', 'Noise'][p.mod_mode],
         'ModRate': p.mod_rate,
         'ModAmt': p.mod_amount,
+        **({'ModHold': p.mod_hold_ms} if p.mod_hold_ms > 0.0 else {}),
         'NFilMod': ['LP', 'BP', 'HP'][p.noise_filter],
         'NFilFrq': p.noise_freq,
         'NFilQ': p.noise_q,

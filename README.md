@@ -12,7 +12,7 @@ Perfect for producers, sound designers, and developers interested in audio synth
 - **8 Independent Drum Channels** with full parameter control
 - **Oscillator Section**
   - Sine, Triangle, and Sawtooth waveforms
-  - Pitch modulation: Decay, Sine (FM), and Random modes
+  - Pitch modulation: Decay, Sine (FM), and Random modes; in Decay mode a hold keeps the start pitch for up to 100 ms before the sweep (written to a drum patch only when it is used)
   - Attack and decay envelope shaping
 - **Noise Generator**
   - Low-pass, Band-pass, High-pass filtering
@@ -399,7 +399,9 @@ python tools/fit_samples.py path/to/samples path/to/patches --wav
 For each sample it builds starting patches from the partials it finds and from
 the predictions of `fit_prior.pt`, then refines them with CMA-ES against the
 sample's spectrogram, its pitch below 2 kHz, its envelope and, above 2 kHz, how
-much of its energy sits in partials rather than noise. A metallic sample (a
+much of its energy sits in partials rather than noise. It also compares how loud
+the first 200 ms are next to the peak (the punch of a kick) and, for a pitched
+drum, the pitch of its first cycles (where a sweep starts, or how long it holds). A metallic sample (a
 cymbal, a hi-hat) gets the metal section: the six oscillator frequencies are the
 square waves whose harmonics explain its partials, found in the longest samples
 of the folder and shared with the short ones of the same machine. Level is set so

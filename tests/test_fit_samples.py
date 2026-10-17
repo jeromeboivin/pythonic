@@ -64,7 +64,7 @@ def test_partials_above_2_khz_count_only_where_there_is_energy_there():
     kick = np.sin(2 * np.pi * 55.0 * t) * np.exp(-t / 0.12)
     target = F.Target(kick)
     y = np.concatenate([np.sin(2 * np.pi * 60.0 * t) * np.exp(-t / 0.1), np.zeros(target.n - len(t))])
-    *_, high_err, tonal_err, _balance, _partials = target.loss(y, parts=True)
+    _, _, _, high_err, tonal_err, *_ = target.loss(y, parts=True)
     assert target.high_share < 1e-3
     assert F.HIGH_WEIGHT * high_err + F.TONAL_WEIGHT * tonal_err < 1e-2
 
@@ -103,3 +103,67 @@ def test_the_patches_mirror_the_sample_folders(tmp_path, monkeypatch):
         assert (out / sub / 'Hit.mtdrum').is_file() and (out / sub / 'Hit.fit.wav').is_file()
     report = (out / 'fit_report.csv').read_text()
     assert 'Kicks/Deep/Hit.mtdrum' in report.replace('\\', '/')
+
+
+def test_a_spiky_render_of_a_kick_loses_its_punch():
+    # A squared sine with a fast sweep: as loud in its body as at its strike. The same
+    # sound with a click on top has nearly its spectra, but its level set by the peak
+    # leaves the body some 12 dB quieter, and only the punch term hears it.
+    t = np.arange(int(0.4 * SR)) / SR
+    phase = 2 * np.pi * np.cumsum(50.0 + 150.0 * np.exp(-t / 0.02)) / SR
+    kick = np.tanh(3.0 * np.sin(phase)) * np.exp(-t / 0.3)
+    target = F.Target(kick)
+    pad = lambda y: np.concatenate([y, np.zeros(target.n - len(y))])
+    spiky = kick.copy()
+    spiky[200] += 3.0
+    same = target.loss(pad(kick), parts=True)
+    worse = target.loss(pad(spiky), parts=True)
+    assert same[7] < 0.1
+    assert worse[7] > 6.0
+    spectral = lambda p: p[0] + F.MAG_WEIGHT * p[1]
+    assert spectral(worse) - spectral(same) < F.PUNCH_WEIGHT * worse[7]
+
+
+def test_the_punch_of_a_short_sample_skips_the_windows_past_its_end():
+    d = F.density(np.ones(int(0.04 * SR)))
+    assert np.allclose(d[:3], 0.0) and np.isnan(d[3:]).all()
+
+
+def test_the_hiss_under_a_quiet_tail_is_not_asked_of_the_patch():
+    # A kick recorded with hiss 70 dB under its peak: a clean render matches its octave
+    # balance, so the fit has no reason to add noise to the tail
+    t = np.arange(int(0.8 * SR)) / SR
+    kick = np.sin(2 * np.pi * np.cumsum(50.0 + 150.0 * np.exp(-t / 0.02)) / SR) * np.exp(-t / 0.08)
+    hiss = np.random.default_rng(0).standard_normal(len(t)) * 10.0 ** (-70.0 / 20.0)
+    target = F.Target(kick + hiss)
+    balance = target.loss(np.concatenate([kick, np.zeros(target.n - len(t))]), parts=True)[5]
+    assert balance < 0.5
+
+
+def test_a_strike_that_starts_too_high_is_heard():
+    # A kick holding 240 Hz for 7 ms before its sweep: the same sweep without the hold
+    # starts higher and falls sooner, and the strike term scores it worse
+    held = render(VoiceParams(wave=0, osc_freq=60.0, osc_decay_ms=400.0, mod_rate=60.0, mod_amount=24.0,
+                              mod_hold_ms=7.0, osc_mix=1.0), 0.5)
+    target = F.Target(held)
+    assert target.strike is not None
+    pad = lambda y: np.concatenate([y, np.zeros(target.n - len(y))])
+    same = target.loss(pad(held), parts=True)[8]
+    swept = render(VoiceParams(wave=0, osc_freq=60.0, osc_decay_ms=400.0, mod_rate=60.0, mod_amount=30.0,
+                               osc_mix=1.0), 0.5)
+    assert same < 0.1
+    assert target.loss(pad(swept), parts=True)[8] > 2.0
+
+
+def test_noise_has_no_strike_pitch():
+    noise = np.random.default_rng(1).uniform(-1.0, 1.0, int(0.3 * SR)) * np.exp(-np.arange(int(0.3 * SR)) / (0.05 * SR))
+    assert F.Target(noise).strike is None
+
+
+def test_a_fitted_hold_is_written_to_the_patch():
+    from pythonic.preset_manager import DrumPatchParser, DrumPatchWriter
+    from pythonic.voice import params_from_patch
+    p = VoiceParams(mod_hold_ms=6.0)
+    text = DrumPatchWriter.format_patch(F.patch_dict(p, 'kick', False))
+    assert params_from_patch(DrumPatchParser().parse_string(text)).mod_hold_ms == 6.0
+    assert 'ModHold' not in DrumPatchWriter.format_patch(F.patch_dict(VoiceParams(), 'kick', False))
