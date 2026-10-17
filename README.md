@@ -368,7 +368,6 @@ The repository includes these pre-trained checkpoints, used by default:
 |------|-------------|
 | `drum_cvae_best.pt` | Bundled drum-patch CVAE checkpoint used by the AI Drum Generator |
 | `drum_patterns/pattern_bank_best.pt` | Bundled pattern bank model: generates the 12 patterns A–L together, with their lengths and chains, matched to the kit |
-| `drum_patterns/pattern_cvae_best.pt` | The earlier single-pattern model (12 independent patterns, no chains); not bundled, can still be chosen in setup ▸ ai |
 | `fit_prior.pt` | Starting-patch model of `tools/fit_samples.py` (see below) |
 
 Other checkpoints can be chosen in setup ▸ ai (**models…** on the AI page opens it) (tkinter: **Load Model...** and Preset menu → **AI Settings**). The chosen paths are saved in preferences.

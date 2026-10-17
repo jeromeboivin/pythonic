@@ -2,7 +2,7 @@
 Compare the banks a pattern model generates with the dataset's.
 
     venv/bin/python tools/eval_pattern_bank.py [--bank drum_patterns/pattern_bank_best.pt]
-        [--legacy drum_patterns/pattern_cvae_best.pt] [--json report.json]
+        [--legacy <single-pattern checkpoint>] [--json report.json]
 
 Every model draws one bank for each validation condition of the bank cache
 (the held-out gen folders of train_pattern_bank.py), so the statistics line
@@ -24,8 +24,9 @@ up with the validation banks of those same kits and timings:
 
 The bank model samples through the kit prior stored in its checkpoint
 (--prior normal: from N(0, I)), with triggers thresholded and accents and
-fills drawn (--grid-mode). The legacy model is the single-pattern CVAE: 12
-independent draws, every pattern 16 steps, no chains.
+fills drawn (--grid-mode). --legacy compares a single-pattern CVAE
+checkpoint (train_patterns.py): 12 independent draws, every pattern 16
+steps, no chains.
 """
 
 from __future__ import annotations
@@ -284,9 +285,7 @@ def main() -> None:
     ap.add_argument("--cache", default=str(ROOT / "drum_patterns" / "pattern_bank_cache.pt"))
     ap.add_argument("--bank", default=str(ROOT / "drum_patterns" / "pattern_bank_best.pt"),
                     help="bank checkpoint (skipped when missing)")
-    ap.add_argument("--legacy", default=str(ROOT / "drum_patterns" / "pattern_cvae_best.pt"),
-                    help="single-pattern checkpoint (skipped when missing)")
-    ap.add_argument("--no-legacy", action="store_true")
+    ap.add_argument("--legacy", help="a single-pattern checkpoint to compare with")
     ap.add_argument("--prior", choices=("kit", "normal"), default="kit",
                     help="the checkpoint's kit prior, or N(0, I)")
     ap.add_argument("--grid-mode", choices=tpb.GRID_MODES, default="mixed")
@@ -308,7 +307,7 @@ def main() -> None:
                                     args.grid_mode, args.length_mode, args.chain_mode))
     else:
         print(f"no bank checkpoint at {args.bank}")
-    if not args.no_legacy and pathlib.Path(args.legacy).is_file():
+    if args.legacy:
         samplers.append(LegacySampler(args.legacy, args.legacy_temperature))
     report = evaluate(cache, samplers, seed=args.seed, valid_gens=tuple(args.valid_gens))
     print_report(report)
