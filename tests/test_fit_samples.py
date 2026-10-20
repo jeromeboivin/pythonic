@@ -69,6 +69,18 @@ def test_partials_above_2_khz_count_only_where_there_is_energy_there():
     assert F.HIGH_WEIGHT * high_err + F.TONAL_WEIGHT * tonal_err < 1e-2
 
 
+def test_a_patch_ringing_past_a_cut_short_sample_is_penalised():
+    t = np.arange(int(1.0 * SR)) / SR
+    tom = np.sin(2 * np.pi * 120.0 * t) * np.exp(-t / 0.4)
+    cut = tom[:int(0.15 * SR)]                     # a ROM sample stopping 3 dB under its peak
+    target = F.Target(cut)
+    assert target.n >= len(cut) + int(F.TAIL_SECONDS * SR)
+    stops = np.concatenate([cut, np.zeros(target.n - len(cut))])
+    assert target.loss(tom[:target.n]) > target.loss(stops) + 1.0
+    # cut by --max-seconds, the sample goes on: compared only up to the cut
+    assert F.Target(cut, ended=False).n == len(cut)
+
+
 def test_a_metal_fit_leaves_the_eq_flat():
     p = F.metal_starts(VoiceParams(eq_gain_db=12.0), cymbal(), BANK_606)[0]
     assert p.eq_gain_db == 0.0

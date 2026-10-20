@@ -295,6 +295,7 @@ TONAL_SPAN = 151       # bins (about 800 Hz) of the running median a partial sta
 TONAL_DB = 8.0         # a bin this far above the running median belongs to a partial
 
 FLOOR_DB = 50.0        # weights and log floors reach zero this far under the peak
+TAIL_SECONDS = 0.15    # a target is compared against silence this long past its end at least
 MAG_WEIGHT = 10.0      # score per unit of relative magnitude error
 PITCH_WEIGHT = 12.0    # score per octave of pitch distance below 2 kHz
 HIGH_WEIGHT = 0.25     # score per dB of summed high spectrum difference above 2 kHz
@@ -410,13 +411,12 @@ def _cdf(p: np.ndarray) -> np.ndarray:
 class Target:
     """A trimmed sample and its spectra; scores renders against it."""
 
-    def __init__(self, x: np.ndarray):
+    def __init__(self, x: np.ndarray, ended: bool = True):
         self.x = x
-        peak = np.abs(x).max()
-        tail = np.sqrt(np.mean(x[-max(len(x) // 20, 32):] ** 2))
-        # A sample that fades out is compared past its end against silence, so
-        # a patch ringing on is penalised; a cut-off one only up to its end.
-        self.n = len(x) + (max(len(x) // 4, int(0.05 * SR)) if tail < peak * 0.005 else 0)
+        # Past its end a sample is silence, whether it fades out or was cut short (as many
+        # ROM samples are), so a patch ringing on after it is penalised. ``ended`` is False
+        # when --max-seconds cut the sample: it goes on, and is compared only up to the cut.
+        self.n = len(x) + (max(len(x) // 2, int(TAIL_SECONDS * SR)) if ended else 0)
         padded = np.concatenate([x, np.zeros(self.n - len(x))])
         self.energy = float(np.sum(padded ** 2))
         self.specs, summed = spectra(padded)
@@ -924,7 +924,7 @@ def pick(cands: list, n: int) -> list:
 def fit_one(job: dict) -> dict:
     t0 = time.time()
     x = load_target(job['path'], job['max_seconds'])
-    target = Target(x)
+    target = Target(x, ended=len(x) < int(job['max_seconds'] * SR))
     # Only a sample whose partials are those of six squares gets the metal section: on an
     # acoustic cymbal, six squares sound like a drum machine, however well they score
     target.use_metal(metal_fundamentals(x, job.get('banks', ())))
