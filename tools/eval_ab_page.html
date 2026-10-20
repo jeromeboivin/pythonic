@@ -270,6 +270,16 @@ async function loadTrial(t) {
       ? 'Nothing left to grade here. Register a run with tools/eval_ab.py register, then Rescan.'
       : mode === 'ladder' ? 'No pitch ladder waiting. Queue some with tools/eval_ab.py ladder.'
       : 'No old-vs-new pair waiting. Queue some with tools/eval_ab.py compare or check --queue.';
+    // point to the work waiting in the other modes
+    const waiting = summary ? [['grade', summary.todo_grade, 'fits to grade in Original vs fit'],
+                               ['compare', summary.pending_compare, 'pairs in Old vs new'],
+                               ['ladder', summary.pending_ladder, 'ladders in Pitch ladder']]
+      .filter(([m, n]) => m !== mode && n > 0) : [];
+    for (const [m, n, label] of waiting) {
+      const b = document.createElement('button'); b.className = 'small'; b.style.margin = '12px 6px 0';
+      b.textContent = `${n} ${label} →`; b.onclick = () => setMode(m);
+      $('empty').append(document.createElement('br'), b);
+    }
     return;
   }
   $('card').hidden = false; $('empty').hidden = true;
