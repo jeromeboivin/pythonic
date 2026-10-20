@@ -374,3 +374,22 @@ def test_a_ladder_pick_is_queued_against_the_fit_it_moved(world):
     assert E.queue_ladder_picks(store, log=lambda *_: None) == 1
     c = store.one('SELECT * FROM comparisons')
     assert (c['new_fit'], c['reason']) == (up, 'ladder pick +1 st')
+
+
+def test_compare_keeps_the_fit_you_preferred(world, tmp_path):
+    store, samples, fits, names = world
+    api = make_api(store)
+    for label, freq in (('second', 140.0), ('third', 160.0)):
+        folder = tmp_path / label
+        write_run(samples, folder, names, freq=freq)
+        E.register(store, samples, folder, label, log=lambda *_: None)
+        if label == 'second':
+            E.compare_runs(store, '', 'second', log=lambda *_: None)
+            while (t := api.next({'mode': 'compare'})) is not None:      # the old one wins every pair
+                layout = json.loads(store.one('SELECT layout FROM trials WHERE token=?', t['token'])['layout'])
+                api.answer({'token': t['token'], 'choice': 'a' if layout['a'] == 'old' else 'b'})
+    first = {r['sample_id']: r['id'] for r in store.q(
+        "SELECT f.* FROM fits f JOIN run_fits rf ON rf.fit_id=f.id JOIN runs r ON r.id=rf.run_id AND r.label='first'")}
+    assert E.compare_runs(store, '', 'third', log=lambda *_: None) == 3
+    for c in store.q("SELECT * FROM comparisons WHERE status='pending'"):
+        assert c['old_fit'] == first[c['sample_id']]

@@ -26,8 +26,8 @@ serve     the listening page. Mode 1 grades a fit against its original (Awful,
           Worse for the new version. Which side is which is shuffled and hidden until you
           answer, and every sound is played at the same K-weighted loudness.
 compare   queues mode 2 pairs for the fits of the NEW run: each against its
-          sample's golden fit, else its fit in the OLD run, else (no --from) its
-          latest fit registered before.
+          sample's golden fit, else its fit in the OLD run, else (no --from) the
+          winner of its latest comparison, else its latest fit registered before.
 check     the regression guard after an engine change: re-renders every golden
           patch with the current engine and measures how far it moved from the
           frozen render. It prints how many are over each threshold; --queue
@@ -340,7 +340,7 @@ def queue_comparison(store: Store, sample_id: int, old_fit: int, new_fit: int, r
 def compare_runs(store: Store, old, new: str, log=print) -> int:
     """Queue old-vs-new pairs for the fits of run ``new``; returns how many are new. The
     old fit of a sample is its golden fit, else its fit in run ``old``, else (``old`` None)
-    the latest fit registered before the new one."""
+    the one it stands on before the new one (current_fit)."""
     def run_id(label):
         row = store.one('SELECT id FROM runs WHERE label=?', label)
         if row is None:
@@ -359,9 +359,7 @@ def compare_runs(store: Store, old, new: str, log=print) -> int:
                             'WHERE f.sample_id=? ORDER BY f.id DESC', old_id, r['sample_id'])
             old_fit = row['id'] if row else None
         else:
-            row = store.one("SELECT id FROM fits WHERE sample_id=? AND source='register' AND id<? "
-                            'ORDER BY id DESC', r['sample_id'], r['id'])
-            old_fit = row['id'] if row else None
+            old_fit = current_fit(store, r['sample_id'], before=r['id'])
         if old_fit is None:
             continue
         if old_fit == r['id']:
@@ -372,17 +370,20 @@ def compare_runs(store: Store, old, new: str, log=print) -> int:
     return queued
 
 
-def current_fit(store: Store, sample_id: int):
+def current_fit(store: Store, sample_id: int, before=None):
     """The fit a sample stands on: its golden fit, else the winner of its latest
-    comparison, else its latest registered fit."""
+    comparison, else its latest registered fit; ``before`` leaves out fits registered
+    from that id on (a run being compared)."""
+    before = before or 1 << 62
     gold = store.one('SELECT fit_id FROM golden WHERE sample_id=?', sample_id)
-    if gold:
+    if gold and gold['fit_id'] < before:
         return gold['fit_id']
     c = store.one("SELECT * FROM comparisons WHERE sample_id=? AND status='done' AND outcome!='both_bad' "
-                  'ORDER BY ts DESC', sample_id)
+                  'AND new_fit<? ORDER BY ts DESC', sample_id, before)
     if c:
         return c['new_fit'] if c['outcome'] == 'better' else c['old_fit']
-    row = store.one("SELECT id FROM fits WHERE sample_id=? AND source='register' ORDER BY id DESC", sample_id)
+    row = store.one("SELECT id FROM fits WHERE sample_id=? AND source='register' AND id<? ORDER BY id DESC",
+                    sample_id, before)
     return row['id'] if row else None
 
 
