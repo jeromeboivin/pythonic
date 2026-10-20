@@ -415,6 +415,35 @@ trade time for accuracy.
 `tools/fit_prior.py <patches dir>` retrains the starting-patch model on your own
 `.mtdrum` patches (one to two hours on 8 CPU cores for the default 60,000).
 
+#### Judging the fits by ear
+
+`tools/eval_ab.py` is a blind A/B listening page with a SQLite record of what you
+heard (`kits/eval/`, git-ignored), so engine and fit changes can be made from your
+verdicts without losing what already sounds right:
+
+```bash
+python tools/eval_ab.py register path/to/samples path/to/patches --label run-1
+python tools/eval_ab.py serve            # http://127.0.0.1:8767/
+python tools/eval_ab.py report
+```
+
+`register` snapshots each patch with its app-rendered `.fit.wav` (rendered again
+when missing or older than the patch) and its original; run it again for the same
+label, or press **Rescan run** in the page, to add the fits finished since. The
+page has two modes. *Original vs fit* grades a fit Awful, Weak, Good or Perfect
+(keys 1-4) with defect tags and a note; the sides are shuffled and hidden until
+you answer, and every sound plays at the same K-weighted loudness (about 5 % of
+the trials silently repeat an earlier one, to measure how consistent your ears are).
+*Old vs new* compares two versions of a sample (Better, Same, Worse, Both bad).
+Samples graded Good or Perfect are the golden set: Better makes a new version
+golden, Both bad drops it, Same and Worse keep it.
+
+After changing the engine, `tools/eval_ab.py check` re-renders every golden patch
+and prints how many moved past each distance (loudness-weighted mel, envelope and
+pitch); `--queue --threshold N` sends those over N to the *Old vs new* mode. After
+changing the fitter, refit the golden samples of the affected categories into
+a new folder, `register` it and queue it with `compare --from OLD --to NEW`.
+
 ## ⚙️ Technical Specifications
 
 - **Sample Rate**: 44.1 kHz (CD quality)

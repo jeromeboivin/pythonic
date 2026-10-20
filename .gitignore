@@ -151,3 +151,6 @@ fit_prior_data.npz
 
 # Factory preset build script (local MIDI sources)
 /tools/build_factory.py
+
+# A/B listening record (database and audio snapshots)
+/kits/eval/

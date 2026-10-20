@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fit listening</title>
+<style>
+:root {
+  --bg: #f4f2ee; --panel: #fff; --ink: #1d1c1a; --dim: #716d66; --line: #dcd8d0; --accent: #c2410c;
+  --a: #1d6fb8; --b: #8a4fb3; --ref: #5f6b3a;
+  --g1: #b3261e; --g2: #b9770e; --g3: #2f7d3c; --g4: #0f6b67;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #17161a; --panel: #212026; --ink: #ecebe6; --dim: #9a968d; --line: #36343c; --accent: #f08a4b;
+    --a: #5aa6ea; --b: #bb8be0; --ref: #a7b66a;
+    --g1: #ef6b62; --g2: #e3a53d; --g3: #6cc17a; --g4: #4cc4be;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #17161a; --panel: #212026; --ink: #ecebe6; --dim: #9a968d; --line: #36343c; --accent: #f08a4b;
+  --a: #5aa6ea; --b: #bb8be0; --ref: #a7b66a;
+  --g1: #ef6b62; --g2: #e3a53d; --g3: #6cc17a; --g4: #4cc4be;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.4 system-ui, sans-serif; }
+main { max-width: 860px; margin: 0 auto; padding: 16px; }
+header { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin-bottom: 12px; }
+h1 { font-size: 18px; margin: 0 8px 0 0; }
+.tabs button, .chip, .verdict button, .play, select, input, .small {
+  font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px; padding: 6px 12px; cursor: pointer;
+}
+.tabs button[aria-selected="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.filters { display: flex; flex-wrap: wrap; gap: 6px; font-size: 13px; }
+.filters select { padding: 4px 8px; }
+.stats { color: var(--dim); font-size: 13px; width: 100%; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px; }
+.heading { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; margin-bottom: 14px; }
+.heading b { font-size: 17px; }
+.heading span { color: var(--dim); font-size: 13px; }
+.plays { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.play { height: 120px; font-size: 34px; font-weight: 700; border-width: 2px; position: relative; }
+.play small { display: block; font-size: 12px; font-weight: 400; color: var(--dim); }
+.play[data-slot="a"] { border-color: var(--a); color: var(--a); }
+.play[data-slot="b"] { border-color: var(--b); color: var(--b); }
+.play.on { background: currentColor; }
+.play.on > * { color: var(--bg); }
+.play span { color: inherit; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; align-items: center; }
+.ref { border-color: var(--ref); color: var(--ref); }
+.verdict { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 16px; }
+.verdict button { padding: 12px 6px; font-weight: 600; border-width: 2px; }
+.verdict button small { display: block; font-weight: 400; color: var(--dim); }
+.verdict button[aria-pressed="true"] { background: currentColor; }
+.verdict button[aria-pressed="true"] > * { color: var(--bg); }
+.v1 { color: var(--g1); } .v2 { color: var(--g2); } .v3 { color: var(--g3); } .v4 { color: var(--g4); }
+.tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.chip { padding: 3px 10px; font-size: 13px; border-radius: 999px; }
+.chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+.chip kbd { color: var(--dim); font-size: 11px; margin-right: 4px; }
+.chip[aria-pressed="true"] kbd { color: inherit; }
+.tags.hide { display: none; }
+input[type="text"] { flex: 1; min-width: 200px; }
+.last { margin-top: 14px; font-size: 13px; color: var(--dim); min-height: 20px; }
+.last b { color: var(--ink); }
+.toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--ink);
+  color: var(--bg); padding: 8px 14px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+.toast.show { opacity: 1; }
+.help { color: var(--dim); font-size: 12px; margin-top: 14px; }
+kbd { font: 12px ui-monospace, monospace; border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+.empty { text-align: center; padding: 40px 10px; color: var(--dim); }
+.vol { display: flex; gap: 6px; align-items: center; font-size: 13px; color: var(--dim); }
+@media (max-width: 560px) { .play { height: 90px; } .verdict { grid-template-columns: 1fr 1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Fit listening</h1>
+    <div class="tabs" role="tablist">
+      <button role="tab" id="tab-grade" aria-selected="true">Original vs fit</button>
+      <button role="tab" id="tab-compare" aria-selected="false">Old vs new</button>
+    </div>
+    <div class="filters">
+      <select id="f-machine" aria-label="Machine"></select>
+      <select id="f-category" aria-label="Category"></select>
+      <select id="f-run" aria-label="Run"></select>
+      <select id="f-order" aria-label="Order">
+        <option value="score">worst score first</option>
+        <option value="random">random</option>
+        <option value="folder">folder order</option>
+      </select>
+      <button class="small" id="rescan" title="Register the fits finished since, for the selected run">Rescan run</button>
+    </div>
+    <div class="stats" id="stats"></div>
+  </header>
+
+  <section class="card" id="card" hidden>
+    <div class="heading"><b id="h-name"></b><span id="h-meta"></span></div>
+    <div class="plays">
+      <button class="play" data-slot="a"><span>A</span><small>key A</small></button>
+      <button class="play" data-slot="b"><span>B</span><small>key B</small></button>
+    </div>
+    <div class="row">
+      <button class="small ref" id="ref" data-slot="ref"></button>
+      <button class="small" id="seq">A B A B <kbd>Space</kbd></button>
+      <button class="small" id="again">repeat <kbd>R</kbd></button>
+      <label class="vol">volume <input type="range" id="vol" min="-12" max="24" value="0" step="1"> <span id="vol-n">0 dB</span></label>
+    </div>
+    <div class="verdict" id="verdict"></div>
+    <div class="row">
+      <button class="small" id="tag-toggle">tags <kbd>T</kbd></button>
+      <input type="text" id="note" placeholder="note (N)">
+      <button class="small" id="submit">Save and next <kbd>Enter</kbd></button>
+    </div>
+    <div class="tags hide" id="tags"></div>
+  </section>
+  <section class="card empty" id="empty" hidden></section>
+  <div class="last" id="last"></div>
+  <div class="help">
+    <kbd>A</kbd> <kbd>B</kbd> play · <kbd>0</kbd> reference · <kbd>Space</kbd> A B A B · <kbd>R</kbd> repeat ·
+    <kbd>1</kbd>-<kbd>4</kbd> verdict · <kbd>T</kbd> tags (then <kbd>1</kbd>-<kbd>9</kbd>) · <kbd>Enter</kbd> save ·
+    <kbd>Backspace</kbd> undo the last · <kbd>→</kbd> skip
+  </div>
+</main>
+<div class="toast" id="toast"></div>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const GRADE_LABELS = [['1', 'Awful'], ['2', 'Weak'], ['3', 'Good'], ['4', 'Perfect']];
+const OUTCOME_LABELS = [['better', 'Better', 'new is better'], ['same', 'Same', 'no difference'],
+                        ['worse', 'Worse', 'new is worse'], ['both_bad', 'Both bad', 'neither is good']];
+let mode = 'grade', trial = null, buffers = {}, verdict = null, tags = new Set(), tagList = [];
+let ctx = null, master = null, current = null, lastSlot = 'a', seqToken = 0, summary = null;
+
+function toast(text) {
+  const t = $('toast'); t.textContent = text; t.classList.add('show');
+  clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove('show'), 2500);
+}
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : {method: 'POST', body: JSON.stringify(body)});
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+function audioContext() {
+  if (!ctx) {
+    ctx = new AudioContext();
+    master = ctx.createGain();
+    const lim = ctx.createDynamicsCompressor();
+    lim.threshold.value = -2; lim.knee.value = 0; lim.ratio.value = 20; lim.attack.value = 0.001; lim.release.value = 0.05;
+    master.connect(lim); lim.connect(ctx.destination);
+    setVolume();
+  }
+  return ctx;
+}
+function setVolume() {
+  const db = +$('vol').value; $('vol-n').textContent = `${db} dB`;
+  if (master) master.gain.value = 10 ** (db / 20);
+  try { localStorage.setItem('evalab.vol', db); } catch (e) {}
+}
+
+function stop() {
+  seqToken++;
+  if (current) { try { current.src.stop(); } catch (e) {} current = null; }
+  document.querySelectorAll('.play,#ref').forEach(b => b.classList.remove('on'));
+}
+function play(slot) {
+  const buf = buffers[slot]; if (!buf || !trial) return Promise.resolve();
+  const c = audioContext(); if (c.state === 'suspended') c.resume();
+  if (current) { try { current.src.stop(); } catch (e) {} }
+  document.querySelectorAll('.play,#ref').forEach(b => b.classList.toggle('on', b.dataset.slot === slot));
+  const src = c.createBufferSource(), g = c.createGain();
+  src.buffer = buf; g.gain.value = 10 ** (trial.gain[slot] / 20);
+  src.connect(g); g.connect(master);
+  const me = {src};
+  current = me; lastSlot = slot;
+  return new Promise(res => {
+    src.onended = () => {
+      if (current === me) { current = null; document.querySelectorAll('.play,#ref').forEach(b => b.classList.remove('on')); }
+      res();
+    };
+    src.start();
+  });
+}
+async function sequence() {
+  stop(); const mine = seqToken;
+  for (const s of ['a', 'b', 'a', 'b']) {
+    if (mine !== seqToken) return;
+    await play(s);
+    if (mine !== seqToken) return;
+    await new Promise(r => setTimeout(r, 350));
+  }
+}
+
+function renderVerdict() {
+  const box = $('verdict'); box.textContent = '';
+  const labels = mode === 'grade' ? GRADE_LABELS.map(([k, n]) => [k, n, '']) : OUTCOME_LABELS.map(([k, n, d], i) => [k, n, d]);
+  labels.forEach(([key, name, sub], i) => {
+    const b = document.createElement('button');
+    b.className = `v${i + 1}`; b.dataset.value = mode === 'grade' ? String(i + 1) : key;
+    b.setAttribute('aria-pressed', verdict === b.dataset.value);
+    const s1 = document.createElement('span'); s1.textContent = `${i + 1} ${name}`;
+    const s2 = document.createElement('small'); s2.textContent = sub;
+    b.append(s1, s2); b.onclick = () => choose(b.dataset.value);
+    box.append(b);
+  });
+}
+function renderTags() {
+  const box = $('tags'); box.textContent = '';
+  tagList.forEach((t, i) => {
+    const b = document.createElement('button'); b.className = 'chip';
+    b.setAttribute('aria-pressed', tags.has(t));
+    if (i < 10) { const k = document.createElement('kbd'); k.textContent = (i + 1) % 10; b.append(k); }
+    b.append(t); b.onclick = () => toggleTag(t);
+    box.append(b);
+  });
+  const add = document.createElement('input'); add.type = 'text'; add.placeholder = 'new tag + Enter'; add.style.minWidth = '120px';
+  add.onkeydown = e => {
+    e.stopPropagation();
+    if (e.key === 'Enter' && add.value.trim()) { const t = add.value.trim(); if (!tagList.includes(t)) tagList.push(t); tags.add(t); renderTags(); }
+  };
+  box.append(add);
+}
+function choose(v) { verdict = v; renderVerdict(); }
+function toggleTag(t) { tags.has(t) ? tags.delete(t) : tags.add(t); renderTags(); }
+
+function filters() {
+  const f = {mode, order: $('f-order').value};
+  for (const k of ['machine', 'category', 'run']) if ($('f-' + k).value) f[k] = $('f-' + k).value;
+  return f;
+}
+async function loadTrial(t) {
+  stop(); trial = t; buffers = {}; verdict = null; tags = new Set(); $('note').value = '';
+  if (!t || t.empty) {
+    $('card').hidden = true; $('empty').hidden = false;
+    $('empty').textContent = mode === 'grade'
+      ? 'Nothing left to grade here. Register a run with tools/eval_ab.py register, then Rescan.'
+      : 'No old-vs-new pair waiting. Queue some with tools/eval_ab.py compare or check --queue.';
+    return;
+  }
+  $('card').hidden = false; $('empty').hidden = true;
+  $('h-name').textContent = t.name; $('h-meta').textContent = `${t.machine} · ${t.category}` + (t.remaining ? ` · ${t.remaining} left` : '');
+  $('ref').textContent = `0  ${t.ref_label}`;
+  const c = audioContext();
+  await Promise.all(['a', 'b', 'ref'].map(async s => {
+    const r = await fetch(`/media/${t.token}/${s}`);
+    buffers[s] = await c.decodeAudioData(await r.arrayBuffer());
+  }));
+  renderVerdict(); renderTags();
+}
+async function refresh(keep) {
+  summary = await api('/api/summary');
+  tagList = tagList.length ? [...new Set([...tagList, ...summary.tags])] : summary.tags.slice();
+  for (const [k, list] of [['machine', summary.machines], ['category', summary.categories], ['run', summary.runs]]) {
+    const sel = $('f-' + k), old = sel.value;
+    sel.textContent = '';
+    for (const v of ['', ...list]) { const o = document.createElement('option'); o.value = v; o.textContent = v || 'all ' + {machine: 'machines', category: 'categories', run: 'runs'}[k]; sel.append(o); }
+    sel.value = list.includes(old) ? old : '';
+  }
+  const g = summary.grade_counts;
+  $('stats').textContent = `${summary.todo_grade} fits to grade · ${summary.graded} graded (` +
+    Object.entries(g).map(([k, v]) => `${v} ${k}`).join(', ') + `) · ${summary.golden} golden · ${summary.pending_compare} pairs waiting`;
+  if (!keep) await loadTrial(await api('/api/next?' + new URLSearchParams(filters())));
+}
+async function submit() {
+  if (!trial || trial.empty) return;
+  if (!verdict) return toast(mode === 'grade' ? 'Choose a grade (1-4)' : 'Choose an outcome (1-4)');
+  const body = {token: trial.token, tags: [...tags], note: $('note').value};
+  body[mode === 'grade' ? 'grade' : 'outcome'] = mode === 'grade' ? +verdict : verdict;
+  try {
+    const r = await api('/api/answer', body);
+    const last = $('last'); last.textContent = '';
+    const b = document.createElement('b'); b.textContent = `${r.machine} / ${r.name}`;
+    last.append(b, mode === 'grade'
+      ? ` graded ${r.grade}${r.repeat ? ' (repeat)' : ''} · original was ${r.orig_side}` + (r.score != null ? ` · fitter score ${r.score.toFixed(2)}` : '') + (r.golden ? ' · golden' : '')
+      : ` ${r.outcome.replace('_', ' ')} · new was ${r.new_side} (${r.reason})` + (r.golden ? ' · golden' : ''));
+    await refresh(false);
+  } catch (e) { toast(e.message); }
+}
+async function undo() {
+  try {
+    const t = await api('/api/undo', {});
+    if (t.empty) return toast('Nothing to undo');
+    if (t.kind !== mode) setMode(t.kind, true);
+    $('last').textContent = 'Last verdict taken back.';
+    await refresh(true); await loadTrial(t);
+  } catch (e) { toast(e.message); }
+}
+async function skip() {
+  if (!trial || trial.empty) return;
+  await api('/api/skip', {token: trial.token}); await refresh(false);
+}
+function setMode(m, quiet) {
+  mode = m;
+  $('tab-grade').setAttribute('aria-selected', m === 'grade'); $('tab-compare').setAttribute('aria-selected', m === 'compare');
+  $('f-order').hidden = m !== 'grade';
+  if (!quiet) refresh(false);
+}
+
+$('tab-grade').onclick = () => setMode('grade'); $('tab-compare').onclick = () => setMode('compare');
+for (const k of ['machine', 'category', 'run', 'order']) $('f-' + k).onchange = () => refresh(false);
+document.querySelectorAll('.play,#ref').forEach(b => b.onclick = () => play(b.dataset.slot));
+$('seq').onclick = sequence; $('again').onclick = () => play(lastSlot);
+$('submit').onclick = submit; $('vol').oninput = setVolume;
+$('tag-toggle').onclick = () => $('tags').classList.toggle('hide');
+$('rescan').onclick = async () => {
+  const run = $('f-run').value; if (!run) return toast('Pick a run first');
+  try { const r = await api('/api/rescan', {run}); toast(`${r.added} new fits, ${r.known} known`); await refresh(false); }
+  catch (e) { toast(e.message); }
+};
+document.addEventListener('keydown', e => {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.target.tagName === 'INPUT' && e.target.type === 'text') {
+    if (e.key === 'Enter' && e.target.id === 'note') { e.preventDefault(); e.target.blur(); submit(); }
+    else if (e.key === 'Escape') e.target.blur();
+    return;
+  }
+  const k = e.key.toLowerCase(), tagsOpen = !$('tags').classList.contains('hide');
+  if (k === 'a' || k === 'b') play(k);
+  else if (k === '0') play('ref');
+  else if (k === ' ') { e.preventDefault(); sequence(); }
+  else if (k === 'r') play(lastSlot);
+  else if (k === 't') $('tags').classList.toggle('hide');
+  else if (k === 'n') { e.preventDefault(); $('note').focus(); }
+  else if (k === 'enter') submit();
+  else if (k === 'backspace') { e.preventDefault(); undo(); }
+  else if (k === 'arrowright' || k === 's') skip();
+  else if (k === 'escape') { stop(); $('tags').classList.add('hide'); }
+  else if (/^[0-9]$/.test(k) && tagsOpen) { const t = tagList[(+k + 9) % 10]; if (t) toggleTag(t); }
+  else if (/^[1-4]$/.test(k)) choose(mode === 'grade' ? k : OUTCOME_LABELS[+k - 1][0]);
+});
+try { $('vol').value = localStorage.getItem('evalab.vol') || 0; } catch (e) {}
+setVolume();
+api('/api/summary').then(s => { setMode(s.default_mode, true); return refresh(false); }).catch(e => toast(e.message));
+</script>
+</body>
+</html>
