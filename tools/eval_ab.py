@@ -5,6 +5,7 @@ Blind A/B listening page for the sample fits, with a SQLite record of what you h
     venv/bin/python tools/eval_ab.py serve [--port 8767]
     venv/bin/python tools/eval_ab.py compare [--from OLD] --to NEW
     venv/bin/python tools/eval_ab.py check [--threshold 0.75] [--queue]
+    venv/bin/python tools/eval_ab.py ladder --only TEXT [--only TEXT ...] [--steps -3,-2,-1,0,1,2,3]
     venv/bin/python tools/eval_ab.py report
     venv/bin/python tools/eval_ab.py features
 
@@ -31,6 +32,11 @@ check     the regression guard after an engine change: re-renders every golden
           patch with the current engine and measures how far it moved from the
           frozen render. It prints how many are over each threshold; --queue
           sends those over --threshold to mode 2 (frozen vs new render).
+ladder    renders the current fit of each sample matched by --only with its
+          pitch moved by each of --steps semitones (the oscillator with its sweep,
+          and a band-passed noise's band);
+          the page's Pitch ladder mode plays them shuffled next to the original
+          and you pick the closest.
 features  measures every fit against its original again, after the measures change.
 report    grades by machine and category, defect tags against the fitter score
           and measured features, regressions, and how consistent the ears are.
@@ -103,6 +109,10 @@ CREATE TABLE IF NOT EXISTS comparisons(
     distance REAL, status TEXT DEFAULT 'pending', outcome TEXT, new_side TEXT, tags TEXT, note TEXT,
     ts REAL, UNIQUE(old_fit, new_fit));
 CREATE TABLE IF NOT EXISTS golden(sample_id INTEGER PRIMARY KEY, fit_id INTEGER, grade INTEGER, since REAL);
+CREATE TABLE IF NOT EXISTS ladders(
+    id INTEGER PRIMARY KEY, sample_id INTEGER, base_fit INTEGER, label TEXT, status TEXT DEFAULT 'pending',
+    pick_fit INTEGER, pick_shift REAL, tags TEXT, note TEXT, ts REAL);
+CREATE TABLE IF NOT EXISTS ladder_items(ladder_id INTEGER, fit_id INTEGER, shift REAL, PRIMARY KEY(ladder_id, fit_id));
 CREATE TABLE IF NOT EXISTS trials(
     token TEXT PRIMARY KEY, kind TEXT, sample_id INTEGER, fit_id INTEGER, comparison_id INTEGER,
     layout TEXT, repeat_of INTEGER, created REAL, answered INTEGER DEFAULT 0);
@@ -138,6 +148,8 @@ class Store:
         self.db = sqlite3.connect(str(self.root / 'evals.sqlite'), check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
+        if 'ladder_id' not in {r[1] for r in self.db.execute('PRAGMA table_info(trials)')}:
+            self.db.execute('ALTER TABLE trials ADD COLUMN ladder_id INTEGER')
         self.lock = threading.RLock()
 
     def q(self, sql, *args):
@@ -358,6 +370,59 @@ def compare_runs(store: Store, old, new: str, log=print) -> int:
     return queued
 
 
+def current_fit(store: Store, sample_id: int):
+    """The fit a sample stands on: its golden fit, else the winner of its latest
+    comparison, else its latest registered fit."""
+    gold = store.one('SELECT fit_id FROM golden WHERE sample_id=?', sample_id)
+    if gold:
+        return gold['fit_id']
+    c = store.one("SELECT * FROM comparisons WHERE sample_id=? AND status='done' AND outcome!='both_bad' "
+                  'ORDER BY ts DESC', sample_id)
+    if c:
+        return c['new_fit'] if c['outcome'] == 'better' else c['old_fit']
+    row = store.one("SELECT id FROM fits WHERE sample_id=? AND source='register' ORDER BY id DESC", sample_id)
+    return row['id'] if row else None
+
+
+OSC_FREQ = re.compile(r'(OscFreq:\s*")([0-9.eE+-]+)(\s*Hz")')
+NOISE_FREQ = re.compile(r'(NFilFrq:\s*")([0-9.eE+-]+)(\s*Hz")')
+
+
+def shift_patch(text: str, semitones: float) -> str:
+    """A patch with its pitch moved: the oscillator (its sweep is relative to it) and, when
+    the noise goes through a band-pass, that band, which can hold a tom's note."""
+    if not OSC_FREQ.search(text):
+        raise ValueError('patch has no OscFreq')
+    ratio = 2.0 ** (semitones / 12.0)
+    move = lambda m: f'{m.group(1)}{float(m.group(2)) * ratio!r}{m.group(3)}'
+    text = OSC_FREQ.sub(move, text, count=1)
+    if re.search(r'NFilMod:\s*"BP"', text):
+        text = NOISE_FREQ.sub(move, text, count=1)
+    return text
+
+
+def make_ladder(store: Store, sample_id: int, steps, label: str) -> int:
+    """Queue a pitch ladder of the sample's current fit; returns its id."""
+    base = current_fit(store, sample_id)
+    fit = store.one('SELECT * FROM fits WHERE id=?', base)
+    text = store.path(fit['patch_file']).read_text(encoding='utf-8')
+    ladder = store.run('INSERT INTO ladders(sample_id, base_fit, label) VALUES(?,?,?)', sample_id, base, label)
+    tmp = pathlib.Path(tempfile.mkdtemp())
+    try:
+        for st in steps:
+            if st == 0:
+                fit_id = base
+            else:
+                patch, wav = tmp / f'{st}.mtdrum', tmp / f'{st}.wav'
+                patch.write_text(shift_patch(text, st), encoding='utf-8')
+                render_patch(patch, wav)
+                fit_id, _ = add_fit(store, sample_id, patch, wav, 'ladder')
+            store.run('INSERT OR IGNORE INTO ladder_items VALUES(?,?,?)', ladder, fit_id, float(st))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return ladder
+
+
 def _rerender(args) -> tuple:
     fit_id, patch, wav = args
     render_patch(pathlib.Path(patch), pathlib.Path(wav))
@@ -434,6 +499,7 @@ class Api:
                 'graded': n('SELECT count(*) FROM grades WHERE repeat_of IS NULL'),
                 'golden': n('SELECT count(*) FROM golden'),
                 'pending_compare': n("SELECT count(*) FROM comparisons WHERE status='pending'"),
+                'pending_ladder': n("SELECT count(*) FROM ladders WHERE status='pending'"),
                 'todo_grade': len(self._grade_candidates({})),
                 'grade_counts': {GRADES[g]: dist.get(g, 0) for g in GRADES},
                 'sets': [r[0] for r in s.q('SELECT DISTINCT set_name FROM samples ORDER BY 1')],
@@ -442,7 +508,8 @@ class Api:
                 'runs': [r[0] for r in s.q('SELECT label FROM runs ORDER BY id')],
                 'tags': TAGS + sorted(self._custom_tags()),
                 'grades': GRADES, 'outcomes': list(OUTCOMES),
-                'default_mode': 'compare' if n("SELECT count(*) FROM comparisons WHERE status='pending'") else 'grade',
+                'default_mode': ('compare' if n("SELECT count(*) FROM comparisons WHERE status='pending'") else
+                                 'ladder' if n("SELECT count(*) FROM ladders WHERE status='pending'") else 'grade'),
             }
 
     def _custom_tags(self) -> set:
@@ -478,20 +545,23 @@ class Api:
     def _heading(sample) -> dict:
         return {'machine': sample['machine'], 'category': sample['category'], 'name': pathlib.Path(sample['rel']).name}
 
-    def _new_trial(self, kind, sample_id, layout, fit_id=None, comparison_id=None, repeat_of=None) -> str:
+    def _new_trial(self, kind, sample_id, layout, fit_id=None, comparison_id=None, repeat_of=None,
+                   ladder_id=None) -> str:
         s = self.store
         s.db.execute('DELETE FROM trials WHERE answered=0')
         token = uuid.uuid4().hex
-        s.run('INSERT INTO trials(token, kind, sample_id, fit_id, comparison_id, layout, repeat_of, created)'
-              ' VALUES(?,?,?,?,?,?,?,?)', token, kind, sample_id, fit_id, comparison_id, json.dumps(layout),
-              repeat_of, time.time())
+        s.run('INSERT INTO trials(token, kind, sample_id, fit_id, comparison_id, layout, repeat_of, created, ladder_id)'
+              ' VALUES(?,?,?,?,?,?,?,?,?)', token, kind, sample_id, fit_id, comparison_id, json.dumps(layout),
+              repeat_of, time.time(), ladder_id)
         return token
 
     def next(self, f: dict):
-        """The next trial of mode ``f['mode']`` (grade or compare), or None."""
+        """The next trial of mode ``f['mode']`` (grade, compare or ladder), or None."""
         with self.store.lock:
             if f.get('mode') == 'compare':
                 return self._next_compare(f)
+            if f.get('mode') == 'ladder':
+                return self._next_ladder(f)
             return self._next_grade(f)
 
     def _next_grade(self, f: dict):
@@ -551,6 +621,27 @@ class Api:
                 'gain': {'a': gains[layout['a']], 'b': gains[layout['b']], 'ref': gains['orig']},
                 'ref_label': 'original'}
 
+    def _next_ladder(self, f: dict):
+        sql, args = self._filters(f)
+        rows = self.store.q("SELECT l.id FROM ladders l JOIN samples s ON s.id=l.sample_id "
+                            "JOIN fits f ON f.id=l.base_fit WHERE l.status='pending'" + sql + ' ORDER BY l.id', *args)
+        rows = [r for r in rows if ('ladder', r['id']) not in self.skipped] or rows
+        return self.ladder_trial(rows[0]['id'], remaining=len(rows)) if rows else None
+
+    def ladder_trial(self, ladder_id: int, remaining=None) -> dict:
+        s = self.store
+        ladder = s.one('SELECT * FROM ladders WHERE id=?', ladder_id)
+        sample = s.one('SELECT * FROM samples WHERE id=?', ladder['sample_id'])
+        items = [r['fit_id'] for r in s.q('SELECT fit_id FROM ladder_items WHERE ladder_id=?', ladder_id)]
+        self.rng.shuffle(items)
+        layout = {str(i + 1): fit_id for i, fit_id in enumerate(items)}
+        token = self._new_trial('ladder', sample['id'], layout, ladder_id=ladder_id)
+        louds = [s.one('SELECT loud FROM fits WHERE id=?', fit_id)[0] for fit_id in items]
+        gains = gains_for(sample['trim_loud'], *louds)
+        return {'token': token, 'kind': 'ladder', 'remaining': remaining, **self._heading(sample),
+                'slots': len(items), 'gain': {'ref': gains[0], **{str(i + 1): g for i, g in enumerate(gains[1:])}},
+                'ref_label': 'original'}
+
     def media(self, token: str, which: str):
         """(file, content type) of the sound behind a slot of a trial."""
         s = self.store
@@ -560,6 +651,14 @@ class Api:
                 return None
             layout = json.loads(t['layout'])
             sample = s.one('SELECT * FROM samples WHERE id=?', t['sample_id'])
+            if t['kind'] == 'ladder':
+                if which in ('ref', 'raw'):
+                    path = s.path(sample['trim_file' if which == 'ref' else 'raw_file'])
+                elif which in layout:
+                    path = s.path(s.one('SELECT wav_file FROM fits WHERE id=?', layout[which])[0])
+                else:
+                    return None
+                return path, 'audio/' + ('wav' if path.suffix == '.wav' else path.suffix.lstrip('.'))
             if t['kind'] == 'grade':
                 fit = s.one('SELECT * FROM fits WHERE id=?', t['fit_id'])
                 files = {'orig': sample['trim_file'], 'fit': fit['wav_file'], 'raw': sample['raw_file']}
@@ -605,6 +704,17 @@ class Api:
                           'features': json.loads(fit['features'] or '{}'),
                           'golden': bool(s.one('SELECT 1 FROM golden WHERE sample_id=?', t['sample_id'])),
                           'repeat': t['repeat_of'] is not None}
+            elif t['kind'] == 'ladder':
+                pick = str(body.get('pick', ''))
+                if pick != 'none' and pick not in layout:
+                    raise ValueError('pick must be a slot number or none')
+                fit_id = layout[pick] if pick != 'none' else None
+                shift = s.one('SELECT shift FROM ladder_items WHERE ladder_id=? AND fit_id=?',
+                              t['ladder_id'], fit_id)[0] if fit_id else None
+                s.run("UPDATE ladders SET status='done', pick_fit=?, pick_shift=?, tags=?, note=?, ts=? WHERE id=?",
+                      fit_id, shift, tags, note, now, t['ladder_id'])
+                reveal = {'machine': sample['machine'], 'name': pathlib.Path(sample['rel']).name, 'shift': shift,
+                          'record': t['ladder_id']}
             else:
                 # The listener only knows the sides: the side they prefer is mapped to
                 # the new or the old version here
@@ -627,7 +737,8 @@ class Api:
         with self.store.lock:
             t = self.store.one('SELECT * FROM trials WHERE token=?', token)
             if t:
-                self.skipped.add(('grade', t['fit_id']) if t['kind'] == 'grade' else ('compare', t['comparison_id']))
+                self.skipped.add(('grade', t['fit_id']) if t['kind'] == 'grade' else
+                                 ('ladder', t['ladder_id']) if t['kind'] == 'ladder' else ('compare', t['comparison_id']))
 
     def undo(self):
         """Take back the latest verdict and return a new trial for the same item."""
@@ -635,9 +746,15 @@ class Api:
         with s.lock:
             g = s.one('SELECT id, ts, sample_id, fit_id, repeat_of FROM grades ORDER BY ts DESC LIMIT 1')
             c = s.one("SELECT id, ts, sample_id FROM comparisons WHERE status='done' ORDER BY ts DESC LIMIT 1")
-            if g is None and c is None:
+            lad = s.one("SELECT id, ts FROM ladders WHERE status='done' ORDER BY ts DESC LIMIT 1")
+            latest = max((x for x in (g, c, lad) if x is not None), key=lambda x: x['ts'], default=None)
+            if latest is None:
                 return None
-            if c is None or (g is not None and g['ts'] >= c['ts']):
+            if latest is lad:
+                s.run("UPDATE ladders SET status='pending', pick_fit=NULL, pick_shift=NULL, tags=NULL, note=NULL,"
+                      ' ts=NULL WHERE id=?', lad['id'])
+                return self.ladder_trial(lad['id'])
+            if latest is g:
                 s.run('DELETE FROM grades WHERE id=?', g['id'])
                 s.recompute_golden(g['sample_id'])
                 return self.grade_trial(g['fit_id'], repeat_of=g['repeat_of'])
@@ -667,6 +784,7 @@ def report(store: Store, out=print) -> None:
         f'{store.one("SELECT count(*) FROM fits")[0]} fits registered, '
         f'{store.one("SELECT count(*) FROM comparisons WHERE status=?", "pending")[0]} comparisons pending')
     if not grades:
+        report_versions(store, out)
         return
 
     def table(title, key):
@@ -723,6 +841,22 @@ def report(store: Store, out=print) -> None:
                      'GROUP BY 1 ORDER BY 2 DESC'):
         out(f'  {r["category"]:10s} {r["n"]}')
 
+    report_versions(store, out)
+
+
+def report_versions(store: Store, out=print) -> None:
+    """The pitch ladders and the version comparisons."""
+    ladders = store.q("SELECT l.*, s.machine, s.rel FROM ladders l JOIN samples s ON s.id=l.sample_id "
+                      "WHERE l.status='done' ORDER BY l.id")
+    if ladders:
+        out(f'\nPitch ladders: {len(ladders)} answered (semitones you moved the fit to match the original)')
+        for r in ladders:
+            pick = 'none close' if r['pick_shift'] is None else f'{r["pick_shift"]:+g}'
+            out(f'  {pick:>10s}  {r["machine"]}/{pathlib.Path(r["rel"]).name}' + (f'  note: {r["note"]}' if r['note'] else ''))
+        picks = [r['pick_shift'] for r in ladders if r['pick_shift'] is not None]
+        if picks:
+            out(f'  median {float(np.median(picks)):+g}, mean {mean(picks):+.2f} semitones over {len(picks)} picks')
+
     comps = store.q("SELECT c.*, s.machine, s.rel FROM comparisons c JOIN samples s ON s.id=c.sample_id "
                     "WHERE c.status='done'")
     out(f'\nVersion comparisons: {len(comps)} answered')
@@ -730,7 +864,7 @@ def report(store: Store, out=print) -> None:
         out(f'  {o:9s} {sum(c["outcome"] == o for c in comps)}')
     for c in comps:
         if c['outcome'] == 'worse':
-            out(f'  REGRESSION {c["machine"]}/{c["rel"]} ({c["reason"]}) tags: {", ".join(json.loads(c["tags"] or "[]"))}'
+            out(f'  REGRESSION {c["machine"]}/{pathlib.Path(c["rel"]).name} ({c["reason"]}) tags: {", ".join(json.loads(c["tags"] or "[]"))}'
                 + (f' note: {c["note"]}' if c['note'] else ''))
     pref = [c for c in comps if c['outcome'] in ('better', 'worse')]
     if pref:
@@ -835,6 +969,10 @@ def main(argv=None) -> None:
     p.add_argument('--jobs', type=int, default=0)
     sub.add_parser('report', help='what the verdicts say')
     sub.add_parser('features', help='measure every fit against its original again')
+    p = sub.add_parser('ladder', help='queue pitch ladders of the current fits')
+    p.add_argument('--only', action='append', required=True, help='samples whose path contains this text')
+    p.add_argument('--steps', default='-3,-2,-1,0,1,2,3', help='semitones, comma separated')
+    p.add_argument('--label', default='')
     args = ap.parse_args(argv)
 
     store = Store(args.root)
@@ -851,6 +989,15 @@ def main(argv=None) -> None:
         compare_runs(store, args.old, args.new)
     elif args.cmd == 'features':
         refresh_features(store)
+    elif args.cmd == 'ladder':
+        steps = [float(v) for v in args.steps.split(',')]
+        for text in args.only:
+            rows = store.q('SELECT id, rel FROM samples WHERE rel LIKE ?', f'%{text}%')
+            if len(rows) != 1:
+                print(f'{text!r} matches {len(rows)} samples: skipped')
+                continue
+            make_ladder(store, rows[0]['id'], steps, args.label or 'ladder')
+            print(f'ladder queued for {rows[0]["rel"]}')
     elif args.cmd == 'check':
         check(store, args.threshold, args.queue, args.label, args.jobs)
     else:

@@ -321,3 +321,39 @@ def test_compare_without_an_old_run_takes_the_latest_earlier_fit(world, tmp_path
         "SELECT f.* FROM fits f JOIN run_fits rf ON rf.fit_id=f.id JOIN runs r ON r.id=rf.run_id AND r.label='second'")}
     for c in store.q('SELECT * FROM comparisons'):
         assert c['old_fit'] == second[c['sample_id']]
+
+
+def test_a_pitch_ladder_moves_only_the_oscillator_pitch_and_records_the_pick(world):
+    store, *_ = world
+    api = make_api(store)
+    sample_id = store.one("SELECT id FROM samples WHERE rel LIKE '%Kick 01'")['id']
+    ladder = E.make_ladder(store, sample_id, [-1.0, 0.0, 2.0], 'test')
+    items = {r['shift']: r['fit_id'] for r in store.q('SELECT * FROM ladder_items WHERE ladder_id=?', ladder)}
+    assert items[0.0] == E.current_fit(store, sample_id)
+    base = store.path(store.one('SELECT patch_file FROM fits WHERE id=?', items[0.0])[0]).read_text()
+    up = store.path(store.one('SELECT patch_file FROM fits WHERE id=?', items[2.0])[0]).read_text()
+    freq = lambda text: float(E.OSC_FREQ.search(text).group(2))
+    assert freq(up) == pytest.approx(freq(base) * 2 ** (2 / 12))
+    moved = ('OscFreq', 'NFilFrq') if 'NFilMod: "BP"' in base else ('OscFreq',)
+    assert ([l for l in up.splitlines() if not l.strip().startswith(moved)]
+            == [l for l in base.splitlines() if not l.strip().startswith(moved)])
+    assert api.summary()['default_mode'] == 'ladder'
+    t = api.next({'mode': 'ladder'})
+    assert t['slots'] == 3 and set(t['gain']) == {'1', '2', '3', 'ref'}
+    assert api.media(t['token'], '3')[0].is_file() and api.media(t['token'], 'ref')[0].is_file()
+    layout = json.loads(store.one('SELECT layout FROM trials WHERE token=?', t['token'])['layout'])
+    slot = next(k for k, v in layout.items() if v == items[2.0])
+    assert api.answer({'token': t['token'], 'pick': slot})['shift'] == 2.0
+    assert store.one('SELECT pick_shift FROM ladders WHERE id=?', ladder)[0] == 2.0
+    assert api.next({'mode': 'ladder'}) is None
+    out = []
+    E.report(store, out.append)
+    assert any('+2' in line and 'Kick 01' in line for line in out)
+    assert api.undo()['kind'] == 'ladder'
+
+
+def test_a_band_passed_noise_moves_with_the_pitch():
+    text = 'X: {\n\tOscFreq: "100.0 Hz"\n\tNFilMod: "BP"\n\tNFilFrq: "200.0 Hz"\n}'
+    up = E.shift_patch(text, 12.0)
+    assert '"200.0 Hz"' in up.split('NFilMod')[0] and up.endswith('NFilFrq: "400.0 Hz"\n}')
+    assert '"200.0 Hz"' in E.shift_patch(text.replace('"BP"', '"LP"'), 12.0).split('NFilMod')[1]

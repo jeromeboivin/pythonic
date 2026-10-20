@@ -44,6 +44,10 @@ h1 { font-size: 18px; margin: 0 8px 0 0; }
 .play small { display: block; font-size: 12px; font-weight: 400; color: var(--dim); }
 .play[data-slot="a"] { border-color: var(--a); color: var(--a); }
 .play[data-slot="b"] { border-color: var(--b); color: var(--b); }
+.plays.ladder { grid-template-columns: repeat(auto-fit, minmax(64px, 1fr)); gap: 8px; }
+.plays.ladder .play { height: 84px; font-size: 26px; color: var(--ink); }
+.play[aria-pressed="true"] { outline: 3px solid var(--accent); outline-offset: 2px; }
+.ladder-hint { color: var(--dim); font-size: 13px; align-self: center; }
 .play.on { background: currentColor; }
 .play.on > * { color: var(--bg); }
 .play span { color: inherit; }
@@ -82,6 +86,7 @@ kbd { font: 12px ui-monospace, monospace; border: 1px solid var(--line); border-
     <div class="tabs" role="tablist">
       <button role="tab" id="tab-grade" aria-selected="true">Original vs fit</button>
       <button role="tab" id="tab-compare" aria-selected="false">Old vs new</button>
+      <button role="tab" id="tab-ladder" aria-selected="false">Pitch ladder</button>
     </div>
     <div class="filters">
       <select id="f-machine" aria-label="Machine"></select>
@@ -99,13 +104,10 @@ kbd { font: 12px ui-monospace, monospace; border: 1px solid var(--line); border-
 
   <section class="card" id="card" hidden>
     <div class="heading"><b id="h-name"></b><span id="h-meta"></span></div>
-    <div class="plays">
-      <button class="play" data-slot="a"><span>A</span><small>key A</small></button>
-      <button class="play" data-slot="b"><span>B</span><small>key B</small></button>
-    </div>
+    <div class="plays" id="plays"></div>
     <div class="row">
       <button class="small ref" id="ref" data-slot="ref"></button>
-      <button class="small" id="seq">A B A B <kbd>Space</kbd></button>
+      <button class="small" id="seq"><span id="seq-label">A B A B</span> <kbd>Space</kbd></button>
       <button class="small" id="again">repeat <kbd>R</kbd></button>
       <label class="vol">volume <input type="range" id="vol" min="-12" max="24" value="0" step="1"> <span id="vol-n">0 dB</span></label>
     </div>
@@ -121,7 +123,7 @@ kbd { font: 12px ui-monospace, monospace; border: 1px solid var(--line); border-
   <div class="last" id="last"></div>
   <div class="help">
     <kbd>A</kbd> <kbd>B</kbd> play · <kbd>0</kbd> reference · <kbd>Space</kbd> A B A B · <kbd>R</kbd> repeat ·
-    <kbd>1</kbd>-<kbd>4</kbd> verdict · <kbd>T</kbd> tags (then <kbd>1</kbd>-<kbd>9</kbd>) · <kbd>Enter</kbd> save ·
+    <kbd>1</kbd>-<kbd>4</kbd> verdict (ladder: <kbd>1</kbd>-<kbd>7</kbd> play and pick, <kbd>X</kbd> none) · <kbd>T</kbd> tags (then <kbd>1</kbd>-<kbd>9</kbd>) · <kbd>Enter</kbd> save ·
     <kbd>Backspace</kbd> undo the last · <kbd>→</kbd> skip
   </div>
 </main>
@@ -132,6 +134,7 @@ const $ = id => document.getElementById(id);
 const GRADE_LABELS = [['1', 'Awful'], ['2', 'Weak'], ['3', 'Good'], ['4', 'Perfect']];
 const CHOICE_LABELS = [['a', 'A is better', ''], ['b', 'B is better', ''],
                        ['same', 'Same', 'no difference'], ['both_bad', 'Both bad', 'neither is good']];
+let slots = ['a', 'b'];
 let mode = 'grade', trial = null, buffers = {}, verdict = null, tags = new Set(), tagList = [];
 let ctx = null, master = null, current = null, lastSlot = 'a', seqToken = 0, summary = null;
 
@@ -187,7 +190,10 @@ function play(slot) {
 }
 async function sequence() {
   stop(); const mine = seqToken;
-  for (const s of ['a', 'b', 'a', 'b']) {
+  // ladder: the original then the picked candidate, twice (or every candidate once)
+  const order = mode !== 'ladder' ? ['a', 'b', 'a', 'b']
+    : verdict && verdict !== 'none' ? ['ref', verdict, 'ref', verdict] : ['ref', ...slots];
+  for (const s of order) {
     if (mine !== seqToken) return;
     await play(s);
     if (mine !== seqToken) return;
@@ -195,8 +201,32 @@ async function sequence() {
   }
 }
 
+function renderPlays() {
+  const box = $('plays'); box.textContent = '';
+  box.classList.toggle('ladder', mode === 'ladder');
+  for (const s of slots) {
+    const b = document.createElement('button'); b.className = 'play'; b.dataset.slot = s;
+    const big = document.createElement('span'); big.textContent = s.toUpperCase();
+    const small = document.createElement('small'); small.textContent = `key ${s.toUpperCase()}`;
+    b.append(big, small);
+    b.setAttribute('aria-pressed', mode === 'ladder' && verdict === s);
+    b.onclick = () => { if (mode === 'ladder') choose(s); play(s); };
+    box.append(b);
+  }
+}
 function renderVerdict() {
   const box = $('verdict'); box.textContent = '';
+  if (mode === 'ladder') {
+    renderPlays();
+    const hint = document.createElement('div'); hint.className = 'ladder-hint'; hint.style.gridColumn = 'span 3';
+    hint.textContent = verdict && verdict !== 'none' ? `Picked ${verdict}: Enter saves` : 'Play 1-' + slots.length + ': the last one played is your pick';
+    const b = document.createElement('button'); b.className = 'v1'; b.dataset.value = 'none';
+    b.setAttribute('aria-pressed', verdict === 'none');
+    const s1 = document.createElement('span'); s1.textContent = 'X None is close';
+    b.append(s1); b.onclick = () => choose('none');
+    box.append(hint, b);
+    return;
+  }
   const labels = mode === 'grade' ? GRADE_LABELS.map(([k, n]) => [k, n, '']) : CHOICE_LABELS;
   labels.forEach(([key, name, sub], i) => {
     const b = document.createElement('button');
@@ -238,18 +268,24 @@ async function loadTrial(t) {
     $('card').hidden = true; $('empty').hidden = false;
     $('empty').textContent = mode === 'grade'
       ? 'Nothing left to grade here. Register a run with tools/eval_ab.py register, then Rescan.'
+      : mode === 'ladder' ? 'No pitch ladder waiting. Queue some with tools/eval_ab.py ladder.'
       : 'No old-vs-new pair waiting. Queue some with tools/eval_ab.py compare or check --queue.';
     return;
   }
   $('card').hidden = false; $('empty').hidden = true;
   $('h-name').textContent = t.name; $('h-meta').textContent = `${t.machine} · ${t.category}` + (t.remaining ? ` · ${t.remaining} left` : '');
   $('ref').textContent = `0  ${t.ref_label}`;
+  slots = t.kind === 'ladder' ? Array.from({length: t.slots}, (_, i) => String(i + 1)) : ['a', 'b'];
+  lastSlot = slots[0];
+  $('seq-label').textContent = t.kind === 'ladder' ? '0 then pick, twice' : 'A B A B';
+  renderPlays();
   const c = audioContext();
-  await Promise.all(['a', 'b', 'ref'].map(async s => {
+  await Promise.all([...slots, 'ref'].map(async s => {
     const r = await fetch(`/media/${t.token}/${s}`);
     buffers[s] = await c.decodeAudioData(await r.arrayBuffer());
   }));
-  $('tag-label').textContent = mode === 'grade' ? 'tags: what is wrong with the fit' : 'tags: what is wrong with the worse one';
+  $('tag-label').textContent = mode === 'grade' ? 'tags: what is wrong with the fit'
+    : mode === 'ladder' ? 'tags: what still differs from the original' : 'tags: what is wrong with the worse one';
   renderVerdict(); renderTags();
 }
 async function refresh(keep) {
@@ -263,19 +299,22 @@ async function refresh(keep) {
   }
   const g = summary.grade_counts;
   $('stats').textContent = `${summary.todo_grade} fits to grade · ${summary.graded} graded (` +
-    Object.entries(g).map(([k, v]) => `${v} ${k}`).join(', ') + `) · ${summary.golden} golden · ${summary.pending_compare} pairs waiting`;
+    Object.entries(g).map(([k, v]) => `${v} ${k}`).join(', ') + `) · ${summary.golden} golden · ${summary.pending_compare} pairs waiting` +
+    ` · ${summary.pending_ladder} ladders waiting`;
   if (!keep) await loadTrial(await api('/api/next?' + new URLSearchParams(filters())));
 }
 async function submit() {
   if (!trial || trial.empty) return;
-  if (!verdict) return toast(mode === 'grade' ? 'Choose a grade (1-4)' : 'Choose an outcome (1-4)');
+  if (!verdict) return toast(mode === 'grade' ? 'Choose a grade (1-4)' : mode === 'ladder' ? 'Play a candidate to pick it, or X' : 'Choose an outcome (1-4)');
   const body = {token: trial.token, tags: [...tags], note: $('note').value};
-  body[mode === 'grade' ? 'grade' : 'choice'] = mode === 'grade' ? +verdict : verdict;
+  body[{grade: 'grade', compare: 'choice', ladder: 'pick'}[mode]] = mode === 'grade' ? +verdict : verdict;
   try {
     const r = await api('/api/answer', body);
     const last = $('last'); last.textContent = '';
     const b = document.createElement('b'); b.textContent = `${r.machine} / ${r.name}`;
-    last.append(b, mode === 'grade'
+    last.append(b, mode === 'ladder'
+      ? (r.shift == null ? ' none close' : ` you moved the fit ${r.shift > 0 ? '+' : ''}${r.shift} semitone${Math.abs(r.shift) === 1 ? '' : 's'}`)
+      : mode === 'grade'
       ? ` graded ${r.grade}${r.repeat ? ' (repeat)' : ''} · original was ${r.orig_side}` + (r.score != null ? ` · fitter score ${r.score.toFixed(2)}` : '') + (r.golden ? ' · golden' : '')
       : ` you chose ${r.choice === 'a' || r.choice === 'b' ? r.choice.toUpperCase() : r.choice.replace('_', ' ')} · new was ${r.new_side} → ${r.outcome.replace('_', ' ')} (${r.reason})` + (r.golden ? ' · golden' : ''));
     await refresh(false);
@@ -296,14 +335,15 @@ async function skip() {
 }
 function setMode(m, quiet) {
   mode = m;
-  $('tab-grade').setAttribute('aria-selected', m === 'grade'); $('tab-compare').setAttribute('aria-selected', m === 'compare');
+  for (const k of ['grade', 'compare', 'ladder']) $('tab-' + k).setAttribute('aria-selected', m === k);
   $('f-order').hidden = m !== 'grade';
   if (!quiet) refresh(false);
 }
 
 $('tab-grade').onclick = () => setMode('grade'); $('tab-compare').onclick = () => setMode('compare');
+$('tab-ladder').onclick = () => setMode('ladder');
 for (const k of ['machine', 'category', 'run', 'order']) $('f-' + k).onchange = () => refresh(false);
-document.querySelectorAll('.play,#ref').forEach(b => b.onclick = () => play(b.dataset.slot));
+$('ref').onclick = () => play('ref');
 $('seq').onclick = sequence; $('again').onclick = () => play(lastSlot);
 $('submit').onclick = submit; $('vol').oninput = setVolume;
 $('tag-toggle').onclick = () => $('tags').classList.toggle('hide');
@@ -320,7 +360,9 @@ document.addEventListener('keydown', e => {
     return;
   }
   const k = e.key.toLowerCase(), tagsOpen = !$('tags').classList.contains('hide');
-  if (k === 'a' || k === 'b') play(k);
+  if (mode === 'ladder' && !tagsOpen && slots.includes(k)) { choose(k); play(k); }
+  else if (mode === 'ladder' && k === 'x') choose('none');
+  else if (mode !== 'ladder' && (k === 'a' || k === 'b')) play(k);
   else if (k === '0') play('ref');
   else if (k === ' ') { e.preventDefault(); sequence(); }
   else if (k === 'r') play(lastSlot);
@@ -331,7 +373,7 @@ document.addEventListener('keydown', e => {
   else if (k === 'arrowright' || k === 's') skip();
   else if (k === 'escape') { stop(); $('tags').classList.add('hide'); }
   else if (/^[0-9]$/.test(k) && tagsOpen) { const t = tagList[(+k + 9) % 10]; if (t) toggleTag(t); }
-  else if (/^[1-4]$/.test(k)) choose(mode === 'grade' ? k : CHOICE_LABELS[+k - 1][0]);
+  else if (mode !== 'ladder' && /^[1-4]$/.test(k)) choose(mode === 'grade' ? k : CHOICE_LABELS[+k - 1][0]);
 });
 try { $('vol').value = localStorage.getItem('evalab.vol') || 0; } catch (e) {}
 setVolume();
