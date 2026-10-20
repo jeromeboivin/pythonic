@@ -357,3 +357,20 @@ def test_a_band_passed_noise_moves_with_the_pitch():
     up = E.shift_patch(text, 12.0)
     assert '"200.0 Hz"' in up.split('NFilMod')[0] and up.endswith('NFilFrq: "400.0 Hz"\n}')
     assert '"200.0 Hz"' in E.shift_patch(text.replace('"BP"', '"LP"'), 12.0).split('NFilMod')[1]
+
+
+def test_a_ladder_pick_is_queued_against_the_fit_it_moved(world):
+    store, *_ = world
+    api = make_api(store)
+    sample_id = store.one("SELECT id FROM samples WHERE rel LIKE '%Kick 01'")['id']
+    ladder = E.make_ladder(store, sample_id, [0.0, 1.0], 'test')
+    t = api.next({'mode': 'ladder'})
+    layout = json.loads(store.one('SELECT layout FROM trials WHERE token=?', t['token'])['layout'])
+    up = store.one('SELECT fit_id FROM ladder_items WHERE ladder_id=? AND shift=1.0', ladder)[0]
+    api.answer({'token': t['token'], 'pick': next(k for k, v in layout.items() if v == up)})
+    E.make_ladder(store, sample_id, [0.0, 2.0], 'wider')          # waiting: not queued yet
+    assert E.queue_ladder_picks(store, log=lambda *_: None) == 0
+    store.run("DELETE FROM ladders WHERE status='pending'")
+    assert E.queue_ladder_picks(store, log=lambda *_: None) == 1
+    c = store.one('SELECT * FROM comparisons')
+    assert (c['new_fit'], c['reason']) == (up, 'ladder pick +1 st')

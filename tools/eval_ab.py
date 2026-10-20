@@ -37,6 +37,8 @@ ladder    renders the current fit of each sample matched by --only with its
           and a band-passed noise's band);
           the page's Pitch ladder mode plays them shuffled next to the original
           and you pick the closest.
+ladder-picks queues each sample's latest ladder pick against the fit it moved, as
+          a mode 2 pair (not while a ladder of that sample is still waiting).
 features  measures every fit against its original again, after the measures change.
 report    grades by machine and category, defect tags against the fitter score
           and measured features, regressions, and how consistent the ears are.
@@ -421,6 +423,19 @@ def make_ladder(store: Store, sample_id: int, steps, label: str) -> int:
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     return ladder
+
+
+def queue_ladder_picks(store: Store, log=print) -> int:
+    """Queue each sample's latest ladder pick against the fit the ladder was built on (not for
+    a sample with a ladder still waiting); returns how many pairs are new."""
+    queued = 0
+    for r in store.q("SELECT * FROM ladders l WHERE status='done' AND pick_fit IS NOT NULL AND pick_fit!=base_fit "
+                     "AND ts=(SELECT max(ts) FROM ladders WHERE sample_id=l.sample_id AND status='done') "
+                     "AND NOT EXISTS (SELECT 1 FROM ladders p WHERE p.sample_id=l.sample_id AND p.status='pending')"):
+        queued += queue_comparison(store, r['sample_id'], r['base_fit'], r['pick_fit'],
+                                   f'ladder pick {r["pick_shift"]:+g} st')
+    log(f'{queued} ladder picks queued')
+    return queued
 
 
 def _rerender(args) -> tuple:
@@ -969,6 +984,7 @@ def main(argv=None) -> None:
     p.add_argument('--jobs', type=int, default=0)
     sub.add_parser('report', help='what the verdicts say')
     sub.add_parser('features', help='measure every fit against its original again')
+    sub.add_parser('ladder-picks', help='queue the ladder picks as old-vs-new pairs')
     p = sub.add_parser('ladder', help='queue pitch ladders of the current fits')
     p.add_argument('--only', action='append', required=True, help='samples whose path contains this text')
     p.add_argument('--steps', default='-3,-2,-1,0,1,2,3', help='semitones, comma separated')
@@ -989,6 +1005,8 @@ def main(argv=None) -> None:
         compare_runs(store, args.old, args.new)
     elif args.cmd == 'features':
         refresh_features(store)
+    elif args.cmd == 'ladder-picks':
+        queue_ladder_picks(store)
     elif args.cmd == 'ladder':
         steps = [float(v) for v in args.steps.split(',')]
         for text in args.only:
