@@ -20,8 +20,9 @@ register  snapshots a fit run: for each <fit dir>/<path>.mtdrum whose sample
           fits finished since. Scores come from fit_report.csv or <fit dir>.log.
 serve     the listening page. Mode 1 grades a fit against its original (Awful,
           Weak, Good, Perfect; Good and Perfect make the sample golden). Mode 2
-          compares an old and a new version of a sample (Better, Same, Worse,
-          Both bad). Which side is which is shuffled and hidden until you
+          compares an old and a new version of a sample: you say which side
+          is better (or Same, or Both bad) and the page turns it into Better or
+          Worse for the new version. Which side is which is shuffled and hidden until you
           answer, and every sound is played at the same K-weighted loudness.
 compare   queues mode 2 pairs between two registered runs: for each sample with
           a different fit in both, the golden fit (else the OLD run's) against
@@ -75,6 +76,7 @@ AUDIO_SUFFIXES = ('.wav', '.aif', '.aiff', '.flac')
 GRADES = {1: 'Awful', 2: 'Weak', 3: 'Good', 4: 'Perfect'}
 GOLDEN_FROM = 3
 OUTCOMES = ('better', 'same', 'worse', 'both_bad')
+CHOICES = ('a', 'b', 'same', 'both_bad')   # what the listener answers in mode 2
 TAGS = ['too dark', 'too bright', 'pitch low', 'pitch high', 'too short', 'too long', 'robotic',
         'weak attack', 'too noisy', 'no body', 'wrong tone', 'tonal artifact', 'tail too quiet']
 REPEAT_RATE = 0.05          # share of the grade trials that silently repeat an earlier one
@@ -592,16 +594,19 @@ class Api:
                           'golden': bool(s.one('SELECT 1 FROM golden WHERE sample_id=?', t['sample_id'])),
                           'repeat': t['repeat_of'] is not None}
             else:
-                outcome = body.get('outcome')
-                if outcome not in OUTCOMES:
-                    raise ValueError(f'outcome must be one of {OUTCOMES}')
+                # The listener only knows the sides: the side they prefer is mapped to
+                # the new or the old version here
+                choice = body.get('choice')
+                if choice not in CHOICES:
+                    raise ValueError(f'choice must be one of {CHOICES}')
                 side = 'a' if layout['a'] == 'new' else 'b'
+                outcome = choice if choice in ('same', 'both_bad') else 'better' if choice == side else 'worse'
                 s.run("UPDATE comparisons SET status='done', outcome=?, new_side=?, tags=?, note=?, ts=? WHERE id=?",
                       outcome, side, tags, note, now, t['comparison_id'])
                 s.recompute_golden(t['sample_id'])
                 c = s.one('SELECT * FROM comparisons WHERE id=?', t['comparison_id'])
                 reveal = {'new_side': side.upper(), 'machine': sample['machine'], 'name': pathlib.Path(sample['rel']).name,
-                          'outcome': outcome, 'reason': c['reason'], 'distance': c['distance'], 'record': c['id'],
+                          'choice': choice, 'outcome': outcome, 'reason': c['reason'], 'distance': c['distance'], 'record': c['id'],
                           'golden': bool(s.one('SELECT 1 FROM golden WHERE sample_id=?', t['sample_id']))}
             s.run('UPDATE trials SET answered=1 WHERE token=?', t['token'])
             return reveal

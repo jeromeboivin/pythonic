@@ -54,6 +54,7 @@ h1 { font-size: 18px; margin: 0 8px 0 0; }
 .verdict button small { display: block; font-weight: 400; color: var(--dim); }
 .verdict button[aria-pressed="true"] { background: currentColor; }
 .verdict button[aria-pressed="true"] > * { color: var(--bg); }
+.ca { color: var(--a); } .cb { color: var(--b); }
 .v1 { color: var(--g1); } .v2 { color: var(--g2); } .v3 { color: var(--g3); } .v4 { color: var(--g4); }
 .tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
 .chip { padding: 3px 10px; font-size: 13px; border-radius: 999px; }
@@ -110,7 +111,7 @@ kbd { font: 12px ui-monospace, monospace; border: 1px solid var(--line); border-
     </div>
     <div class="verdict" id="verdict"></div>
     <div class="row">
-      <button class="small" id="tag-toggle">tags <kbd>T</kbd></button>
+      <button class="small" id="tag-toggle"><span id="tag-label">tags</span> <kbd>T</kbd></button>
       <input type="text" id="note" placeholder="note (N)">
       <button class="small" id="submit">Save and next <kbd>Enter</kbd></button>
     </div>
@@ -129,8 +130,8 @@ kbd { font: 12px ui-monospace, monospace; border: 1px solid var(--line); border-
 'use strict';
 const $ = id => document.getElementById(id);
 const GRADE_LABELS = [['1', 'Awful'], ['2', 'Weak'], ['3', 'Good'], ['4', 'Perfect']];
-const OUTCOME_LABELS = [['better', 'Better', 'new is better'], ['same', 'Same', 'no difference'],
-                        ['worse', 'Worse', 'new is worse'], ['both_bad', 'Both bad', 'neither is good']];
+const CHOICE_LABELS = [['a', 'A is better', ''], ['b', 'B is better', ''],
+                       ['same', 'Same', 'no difference'], ['both_bad', 'Both bad', 'neither is good']];
 let mode = 'grade', trial = null, buffers = {}, verdict = null, tags = new Set(), tagList = [];
 let ctx = null, master = null, current = null, lastSlot = 'a', seqToken = 0, summary = null;
 
@@ -196,10 +197,10 @@ async function sequence() {
 
 function renderVerdict() {
   const box = $('verdict'); box.textContent = '';
-  const labels = mode === 'grade' ? GRADE_LABELS.map(([k, n]) => [k, n, '']) : OUTCOME_LABELS.map(([k, n, d], i) => [k, n, d]);
+  const labels = mode === 'grade' ? GRADE_LABELS.map(([k, n]) => [k, n, '']) : CHOICE_LABELS;
   labels.forEach(([key, name, sub], i) => {
     const b = document.createElement('button');
-    b.className = `v${i + 1}`; b.dataset.value = mode === 'grade' ? String(i + 1) : key;
+    b.className = mode === 'grade' ? `v${i + 1}` : ['ca', 'cb', 'v2', 'v1'][i]; b.dataset.value = mode === 'grade' ? String(i + 1) : key;
     b.setAttribute('aria-pressed', verdict === b.dataset.value);
     const s1 = document.createElement('span'); s1.textContent = `${i + 1} ${name}`;
     const s2 = document.createElement('small'); s2.textContent = sub;
@@ -248,6 +249,7 @@ async function loadTrial(t) {
     const r = await fetch(`/media/${t.token}/${s}`);
     buffers[s] = await c.decodeAudioData(await r.arrayBuffer());
   }));
+  $('tag-label').textContent = mode === 'grade' ? 'tags: what is wrong with the fit' : 'tags: what is wrong with the worse one';
   renderVerdict(); renderTags();
 }
 async function refresh(keep) {
@@ -268,14 +270,14 @@ async function submit() {
   if (!trial || trial.empty) return;
   if (!verdict) return toast(mode === 'grade' ? 'Choose a grade (1-4)' : 'Choose an outcome (1-4)');
   const body = {token: trial.token, tags: [...tags], note: $('note').value};
-  body[mode === 'grade' ? 'grade' : 'outcome'] = mode === 'grade' ? +verdict : verdict;
+  body[mode === 'grade' ? 'grade' : 'choice'] = mode === 'grade' ? +verdict : verdict;
   try {
     const r = await api('/api/answer', body);
     const last = $('last'); last.textContent = '';
     const b = document.createElement('b'); b.textContent = `${r.machine} / ${r.name}`;
     last.append(b, mode === 'grade'
       ? ` graded ${r.grade}${r.repeat ? ' (repeat)' : ''} · original was ${r.orig_side}` + (r.score != null ? ` · fitter score ${r.score.toFixed(2)}` : '') + (r.golden ? ' · golden' : '')
-      : ` ${r.outcome.replace('_', ' ')} · new was ${r.new_side} (${r.reason})` + (r.golden ? ' · golden' : ''));
+      : ` you chose ${r.choice === 'a' || r.choice === 'b' ? r.choice.toUpperCase() : r.choice.replace('_', ' ')} · new was ${r.new_side} → ${r.outcome.replace('_', ' ')} (${r.reason})` + (r.golden ? ' · golden' : ''));
     await refresh(false);
   } catch (e) { toast(e.message); }
 }
@@ -329,7 +331,7 @@ document.addEventListener('keydown', e => {
   else if (k === 'arrowright' || k === 's') skip();
   else if (k === 'escape') { stop(); $('tags').classList.add('hide'); }
   else if (/^[0-9]$/.test(k) && tagsOpen) { const t = tagList[(+k + 9) % 10]; if (t) toggleTag(t); }
-  else if (/^[1-4]$/.test(k)) choose(mode === 'grade' ? k : OUTCOME_LABELS[+k - 1][0]);
+  else if (/^[1-4]$/.test(k)) choose(mode === 'grade' ? k : CHOICE_LABELS[+k - 1][0]);
 });
 try { $('vol').value = localStorage.getItem('evalab.vol') || 0; } catch (e) {}
 setVolume();

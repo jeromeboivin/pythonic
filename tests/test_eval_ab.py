@@ -151,12 +151,28 @@ def test_comparison_outcomes_move_the_golden_fit(world, outcome, golden_is_new, 
     assert not E.queue_comparison(store, sample_id, old_fit, new_fit, 'test')      # once
     t = api.next({'mode': 'compare'})
     assert t['kind'] == 'compare' and t['reason'] == 'test'
-    reveal = api.answer({'token': t['token'], 'outcome': outcome, 'tags': ['robotic']})
+    # the listener names a side; the side holding the new version means Better
+    layout = json.loads(store.one('SELECT layout FROM trials WHERE token=?', t['token'])['layout'])
+    new_side = 'a' if layout['a'] == 'new' else 'b'
+    old_side = 'b' if new_side == 'a' else 'a'
+    choice = {'better': new_side, 'worse': old_side}.get(outcome, outcome)
+    reveal = api.answer({'token': t['token'], 'choice': choice, 'tags': ['robotic']})
+    assert reveal['outcome'] == outcome and reveal['new_side'] == new_side.upper()
     assert reveal['golden'] is golden
     row = store.one('SELECT fit_id, grade FROM golden WHERE sample_id=?', sample_id)
     if golden_is_new is not None:
         assert row['fit_id'] == (new_fit if golden_is_new else old_fit) and row['grade'] == 4
     assert api.next({'mode': 'compare'}) is None
+
+
+def test_a_comparison_is_answered_by_side_not_by_version(world):
+    store, *_ = world
+    api = make_api(store)
+    sample_id, old_fit, new_fit = new_version(store, 'Machine A/BD Kick 01', 130.0)
+    E.queue_comparison(store, sample_id, old_fit, new_fit, 'test')
+    t = api.next({'mode': 'compare'})
+    with pytest.raises(ValueError):
+        api.answer({'token': t['token'], 'outcome': 'better'})
 
 
 def test_undo_takes_back_the_last_verdict(world):
