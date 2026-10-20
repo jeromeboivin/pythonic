@@ -36,8 +36,9 @@ report    grades by machine and category, defect tags against the fitter score
           and measured features, regressions, and how consistent the ears are.
 
 The golden fit of a sample is replayed from its history: a Good or Perfect
-grade makes a fit golden when the sample has none, Better makes the new fit
-golden, Both bad drops the golden, Same and Worse keep it.
+grade makes a fit golden when the sample has none, Better passes the golden on
+to the new fit (a new fit better than a non-golden one is graded in mode 1 instead),
+Both bad drops the golden, Same and Worse keep it.
 """
 
 import argparse
@@ -166,7 +167,9 @@ class Store:
                 if golden is None and r['grade'] >= GOLDEN_FROM:
                     golden = (r['fit_id'], r['grade'], ts)
             elif r['outcome'] == 'better':
-                golden = (r['new_fit'], golden[1] if golden else GOLDEN_FROM, ts)
+                # better than a golden fit is golden; better than a weak one is graded on its own
+                if golden is not None and golden[0] == r['old_fit']:
+                    golden = (r['new_fit'], golden[1], ts)
             elif r['outcome'] == 'both_bad':
                 golden = None
         self.db.execute('DELETE FROM golden WHERE sample_id=?', (sample_id,))

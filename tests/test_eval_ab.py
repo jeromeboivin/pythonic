@@ -295,3 +295,16 @@ def test_features_are_measured_again(world):
     store.run("UPDATE fits SET features='{}'")
     assert E.refresh_features(store, log=lambda *_: None) == 3
     assert 'end_oct' in json.loads(store.one('SELECT features FROM fits')['features'])
+
+
+def test_better_than_a_weak_fit_is_not_golden(world):
+    store, *_ = world
+    api = make_api(store)
+    sample_id, old_fit, new_fit = new_version(store, 'Machine A/BD Kick 01', 130.0)
+    store.run('INSERT INTO grades(sample_id, fit_id, grade, tags, orig_side, ts) VALUES(?,?,?,?,?,?)',
+              sample_id, old_fit, 1, '[]', 'a', 1.0)
+    E.queue_comparison(store, sample_id, old_fit, new_fit, 'test')
+    t = api.next({'mode': 'compare'})
+    layout = json.loads(store.one('SELECT layout FROM trials WHERE token=?', t['token'])['layout'])
+    assert not api.answer({'token': t['token'], 'choice': 'a' if layout['a'] == 'new' else 'b'})['golden']
+    assert any(r['fit_id'] == new_fit for r in api._grade_candidates({}))      # now graded on its own

@@ -434,9 +434,11 @@ page has two modes. *Original vs fit* grades a fit Awful, Weak, Good or Perfect
 (keys 1-4) with defect tags and a note; the sides are shuffled and hidden until
 you answer, and every sound plays at the same K-weighted loudness (about 5 % of
 the trials silently repeat an earlier one, to measure how consistent your ears are).
-*Old vs new* compares two versions of a sample (Better, Same, Worse, Both bad).
-Samples graded Good or Perfect are the golden set: Better makes a new version
-golden, Both bad drops it, Same and Worse keep it.
+*Old vs new* compares two versions of a sample: you say which side is better (or
+Same, or Both bad), and the page records Better or Worse for the new version.
+Samples graded Good or Perfect are the golden set: Better passes it on to the new
+version, Both bad drops it, Same and Worse keep it. A new version that beats a
+fit outside the golden set is graded in the first mode.
 
 After changing the engine, `tools/eval_ab.py check` re-renders every golden patch
 and prints how many moved past each distance (loudness-weighted mel, envelope and
