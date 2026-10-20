@@ -308,3 +308,16 @@ def test_better_than_a_weak_fit_is_not_golden(world):
     layout = json.loads(store.one('SELECT layout FROM trials WHERE token=?', t['token'])['layout'])
     assert not api.answer({'token': t['token'], 'choice': 'a' if layout['a'] == 'new' else 'b'})['golden']
     assert any(r['fit_id'] == new_fit for r in api._grade_candidates({}))      # now graded on its own
+
+
+def test_compare_without_an_old_run_takes_the_latest_earlier_fit(world, tmp_path):
+    store, samples, fits, names = world
+    for label, freq in (('second', 140.0), ('third', 160.0)):
+        folder = tmp_path / label
+        write_run(samples, folder, names, freq=freq)
+        E.register(store, samples, folder, label, log=lambda *_: None)
+    assert E.compare_runs(store, '', 'third', log=lambda *_: None) == 3
+    second = {r['sample_id']: r['id'] for r in store.q(
+        "SELECT f.* FROM fits f JOIN run_fits rf ON rf.fit_id=f.id JOIN runs r ON r.id=rf.run_id AND r.label='second'")}
+    for c in store.q('SELECT * FROM comparisons'):
+        assert c['old_fit'] == second[c['sample_id']]

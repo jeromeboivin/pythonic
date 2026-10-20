@@ -444,7 +444,7 @@ After changing the engine, `tools/eval_ab.py check` re-renders every golden patc
 and prints how many moved past each distance (loudness-weighted mel, envelope and
 pitch); `--queue --threshold N` sends those over N to the *Old vs new* mode. After
 changing the fitter, refit the golden samples of the affected categories into
-a new folder, `register` it and queue it with `compare --from OLD --to NEW`.
+a new folder, `register` it and queue it with `compare --to NEW` (each new fit against the sample's golden fit, else its latest earlier one; `--from OLD` picks a run instead).
 
 ## ⚙️ Technical Specifications
 

@@ -3,7 +3,7 @@ Blind A/B listening page for the sample fits, with a SQLite record of what you h
 
     venv/bin/python tools/eval_ab.py register <samples dir> <fit dir> --label NAME
     venv/bin/python tools/eval_ab.py serve [--port 8767]
-    venv/bin/python tools/eval_ab.py compare --from OLD --to NEW
+    venv/bin/python tools/eval_ab.py compare [--from OLD] --to NEW
     venv/bin/python tools/eval_ab.py check [--threshold 0.75] [--queue]
     venv/bin/python tools/eval_ab.py report
     venv/bin/python tools/eval_ab.py features
@@ -24,9 +24,9 @@ serve     the listening page. Mode 1 grades a fit against its original (Awful,
           is better (or Same, or Both bad) and the page turns it into Better or
           Worse for the new version. Which side is which is shuffled and hidden until you
           answer, and every sound is played at the same K-weighted loudness.
-compare   queues mode 2 pairs between two registered runs: for each sample with
-          a different fit in both, the golden fit (else the OLD run's) against
-          the NEW run's.
+compare   queues mode 2 pairs for the fits of the NEW run: each against its
+          sample's golden fit, else its fit in the OLD run, else (no --from) its
+          latest fit registered before.
 check     the regression guard after an engine change: re-renders every golden
           patch with the current engine and measures how far it moved from the
           frozen render. It prints how many are over each threshold; --queue
@@ -323,28 +323,37 @@ def queue_comparison(store: Store, sample_id: int, old_fit: int, new_fit: int, r
     return cur.rowcount > 0
 
 
-def compare_runs(store: Store, old: str, new: str, log=print) -> int:
-    """Queue old-vs-new pairs between two runs; returns how many are new."""
-    ids = []
-    for label in (old, new):
+def compare_runs(store: Store, old, new: str, log=print) -> int:
+    """Queue old-vs-new pairs for the fits of run ``new``; returns how many are new. The
+    old fit of a sample is its golden fit, else its fit in run ``old``, else (``old`` None)
+    the latest fit registered before the new one."""
+    def run_id(label):
         row = store.one('SELECT id FROM runs WHERE label=?', label)
         if row is None:
             raise SystemExit(f'no run called {label!r}')
-        ids.append(row['id'])
+        return row['id']
+    new_id = run_id(new)
+    old_id = run_id(old) if old else None
     queued = same = 0
-    for r in store.q('SELECT a.sample_id, a.id AS old_fit, b.id AS new_fit FROM fits a '
-                     'JOIN run_fits ra ON ra.fit_id=a.id AND ra.run_id=? '
-                     'JOIN fits b ON b.sample_id=a.sample_id JOIN run_fits rb ON rb.fit_id=b.id AND rb.run_id=?',
-                     ids[0], ids[1]):
-        if r['old_fit'] == r['new_fit']:
-            same += 1
-            continue
+    for r in store.q('SELECT f.id, f.sample_id FROM fits f JOIN run_fits rf ON rf.fit_id=f.id AND rf.run_id=?',
+                     new_id):
         gold = store.one('SELECT fit_id FROM golden WHERE sample_id=?', r['sample_id'])
-        old_fit = gold['fit_id'] if gold else r['old_fit']
-        if old_fit == r['new_fit']:
+        if gold:
+            old_fit = gold['fit_id']
+        elif old_id is not None:
+            row = store.one('SELECT f.id FROM fits f JOIN run_fits rf ON rf.fit_id=f.id AND rf.run_id=? '
+                            'WHERE f.sample_id=? ORDER BY f.id DESC', old_id, r['sample_id'])
+            old_fit = row['id'] if row else None
+        else:
+            row = store.one("SELECT id FROM fits WHERE sample_id=? AND source='register' AND id<? "
+                            'ORDER BY id DESC', r['sample_id'], r['id'])
+            old_fit = row['id'] if row else None
+        if old_fit is None:
+            continue
+        if old_fit == r['id']:
             same += 1
             continue
-        queued += queue_comparison(store, r['sample_id'], old_fit, r['new_fit'], f'{old} -> {new}')
+        queued += queue_comparison(store, r['sample_id'], old_fit, r['id'], f'{old or "latest"} -> {new}')
     log(f'{queued} pairs queued, {same} samples unchanged')
     return queued
 
@@ -816,7 +825,8 @@ def main(argv=None) -> None:
     p.add_argument('--port', type=int, default=8767)
     p.add_argument('--host', default='127.0.0.1')
     p = sub.add_parser('compare', help='queue old-vs-new pairs between two runs')
-    p.add_argument('--from', dest='old', required=True)
+    p.add_argument('--from', dest='old', default='',
+                   help='old run (default: each sample\'s golden, else its latest earlier fit)')
     p.add_argument('--to', dest='new', required=True)
     p = sub.add_parser('check', help='re-render the golden patches with the current engine')
     p.add_argument('--threshold', type=float, default=DEFAULT_THRESHOLD)
