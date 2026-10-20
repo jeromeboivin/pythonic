@@ -6,6 +6,7 @@ Blind A/B listening page for the sample fits, with a SQLite record of what you h
     venv/bin/python tools/eval_ab.py compare --from OLD --to NEW
     venv/bin/python tools/eval_ab.py check [--threshold 0.75] [--queue]
     venv/bin/python tools/eval_ab.py report
+    venv/bin/python tools/eval_ab.py features
 
 Everything lives in kits/eval (--root): evals.sqlite and the audio the verdicts
 refer to.
@@ -29,6 +30,7 @@ check     the regression guard after an engine change: re-renders every golden
           patch with the current engine and measures how far it moved from the
           frozen render. It prints how many are over each threshold; --queue
           sends those over --threshold to mode 2 (frozen vs new render).
+features  measures every fit against its original again, after the measures change.
 report    grades by machine and category, defect tags against the fitter score
           and measured features, regressions, and how consistent the ears are.
 
@@ -250,6 +252,18 @@ def add_fit(store: Store, sample_id: int, patch: pathlib.Path, wav: pathlib.Path
         f'versions/{digest}/patch.mtdrum', f'versions/{digest}/fit.wav', audio.loudness_db(folder / 'fit.wav'),
         score, start_score, json.dumps(feats), git_state(), time.time())
     return fit_id, True
+
+
+def refresh_features(store: Store, log=print) -> int:
+    """Measure every fit against its original again (after the measures change)."""
+    rows = store.q('SELECT f.id, f.wav_file, s.trim_file FROM fits f JOIN samples s ON s.id=f.sample_id')
+    for r in rows:
+        ref, _ = audio.read_mono(store.path(r['trim_file']))
+        out, _ = audio.read_mono(store.path(r['wav_file']))
+        store.db.execute('UPDATE fits SET features=? WHERE id=?', (json.dumps(audio.compare(ref, out)), r['id']))
+    store.db.commit()
+    log(f'{len(rows)} fits measured again')
+    return len(rows)
 
 
 def register(store: Store, samples_dir, fit_dir, label: str, set_name: str = '', only: str = '',
@@ -626,7 +640,7 @@ def fmt(x, nd=2):
     return '-' if x is None else f'{x:.{nd}f}'
 
 
-FEATURES = ('mel', 'env', 'pitch_st', 'bright_oct', 'decay_oct', 'click_db', 'level_db')
+FEATURES = ('mel', 'env', 'pitch_st', 'bright_oct', 'decay_oct', 'end_oct', 'click_db', 'level_db')
 
 
 def report(store: Store, out=print) -> None:
@@ -662,9 +676,15 @@ def report(store: Store, out=print) -> None:
         out(f'  {t:22s} {len(rows):3d}  {mean([r["grade"] for r in rows]):.2f}  {fmt(mean([r["score"] for r in rows])):>5s}  '
             + '  '.join(f'{fmt(mean([f.get(k) for f in feats])):>9s}' for k in FEATURES))
     out('  (measures are fit minus original: pitch in semitones, brightness and decay in octaves, '
-        'click and level in dB)')
+        'click and level in dB; end_oct is how much longer the fit stays within 50 dB of its peak)')
 
     scored = [(g['score'], g['grade']) for g in grades if g['score'] is not None]
+    feats = [json.loads(g['features'] or '{}') for g in grades]
+    long = [g for g, f in zip(grades, feats) if (f.get('end_oct') or 0.0) > 0.5]
+    if long:
+        out(f'\nFits outlasting their original by over 40 % at -50 dB: {len(long)}, mean grade '
+            f'{mean([g["grade"] for g in long]):.2f} (others {mean([g["grade"] for g, f in zip(grades, feats) if (f.get("end_oct") or 0.0) <= 0.5]):.2f})')
+
     if len(scored) > 2 and np.std([a for a, _ in scored]) > 0 and np.std([b for _, b in scored]) > 0:
         out(f'\nCorrelation of the fitter score with your grade: {np.corrcoef(*zip(*scored))[0, 1]:+.2f} '
             f'(-1 means the lower score is the better ear grade, as it should)')
@@ -796,6 +816,7 @@ def main(argv=None) -> None:
     p.add_argument('--label', default='')
     p.add_argument('--jobs', type=int, default=0)
     sub.add_parser('report', help='what the verdicts say')
+    sub.add_parser('features', help='measure every fit against its original again')
     args = ap.parse_args(argv)
 
     store = Store(args.root)
@@ -810,6 +831,8 @@ def main(argv=None) -> None:
             pass
     elif args.cmd == 'compare':
         compare_runs(store, args.old, args.new)
+    elif args.cmd == 'features':
+        refresh_features(store)
     elif args.cmd == 'check':
         check(store, args.threshold, args.queue, args.label, args.jobs)
     else:

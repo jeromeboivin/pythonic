@@ -15,7 +15,8 @@ returns the distance and the pieces it is made of:
   energy there);
 - ``bright_oct``: the full-band spectral centroid ratio, in octaves;
 - ``decay_oct``: the ratio of the times the envelopes stay within 30 dB of
-  their peak, in octaves;
+  their peak, in octaves; ``end_oct`` the same at 50 dB, where a patch ringing
+  on after a sample that stops shows;
 - ``click_db``: the difference of the level of the first 5 ms under the peak.
 
 ``distance = mel + 0.5 * env + 2 * |pitch_st|`` (dB-like units). Two renders of
@@ -141,7 +142,7 @@ def compare(ref: np.ndarray, other: np.ndarray) -> dict:
     ea, eb = float(np.sum(a ** 2)), float(np.sum(b ** 2))
     if ea <= 0 or eb <= 0:
         return {'distance': 99.0, 'mel': 99.0, 'env': 99.0, 'pitch_st': None, 'bright_oct': None,
-                'decay_oct': None, 'click_db': None, 'level_db': None}
+                'decay_oct': None, 'end_oct': None, 'click_db': None, 'level_db': None}
     an, bn = a / math.sqrt(ea), b / math.sqrt(eb)
     mel = _weighted(_mel_power(an), _mel_power(bn))
     env = _weighted(_envelope(an), _envelope(bn))
@@ -155,6 +156,7 @@ def compare(ref: np.ndarray, other: np.ndarray) -> dict:
         'mel': mel, 'env': env, 'pitch_st': pitch,
         'bright_oct': math.log2(fb / fa) if fa and fb else None,
         'decay_oct': math.log2(_t_within(_envelope(b), 30.0) / _t_within(_envelope(a), 30.0)),
+        'end_oct': math.log2(_t_within(_envelope(b), 50.0) / _t_within(_envelope(a), 50.0)),
         'click_db': _click_db(b) - _click_db(a),
         'level_db': 10 * math.log10(eb / ea),
     }

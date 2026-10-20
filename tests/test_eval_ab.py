@@ -272,3 +272,10 @@ def test_report_lists_tags_and_regressions(world):
     E.report(store, out.append)
     text = '\n'.join(out)
     assert '2 graded fits' in text and 'too dark' in text and 'By category' in text
+
+
+def test_features_are_measured_again(world):
+    store, *_ = world
+    store.run("UPDATE fits SET features='{}'")
+    assert E.refresh_features(store, log=lambda *_: None) == 3
+    assert 'end_oct' in json.loads(store.one('SELECT features FROM fits')['features'])
