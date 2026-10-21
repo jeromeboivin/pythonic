@@ -630,12 +630,20 @@ class Api:
         return sql, args
 
     def _grade_candidates(self, f: dict) -> list:
+        """The current fit (current_fit) of each sample without a golden fit or a mark,
+        when it has no grade yet."""
         sql, args = self._filters(f)
-        return self.store.q(
-            "SELECT f.id AS fit_id, f.score, s.id AS sample_id, s.set_name, s.machine, s.rel FROM samples s "
-            "JOIN fits f ON f.id=(SELECT max(id) FROM fits WHERE sample_id=s.id AND source='register') "
-            'WHERE s.flag IS NULL AND NOT EXISTS (SELECT 1 FROM golden g WHERE g.sample_id=s.id) '
-            'AND NOT EXISTS (SELECT 1 FROM grades gr WHERE gr.fit_id=f.id AND gr.repeat_of IS NULL)' + sql, *args)
+        out = []
+        for r in self.store.q('SELECT s.id AS sample_id, s.set_name, s.machine, s.rel, f.id AS fit_id, f.score '
+                              'FROM samples s JOIN fits f ON f.sample_id=s.id '
+                              'WHERE s.flag IS NULL AND NOT EXISTS (SELECT 1 FROM golden g WHERE g.sample_id=s.id) '
+                              "AND f.source='register'" + sql, *args):
+            if r['fit_id'] != current_fit(self.store, r['sample_id']):
+                continue
+            if self.store.one('SELECT 1 FROM grades WHERE fit_id=? AND repeat_of IS NULL', r['fit_id']):
+                continue
+            out.append(r)
+        return out
 
     def _layout(self, first: str, second: str) -> dict:
         return {'a': first, 'b': second} if self.rng.random() < 0.5 else {'a': second, 'b': first}

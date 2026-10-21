@@ -469,3 +469,18 @@ def test_a_clipped_kick_striking_on_every_cycle_is_one_hit(tmp_path):
     path = tmp_path / 'clipped.wav'
     sf.write(str(path), kick, SR, subtype='PCM_24')
     assert E.multi_hit(path, 'bd') is None
+
+
+def test_the_grading_queue_offers_the_fit_you_preferred(world, tmp_path):
+    store, samples, fits, names = world
+    api = make_api(store)
+    folder = tmp_path / 'second'
+    write_run(samples, folder, names, freq=140.0)
+    E.register(store, samples, folder, 'second', log=lambda *_: None)
+    E.compare_runs(store, '', 'second', log=lambda *_: None)
+    while (t := api.next({'mode': 'compare'})) is not None:      # the old one wins every pair
+        layout = json.loads(store.one('SELECT layout FROM trials WHERE token=?', t['token'])['layout'])
+        api.answer({'token': t['token'], 'choice': 'a' if layout['a'] == 'old' else 'b'})
+    first = {r['id'] for r in store.q(
+        "SELECT f.id FROM fits f JOIN run_fits rf ON rf.fit_id=f.id JOIN runs r ON r.id=rf.run_id AND r.label='first'")}
+    assert {r['fit_id'] for r in api._grade_candidates({})} == first
