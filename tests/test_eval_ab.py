@@ -412,3 +412,19 @@ def test_compare_keeps_the_fit_you_preferred(world, tmp_path):
     assert E.compare_runs(store, '', 'third', log=lambda *_: None) == 3
     for c in store.q("SELECT * FROM comparisons WHERE status='pending'"):
         assert c['old_fit'] == first[c['sample_id']]
+
+
+def test_a_bench_is_a_blind_pick_among_named_candidates(world):
+    store, *_ = world
+    api = make_api(store)
+    sample_id = store.one("SELECT id FROM samples WHERE rel LIKE '%Kick 01'")['id']
+    fits = [r['id'] for r in store.q('SELECT id FROM fits')]
+    E.make_bench(store, sample_id, [('current fit', fits[0]), ('other', fits[1])], 'bench')
+    t = api.next({'mode': 'ladder'})
+    layout = json.loads(store.one('SELECT layout FROM trials WHERE token=?', t['token'])['layout'])
+    reveal = api.answer({'token': t['token'], 'pick': next(k for k, v in layout.items() if v == fits[1])})
+    assert reveal['candidate'] == 'other'
+    assert E.queue_ladder_picks(store, log=lambda *_: None) == 0      # a bench pick changes no fit
+    out = []
+    E.report(store, out.append)
+    assert any('other' in line and 'Kick 01' in line for line in out)

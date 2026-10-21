@@ -154,7 +154,7 @@ class Store:
         self.db.executescript(SCHEMA)
         for table, column in (('trials', 'ladder_id INTEGER'), ('trials', 'grade_id INTEGER'),
                               ('grades', 'blind_tags TEXT'), ('grades', 'blind_grade INTEGER'),
-                              ('grades', 'retagged REAL')):
+                              ('grades', 'retagged REAL'), ('ladder_items', 'name TEXT')):
             if column.split()[0] not in {r[1] for r in self.db.execute(f'PRAGMA table_info({table})')}:
                 self.db.execute(f'ALTER TABLE {table} ADD COLUMN {column}')
         self.lock = threading.RLock()
@@ -425,9 +425,20 @@ def make_ladder(store: Store, sample_id: int, steps, label: str) -> int:
                 patch.write_text(shift_patch(text, st), encoding='utf-8')
                 render_patch(patch, wav)
                 fit_id, _ = add_fit(store, sample_id, patch, wav, 'ladder')
-            store.run('INSERT OR IGNORE INTO ladder_items VALUES(?,?,?)', ladder, fit_id, float(st))
+            store.run('INSERT OR IGNORE INTO ladder_items(ladder_id, fit_id, shift) VALUES(?,?,?)', ladder, fit_id, float(st))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+    return ladder
+
+
+def make_bench(store: Store, sample_id: int, candidates, label: str) -> int:
+    """Queue a blind pick among named candidates [(name, fit id)] for a sample; shown in the
+    Pitch ladder page, the original also played as the reference."""
+    ladder = store.run('INSERT INTO ladders(sample_id, base_fit, label) VALUES(?,?,?)',
+                       sample_id, candidates[0][1], label)
+    for i, (name, fit_id) in enumerate(candidates):
+        store.run('INSERT OR IGNORE INTO ladder_items(ladder_id, fit_id, shift, name) VALUES(?,?,?,?)',
+                  ladder, fit_id, float(i), name)
     return ladder
 
 
@@ -436,6 +447,7 @@ def queue_ladder_picks(store: Store, log=print) -> int:
     a sample with a ladder still waiting); returns how many pairs are new."""
     queued = 0
     for r in store.q("SELECT * FROM ladders l WHERE status='done' AND pick_fit IS NOT NULL AND pick_fit!=base_fit "
+                     "AND NOT EXISTS (SELECT 1 FROM ladder_items i WHERE i.ladder_id=l.id AND i.name IS NOT NULL) "
                      "AND ts=(SELECT max(ts) FROM ladders WHERE sample_id=l.sample_id AND status='done') "
                      "AND NOT EXISTS (SELECT 1 FROM ladders p WHERE p.sample_id=l.sample_id AND p.status='pending')"):
         queued += queue_comparison(store, r['sample_id'], r['base_fit'], r['pick_fit'],
@@ -761,12 +773,13 @@ class Api:
                 if pick != 'none' and pick not in layout:
                     raise ValueError('pick must be a slot number or none')
                 fit_id = layout[pick] if pick != 'none' else None
-                shift = s.one('SELECT shift FROM ladder_items WHERE ladder_id=? AND fit_id=?',
-                              t['ladder_id'], fit_id)[0] if fit_id else None
+                item = s.one('SELECT shift, name FROM ladder_items WHERE ladder_id=? AND fit_id=?',
+                             t['ladder_id'], fit_id) if fit_id else None
+                shift = item['shift'] if item else None
                 s.run("UPDATE ladders SET status='done', pick_fit=?, pick_shift=?, tags=?, note=?, ts=? WHERE id=?",
                       fit_id, shift, tags, note, now, t['ladder_id'])
                 reveal = {'machine': sample['machine'], 'name': pathlib.Path(sample['rel']).name, 'shift': shift,
-                          'record': t['ladder_id']}
+                          'candidate': item['name'] if item else None, 'record': t['ladder_id']}
             else:
                 # The listener only knows the sides: the side they prefer is mapped to
                 # the new or the old version here
@@ -922,9 +935,13 @@ def report_versions(store: Store, out=print) -> None:
     if ladders:
         out(f'\nPitch ladders: {len(ladders)} answered (semitones you moved the fit to match the original)')
         for r in ladders:
-            pick = 'none close' if r['pick_shift'] is None else f'{r["pick_shift"]:+g}'
+            named = store.one('SELECT name FROM ladder_items WHERE ladder_id=? AND fit_id=?',
+                                       r['id'], r['pick_fit']) if r['pick_fit'] else None
+            pick = ('none close' if r['pick_shift'] is None else
+                    named['name'] if named and named['name'] else f'{r["pick_shift"]:+g}')
             out(f'  {pick:>10s}  {r["machine"]}/{pathlib.Path(r["rel"]).name}' + (f'  note: {r["note"]}' if r['note'] else ''))
-        picks = [r['pick_shift'] for r in ladders if r['pick_shift'] is not None]
+        named_ids = {r[0] for r in store.q('SELECT DISTINCT ladder_id FROM ladder_items WHERE name IS NOT NULL')}
+        picks = [r['pick_shift'] for r in ladders if r['pick_shift'] is not None and r['id'] not in named_ids]
         if picks:
             out(f'  median {float(np.median(picks)):+g}, mean {mean(picks):+.2f} semitones over {len(picks)} picks')
 

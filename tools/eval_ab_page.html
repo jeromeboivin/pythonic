@@ -87,7 +87,7 @@ kbd { font: 12px ui-monospace, monospace; border: 1px solid var(--line); border-
     <div class="tabs" role="tablist">
       <button role="tab" id="tab-grade" aria-selected="true">Original vs fit</button>
       <button role="tab" id="tab-compare" aria-selected="false">Old vs new</button>
-      <button role="tab" id="tab-ladder" aria-selected="false">Pitch ladder</button>
+      <button role="tab" id="tab-ladder" aria-selected="false">Pick the closest</button>
     </div>
     <div class="filters">
       <select id="f-machine" aria-label="Machine"></select>
@@ -275,12 +275,12 @@ async function loadTrial(t) {
     $('card').hidden = true; $('empty').hidden = false;
     $('empty').textContent = mode === 'grade'
       ? 'Nothing left to grade here. Register a run with tools/eval_ab.py register, then Rescan.'
-      : mode === 'ladder' ? 'No pitch ladder waiting. Queue some with tools/eval_ab.py ladder.'
+      : mode === 'ladder' ? 'Nothing to pick. Queue pitch ladders with tools/eval_ab.py ladder.'
       : 'No old-vs-new pair waiting. Queue some with tools/eval_ab.py compare or check --queue.';
     // point to the work waiting in the other modes
     const waiting = summary ? [['grade', summary.todo_grade + summary.todo_retag, 'fits to grade or re-tag in Original vs fit'],
                                ['compare', summary.pending_compare, 'pairs in Old vs new'],
-                               ['ladder', summary.pending_ladder, 'ladders in Pitch ladder']]
+                               ['ladder', summary.pending_ladder, 'to pick in Pick the closest']]
       .filter(([m, n]) => m !== mode && n > 0) : [];
     for (const [m, n, label] of waiting) {
       const b = document.createElement('button'); b.className = 'small'; b.style.margin = '12px 6px 0';
@@ -339,7 +339,8 @@ async function submit() {
     last.append(b, r.retag
       ? ` re-tagged · grade ${r.grade}${r.grade !== r.was ? ` (was ${r.was})` : ''}` + (r.golden ? ' · golden' : '')
       : mode === 'ladder'
-      ? (r.shift == null ? ' none close' : ` you moved the fit ${r.shift > 0 ? '+' : ''}${r.shift} semitone${Math.abs(r.shift) === 1 ? '' : 's'}`)
+      ? (r.shift == null ? ' none close' : r.candidate ? ` you picked: ${r.candidate}`
+         : ` you moved the fit ${r.shift > 0 ? '+' : ''}${r.shift} semitone${Math.abs(r.shift) === 1 ? '' : 's'}`)
       : mode === 'grade'
       ? ` graded ${r.grade}${r.repeat ? ' (repeat)' : ''}` + (r.score != null ? ` · fitter score ${r.score.toFixed(2)}` : '') + (r.golden ? ' · golden' : '')
       : ` you chose ${r.choice === 'a' || r.choice === 'b' ? r.choice.toUpperCase() : r.choice.replace('_', ' ')} · new was ${r.new_side} → ${r.outcome.replace('_', ' ')} (${r.reason})` + (r.golden ? ' · golden' : ''));
