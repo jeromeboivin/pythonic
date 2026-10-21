@@ -428,3 +428,44 @@ def test_a_bench_is_a_blind_pick_among_named_candidates(world):
     out = []
     E.report(store, out.append)
     assert any('other' in line and 'Kick 01' in line for line in out)
+
+
+def test_a_sample_of_several_strikes_is_marked_and_set_aside(world):
+    store, samples, fits, names = world
+    api = make_api(store)
+    sample = store.one("SELECT * FROM samples WHERE rel LIKE '%Kick 03'")
+    t = np.arange(int(0.3 * SR)) / SR
+    roll = np.zeros_like(t)
+    for at in (0.0, 0.03, 0.07, 0.09, 0.14):            # five snare strikes, unevenly apart
+        i = int(at * SR)
+        n = int(0.02 * SR)
+        roll[i:i + n] += np.random.default_rng(i).uniform(-0.5, 0.5, n) * np.exp(-np.arange(n) / (0.004 * SR))
+    sf.write(str(store.path(sample['raw_file'])), roll, SR, subtype='PCM_24')
+    assert E.flag_samples(store, log=lambda *_: None) == 1
+    assert store.one('SELECT flag FROM samples WHERE id=?', sample['id'])[0].startswith('5 strikes')
+    assert all(r['sample_id'] != sample['id'] for r in api._grade_candidates({}))
+    # by ear, from the page
+    trial = api.next({'mode': 'grade'})
+    reveal = api.answer({'token': trial['token'], 'grade': 2, 'flag': True})
+    assert reveal['flagged']
+    out = []
+    E.report(store, out.append)
+    assert any('2 samples are not one hit' in line for line in out)
+    # a flag by ear survives a new automatic pass
+    E.flag_samples(store, log=lambda *_: None)
+    assert store.one("SELECT count(*) FROM samples WHERE flag_source='ear'")[0] == 1
+
+
+def test_one_hit_has_one_strike():
+    t = np.arange(int(0.4 * SR)) / SR
+    kick = np.sin(2 * np.pi * 55.0 * t) * np.exp(-t / 0.15)
+    kick[:int(0.002 * SR)] += np.random.default_rng(2).uniform(-0.4, 0.4, int(0.002 * SR))
+    assert len(A.strikes(kick)) <= 1
+
+
+def test_a_clipped_kick_striking_on_every_cycle_is_one_hit(tmp_path):
+    t = np.arange(int(0.3 * SR)) / SR
+    kick = np.clip(3.0 * np.sin(2 * np.pi * 55.0 * t) * np.exp(-t / 0.2), -1.0, 1.0)
+    path = tmp_path / 'clipped.wav'
+    sf.write(str(path), kick, SR, subtype='PCM_24')
+    assert E.multi_hit(path, 'bd') is None

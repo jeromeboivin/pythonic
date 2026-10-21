@@ -8,6 +8,7 @@ Blind A/B listening page for the sample fits, with a SQLite record of what you h
     venv/bin/python tools/eval_ab.py ladder --only TEXT [--only TEXT ...] [--steps -3,-2,-1,0,1,2,3]
     venv/bin/python tools/eval_ab.py report
     venv/bin/python tools/eval_ab.py features
+    venv/bin/python tools/eval_ab.py flags [--scan FOLDER]
 
 Everything lives in kits/eval (--root): evals.sqlite and the audio the verdicts
 refer to.
@@ -41,6 +42,11 @@ ladder    renders the current fit of each sample matched by --only with its
           and you pick the closest.
 ladder-picks queues each sample's latest ladder pick against the fit it moved, as
           a mode 2 pair (not while a ladder of that sample is still waiting).
+flags     marks the registered samples that are not one drum hit (4 strikes or more
+          above 2 kHz, outside claps, hats and cymbals): a one-shot patch cannot
+          follow them, so they leave the grading queue and the report's tables. A
+          sample can also be marked by ear in the page (key M). --scan lists the
+          samples of a whole folder that would be marked (multi_hits.csv).
 features  measures every fit against its original again, after the measures change.
 report    grades by machine and category, defect tags against the fitter score
           and measured features, regressions, and how consistent the ears are.
@@ -154,7 +160,8 @@ class Store:
         self.db.executescript(SCHEMA)
         for table, column in (('trials', 'ladder_id INTEGER'), ('trials', 'grade_id INTEGER'),
                               ('grades', 'blind_tags TEXT'), ('grades', 'blind_grade INTEGER'),
-                              ('grades', 'retagged REAL'), ('ladder_items', 'name TEXT')):
+                              ('grades', 'retagged REAL'), ('ladder_items', 'name TEXT'),
+                              ('samples', 'flag TEXT'), ('samples', 'flag_source TEXT')):
             if column.split()[0] not in {r[1] for r in self.db.execute(f'PRAGMA table_info({table})')}:
                 self.db.execute(f'ALTER TABLE {table} ADD COLUMN {column}')
         self.lock = threading.RLock()
@@ -442,6 +449,64 @@ def make_bench(store: Store, sample_id: int, candidates, label: str) -> int:
     return ladder
 
 
+MULTI_HIT_STRIKES = 4
+MANY_STRIKES = {'clap', 'cy', 'oh', 'ch', 'shaker'}   # bursts, jingles or a shimmer are their nature
+PERIODIC_SPREAD = 0.2  # strikes this evenly spaced (spread of the gaps re their mean) are the
+                       # cycles of a clipped tone, not new hits
+
+
+def multi_hit(path, category: str):
+    """The strikes of a sample when there are too many for one hit of its kind, else None."""
+    if category in MANY_STRIKES:
+        return None
+    x, sr = sf.read(str(path), always_2d=True)
+    hits = audio.strikes(x, sr)
+    if len(hits) < MULTI_HIT_STRIKES:
+        return None
+    gaps = np.diff(hits)
+    return None if np.std(gaps) < PERIODIC_SPREAD * np.mean(gaps) else hits
+
+
+def flag_samples(store: Store, log=print) -> int:
+    """Mark the registered samples that are not one hit; returns how many are marked."""
+    marked = 0
+    for r in store.q("SELECT * FROM samples WHERE flag_source IS NULL OR flag_source='auto'"):
+        hits = multi_hit(store.path(r['raw_file']), r['category'])
+        flag = f'{len(hits)} strikes ({", ".join(map(str, hits))} ms)' if hits else None
+        store.db.execute('UPDATE samples SET flag=?, flag_source=? WHERE id=?',
+                         (flag, 'auto' if flag else None, r['id']))
+        if flag:
+            marked += 1
+            log(f'  {r["machine"]}/{pathlib.Path(r["rel"]).name}: {flag}')
+    store.db.commit()
+    log(f'{marked} samples marked as more than one hit')
+    return marked
+
+
+def scan_folder(folder, out_csv, log=print) -> list:
+    """The samples of a folder that flags would mark, written to out_csv."""
+    folder = pathlib.Path(folder)
+    fs = fit_modules()
+    rows = []
+    for path in sorted(p for p in folder.rglob('*') if p.suffix.lower() in AUDIO_SUFFIXES):
+        cats = fs.categories_for(path, folder)
+        hits = multi_hit(path, cats[0] if cats else 'other')
+        if hits:
+            rows.append({'sample': str(path.relative_to(folder)), 'category': '+'.join(cats) or 'other',
+                         'strikes': len(hits), 'at_ms': ' '.join(map(str, hits))})
+    with open(out_csv, 'w', newline='', encoding='utf-8') as f:
+        w = csv.DictWriter(f, fieldnames=['sample', 'category', 'strikes', 'at_ms'])
+        w.writeheader()
+        w.writerows(rows)
+    by_machine = {}
+    for r in rows:
+        by_machine.setdefault(pathlib.Path(r['sample']).parts[0], []).append(r)
+    for m, rs in sorted(by_machine.items(), key=lambda kv: -len(kv[1])):
+        log(f'  {m:28s} {len(rs)}')
+    log(f'{len(rows)} samples of {folder} are more than one hit; list in {out_csv}')
+    return rows
+
+
 def queue_ladder_picks(store: Store, log=print) -> int:
     """Queue each sample's latest ladder pick against the fit the ladder was built on (not for
     a sample with a ladder still waiting); returns how many pairs are new."""
@@ -569,7 +634,7 @@ class Api:
         return self.store.q(
             "SELECT f.id AS fit_id, f.score, s.id AS sample_id, s.set_name, s.machine, s.rel FROM samples s "
             "JOIN fits f ON f.id=(SELECT max(id) FROM fits WHERE sample_id=s.id AND source='register') "
-            'WHERE NOT EXISTS (SELECT 1 FROM golden g WHERE g.sample_id=s.id) '
+            'WHERE s.flag IS NULL AND NOT EXISTS (SELECT 1 FROM golden g WHERE g.sample_id=s.id) '
             'AND NOT EXISTS (SELECT 1 FROM grades gr WHERE gr.fit_id=f.id AND gr.repeat_of IS NULL)' + sql, *args)
 
     def _layout(self, first: str, second: str) -> dict:
@@ -577,7 +642,8 @@ class Api:
 
     @staticmethod
     def _heading(sample) -> dict:
-        return {'machine': sample['machine'], 'category': sample['category'], 'name': pathlib.Path(sample['rel']).name}
+        return {'machine': sample['machine'], 'category': sample['category'], 'name': pathlib.Path(sample['rel']).name,
+                'flag': sample['flag']}
 
     def _new_trial(self, kind, sample_id, layout, fit_id=None, comparison_id=None, repeat_of=None,
                    ladder_id=None, grade_id=None) -> str:
@@ -795,6 +861,9 @@ class Api:
                 reveal = {'new_side': side.upper(), 'machine': sample['machine'], 'name': pathlib.Path(sample['rel']).name,
                           'choice': choice, 'outcome': outcome, 'reason': c['reason'], 'distance': c['distance'], 'record': c['id'],
                           'golden': bool(s.one('SELECT 1 FROM golden WHERE sample_id=?', t['sample_id']))}
+            if body.get('flag'):
+                s.run("UPDATE samples SET flag='not one hit (by ear)', flag_source='ear' WHERE id=?", t['sample_id'])
+                reveal['flagged'] = True
             s.run('UPDATE trials SET answered=1 WHERE token=?', t['token'])
             return reveal
 
@@ -852,7 +921,13 @@ FEATURES = ('mel', 'env', 'pitch_st', 'bright_oct', 'decay_oct', 'end_oct', 'cli
 
 def report(store: Store, out=print) -> None:
     grades = store.q('SELECT g.*, f.score, f.features, s.machine, s.category, s.rel FROM grades g '
-                     'JOIN fits f ON f.id=g.fit_id JOIN samples s ON s.id=g.sample_id WHERE g.repeat_of IS NULL')
+                     'JOIN fits f ON f.id=g.fit_id JOIN samples s ON s.id=g.sample_id '
+                     'WHERE g.repeat_of IS NULL AND s.flag IS NULL')
+    flagged = store.q('SELECT * FROM samples WHERE flag IS NOT NULL ORDER BY machine, rel')
+    if flagged:
+        out(f'{len(flagged)} samples are not one hit and left out of the tables:')
+        for r in flagged:
+            out(f'  {r["machine"]}/{pathlib.Path(r["rel"]).name}: {r["flag"]}')
     out(f'{len(grades)} graded fits, {store.one("SELECT count(*) FROM golden")[0]} golden, '
         f'{store.one("SELECT count(*) FROM fits")[0]} fits registered, '
         f'{store.one("SELECT count(*) FROM comparisons WHERE status=?", "pending")[0]} comparisons pending')
@@ -1057,6 +1132,8 @@ def main(argv=None) -> None:
     p.add_argument('--jobs', type=int, default=0)
     sub.add_parser('report', help='what the verdicts say')
     sub.add_parser('features', help='measure every fit against its original again')
+    p = sub.add_parser('flags', help='mark the samples that are not one hit')
+    p.add_argument('--scan', default='', help='list the samples of this folder that would be marked')
     sub.add_parser('ladder-picks', help='queue the ladder picks as old-vs-new pairs')
     p = sub.add_parser('ladder', help='queue pitch ladders of the current fits')
     p.add_argument('--only', action='append', required=True, help='samples whose path contains this text')
@@ -1078,6 +1155,11 @@ def main(argv=None) -> None:
         compare_runs(store, args.old, args.new)
     elif args.cmd == 'features':
         refresh_features(store)
+    elif args.cmd == 'flags':
+        if args.scan:
+            scan_folder(args.scan, store.root / 'multi_hits.csv')
+        else:
+            flag_samples(store)
     elif args.cmd == 'ladder-picks':
         queue_ladder_picks(store)
     elif args.cmd == 'ladder':

@@ -160,3 +160,27 @@ def compare(ref: np.ndarray, other: np.ndarray) -> dict:
         'click_db': _click_db(b) - _click_db(a),
         'level_db': 10 * math.log10(eb / ea),
     }
+
+
+HIT_BAND_HZ = 2000.0   # strikes are found above this: a low body's half cycles are not strikes
+HIT_RISE_DB = 8.0      # a strike rises this far over the dip before it
+HIT_NEAR_DB = 15.0     # ... to within this of the loudest
+HIT_GAP_MS = 15.0
+
+
+def strikes(x: np.ndarray, sr: int = SR) -> list:
+    """Times (ms) of the strikes in a sound: peaks of its 2 ms energy above 2 kHz that rise
+    HIT_RISE_DB over the dip before them, to within HIT_NEAR_DB of the loudest. A single
+    drum hit has one (a snare's snap and body can make two; claps and cymbals more)."""
+    x = np.asarray(x, np.float64)
+    if x.ndim > 1:
+        x = x.mean(axis=1)
+    high = signal.sosfilt(signal.butter(4, HIT_BAND_HZ, 'high', fs=sr, output='sos'), x)
+    w = max(int(sr * 0.002), 2)
+    env = np.sqrt(np.convolve(high ** 2, np.ones(w) / w, mode='same'))
+    if env.max() <= 0:
+        return []
+    # (silence ahead, so a strike on the first sample is a peak too)
+    db = np.r_[-200.0, 20 * np.log10(env[::w // 2] / env.max() + 1e-9)]
+    peaks, _ = signal.find_peaks(db, prominence=HIT_RISE_DB, distance=max(1, int(HIT_GAP_MS / 1.0)))
+    return [round((p - 1) * (w // 2) / sr * 1000.0) for p in peaks if db[p] > -HIT_NEAR_DB]

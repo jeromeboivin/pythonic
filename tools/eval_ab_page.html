@@ -63,6 +63,7 @@ h1 { font-size: 18px; margin: 0 8px 0 0; }
 .v1 { color: var(--g1); } .v2 { color: var(--g2); } .v3 { color: var(--g3); } .v4 { color: var(--g4); }
 .tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
 .chip { padding: 3px 10px; font-size: 13px; border-radius: 999px; }
+#flag[aria-pressed="true"] { background: var(--g1); border-color: var(--g1); color: var(--bg); }
 .chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--bg); }
 .chip kbd { color: var(--dim); font-size: 11px; margin-right: 4px; }
 .chip[aria-pressed="true"] kbd { color: inherit; }
@@ -114,6 +115,7 @@ kbd { font: 12px ui-monospace, monospace; border: 1px solid var(--line); border-
     </div>
     <div class="verdict" id="verdict"></div>
     <div class="row">
+      <button class="small" id="flag" aria-pressed="false" title="The original is not one drum hit (a roll, a flam, two sounds mixed)">not one hit <kbd>M</kbd></button>
       <button class="small" id="tag-toggle"><span id="tag-label">tags</span> <kbd>T</kbd></button>
       <input type="text" id="note" placeholder="note (N)">
       <button class="small" id="submit">Save and next <kbd>Enter</kbd></button>
@@ -126,7 +128,7 @@ kbd { font: 12px ui-monospace, monospace; border: 1px solid var(--line); border-
     Original vs fit: <kbd>0</kbd> original, <kbd>F</kbd> fit, <kbd>U</kbd> untrimmed original · Old vs new: <kbd>A</kbd> <kbd>B</kbd>, <kbd>0</kbd> original ·
     <kbd>Space</kbd> play both twice · <kbd>R</kbd> repeat ·
     <kbd>1</kbd>-<kbd>4</kbd> verdict (ladder: <kbd>1</kbd>-<kbd>7</kbd> play and pick, <kbd>X</kbd> none) · <kbd>T</kbd> tags (then <kbd>1</kbd>-<kbd>9</kbd>) · <kbd>Enter</kbd> save ·
-    <kbd>Backspace</kbd> undo the last · <kbd>→</kbd> skip
+    <kbd>M</kbd> the original is not one hit · <kbd>Backspace</kbd> undo the last · <kbd>→</kbd> skip
   </div>
 </main>
 <div class="toast" id="toast"></div>
@@ -141,6 +143,7 @@ let slots = ['a', 'b'];
 const SLOT_INFO = {orig: ['Original', '0'], fit: ['Fit', 'F'], a: ['A', 'A'], b: ['B', 'B']};
 const slotInfo = s => SLOT_INFO[s] || [s, s];
 const refKey = () => (trial && (trial.kind === 'grade' || trial.kind === 'retag')) ? 'u' : '0';
+let flagIt = false;
 let mode = 'grade', trial = null, buffers = {}, verdict = null, tags = new Set(), tagList = [];
 let ctx = null, master = null, current = null, lastSlot = 'a', seqToken = 0, summary = null;
 
@@ -271,6 +274,7 @@ function filters() {
 }
 async function loadTrial(t) {
   stop(); trial = t; buffers = {}; verdict = null; tags = new Set(); $('note').value = '';
+  flagIt = false; $('flag').setAttribute('aria-pressed', 'false');
   if (!t || t.empty) {
     $('card').hidden = true; $('empty').hidden = false;
     $('empty').textContent = mode === 'grade'
@@ -290,7 +294,9 @@ async function loadTrial(t) {
     return;
   }
   $('card').hidden = false; $('empty').hidden = true;
-  $('h-name').textContent = t.name; $('h-meta').textContent = `${t.machine} · ${t.category}` + (t.remaining ? ` · ${t.remaining} left` : '');
+  $('h-name').textContent = t.name; $('h-meta').textContent = `${t.machine} · ${t.category}` + (t.remaining ? ` · ${t.remaining} left` : '')
+    + (t.flag ? ` · marked: ${t.flag}` : '');
+  $('flag').hidden = !(t.kind === 'grade' || t.kind === 'retag');
   $('ref').textContent = `${(t.kind === 'grade' || t.kind === 'retag') ? 'U' : '0'}  ${t.ref_label}`;
   slots = t.kind === 'ladder' ? Array.from({length: t.slots}, (_, i) => String(i + 1)) : t.slot_names;
   lastSlot = slots[0];
@@ -330,7 +336,7 @@ async function refresh(keep) {
 async function submit() {
   if (!trial || trial.empty) return;
   if (!verdict) return toast(mode === 'grade' ? 'Choose a grade (1-4)' : mode === 'ladder' ? 'Play a candidate to pick it, or X' : 'Choose an outcome (1-4)');
-  const body = {token: trial.token, tags: [...tags], note: $('note').value};
+  const body = {token: trial.token, tags: [...tags], note: $('note').value, flag: flagIt};
   body[{grade: 'grade', compare: 'choice', ladder: 'pick'}[mode]] = mode === 'grade' ? +verdict : verdict;
   try {
     const r = await api('/api/answer', body);
@@ -344,9 +350,11 @@ async function submit() {
       : mode === 'grade'
       ? ` graded ${r.grade}${r.repeat ? ' (repeat)' : ''}` + (r.score != null ? ` · fitter score ${r.score.toFixed(2)}` : '') + (r.golden ? ' · golden' : '')
       : ` you chose ${r.choice === 'a' || r.choice === 'b' ? r.choice.toUpperCase() : r.choice.replace('_', ' ')} · new was ${r.new_side} → ${r.outcome.replace('_', ' ')} (${r.reason})` + (r.golden ? ' · golden' : ''));
+    if (r.flagged) last.append(' · marked as not one hit');
     await refresh(false);
   } catch (e) { toast(e.message); }
 }
+function toggleFlag() { flagIt = !flagIt; $('flag').setAttribute('aria-pressed', String(flagIt)); }
 async function undo() {
   try {
     const t = await api('/api/undo', {});
@@ -373,7 +381,7 @@ $('tab-ladder').onclick = () => setMode('ladder');
 for (const k of ['machine', 'category', 'run', 'order']) $('f-' + k).onchange = () => refresh(false);
 $('ref').onclick = () => play('ref');
 $('seq').onclick = sequence; $('again').onclick = () => play(lastSlot);
-$('submit').onclick = submit; $('vol').oninput = setVolume;
+$('submit').onclick = submit; $('vol').oninput = setVolume; $('flag').onclick = toggleFlag;
 $('tag-toggle').onclick = () => $('tags').classList.toggle('hide');
 $('rescan').onclick = async () => {
   const run = $('f-run').value; if (!run) return toast('Pick a run first');
@@ -396,6 +404,7 @@ document.addEventListener('keydown', e => {
   else if (k === ' ') { e.preventDefault(); sequence(); }
   else if (k === 'r') play(lastSlot);
   else if (k === 't') $('tags').classList.toggle('hide');
+  else if (k === 'm' && !$('flag').hidden) toggleFlag();
   else if (k === 'n') { e.preventDefault(); $('note').focus(); }
   else if (k === 'enter') submit();
   else if (k === 'backspace') { e.preventDefault(); undo(); }
