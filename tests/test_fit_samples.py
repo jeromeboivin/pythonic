@@ -4,6 +4,8 @@ sample is found from its partials, shared across the samples of a machine,
 and never found in a drum without one.
 """
 
+import math
+
 import numpy as np
 import pytest
 
@@ -79,6 +81,15 @@ def test_a_patch_ringing_past_a_cut_short_sample_is_penalised():
     assert target.loss(tom[:target.n]) > target.loss(stops) + 1.0
     # cut by --max-seconds, the sample goes on: compared only up to the cut
     assert F.Target(cut, ended=False).n == len(cut)
+
+
+def test_a_band_passed_noise_is_never_narrow_enough_to_ring():
+    from pythonic.voice import FILT_BP, FILT_LP
+    u = F.encode(VoiceParams(noise_q=20.0, noise_filter=FILT_BP))
+    assert F.decode(u, F.switches_of(VoiceParams(noise_filter=FILT_BP))).noise_q == F.NOISE_BP_Q_MAX
+    assert F.decode(u, F.switches_of(VoiceParams(noise_filter=FILT_LP))).noise_q == pytest.approx(20.0)
+    # toms keep the full range: their narrow noise is their note
+    assert F.decode(u, F.switches_of(VoiceParams(noise_filter=FILT_BP)), bp_q_max=math.inf).noise_q == pytest.approx(20.0)
 
 
 def test_a_metal_fit_leaves_the_eq_flat():

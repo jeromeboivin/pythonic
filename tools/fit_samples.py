@@ -124,6 +124,13 @@ CHOKE_CATEGORIES = {'ch', 'oh'}
 # Continuous controls: (VoiceParams field, low, high, scale). 'knob' attacks
 # are fitted as the knob position of the attack curve; 'amount' is the
 # signed square-root pitch mod amount the engine uses, scaled by the mode range.
+# A narrow band-passed noise rings like a note: the fits that used one as the tone of a
+# drum were heard as wrong tone, robotic or resonant (58 % of them against 22 %), and
+# capped they won by ear on cowbells and rims. Toms keep the full range: there the
+# narrow noise carries the drum's note, and capped they lost
+NOISE_BP_Q_MAX = 4.0
+FREE_Q_CATEGORIES = {'tom'}
+
 CONTINUOUS = [
     ('osc_freq', 20.0, 20000.0, 'log'),
     ('osc_attack_ms', 0.0, 1.0, 'knob'),
@@ -190,7 +197,7 @@ def encode(p: VoiceParams, metal: bool = False) -> np.ndarray:
 METAL_FIXED = {'eq_gain_db': 0.0}
 
 
-def decode(u: np.ndarray, switches: tuple, freqs: tuple = ()) -> VoiceParams:
+def decode(u: np.ndarray, switches: tuple, freqs: tuple = (), bp_q_max: float = NOISE_BP_Q_MAX) -> VoiceParams:
     """VoiceParams from a unit-cube vector and the (wave, mod mode, filter, env) switches;
     a vector longer than CONTINUOUS carries the metal section, on the oscillator freqs
     (and leaves METAL_FIXED as it says)."""
@@ -211,6 +218,8 @@ def decode(u: np.ndarray, switches: tuple, freqs: tuple = ()) -> VoiceParams:
         fields[name] = v
     if len(u) > len(CONTINUOUS):
         fields.update(METAL_FIXED)
+    if fields['noise_filter'] == FILT_BP:
+        fields['noise_q'] = min(fields['noise_q'], bp_q_max)
     return VoiceParams(**fields)
 
 
@@ -457,6 +466,7 @@ class Target:
         self.strike = strike_track(x) if pitched else None
         self.metal_freqs = ()
         self.partial_bins = None
+        self.bp_q_max = NOISE_BP_Q_MAX     # fit_one frees it for toms
 
     def use_metal(self, freqs: tuple):
         """Fit with the metal section on these oscillator frequencies: the render has the
@@ -886,7 +896,7 @@ def cma_run(target: Target, x0, sw: tuple, sigma: float, evals: int, seed: int, 
     es = cma.CMAEvolutionStrategy(np.asarray(x0, float), sigma, opts)
     while not es.stop():
         xs = es.ask()
-        es.tell(xs, [target.score(decode(x, sw, target.metal_freqs)) for x in xs])
+        es.tell(xs, [target.score(decode(x, sw, target.metal_freqs, target.bp_q_max)) for x in xs])
     if es.result.xbest is None:
         return float('inf'), np.asarray(x0, float), es.result.evaluations
     return float(es.result.fbest), np.array(es.result.xbest), es.result.evaluations
@@ -931,7 +941,8 @@ def fit_one(job: dict) -> dict:
     metal = bool(target.metal_freqs)
     seeds = itertools.count(job['seed'] + 1)
     code = lambda p: encode(p, metal)
-    back = lambda u, sw: decode(u, sw, target.metal_freqs)
+    target.bp_q_max = math.inf if set(job['cats']) & FREE_Q_CATEGORIES else NOISE_BP_Q_MAX
+    back = lambda u, sw: decode(u, sw, target.metal_freqs, target.bp_q_max)
 
     # 1. starts, scored once
     sources = {'library': job['library'], 'partials': seed_starts(x),
