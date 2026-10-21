@@ -88,31 +88,50 @@ def test_a_wav_older_than_its_patch_is_rendered_again(tmp_path):
     assert not np.allclose(stored[:SR // 4, 0], sf.read(str(wav))[0][:SR // 4, 0], atol=1e-3)
 
 
-def test_trial_is_blind_and_worst_score_comes_first(world):
+def test_grade_trial_labels_the_original_and_the_fit_worst_score_first(world):
     store, *_ = world
     api = make_api(store)
     trial = api.next({'mode': 'grade'})
-    assert set(trial) >= {'token', 'gain', 'name', 'machine'} and 'layout' not in trial
+    assert trial['slot_names'] == ['orig', 'fit'] and set(trial['gain']) == {'orig', 'fit', 'ref'}
     sample = store.one('SELECT s.* FROM trials t JOIN samples s ON s.id=t.sample_id')
     assert sample['rel'].endswith('Kick 03')                       # score 12 is the worst of 10, 11, 12
     assert max(trial['gain'].values()) <= 0.0
-    for slot in ('a', 'b', 'ref'):
-        path, ctype = api.media(trial['token'], slot)
-        assert path.is_file() and ctype == 'audio/wav'
-
-
-def test_grade_shuffles_sides_and_reveals_after_the_answer(world):
-    store, *_ = world
-    api = E.Api(store, rng=__import__('random').Random(1))
-    sides = set()
-    for _ in range(12):
-        t = api.next({'mode': 'grade', 'order': 'random'})
-        sides.add(json.loads(store.one('SELECT layout FROM trials WHERE token=?', t['token'])['layout'])['a'])
-    assert sides == {'orig', 'fit'}
-    reveal = api.answer({'token': t['token'], 'grade': 2, 'tags': ['too dark']})
-    assert reveal['orig_side'] in ('A', 'B') and reveal['grade'] == 'Weak' and not reveal['golden']
+    fit = store.one('SELECT f.* FROM trials t JOIN fits f ON f.id=t.fit_id')
+    assert api.media(trial['token'], 'fit')[0] == store.path(fit['wav_file'])
+    assert api.media(trial['token'], 'orig')[0] == store.path(sample['trim_file'])
+    assert api.media(trial['token'], 'ref')[0] == store.path(sample['raw_file'])
+    reveal = api.answer({'token': trial['token'], 'grade': 2, 'tags': ['too dark']})
+    assert reveal['grade'] == 'Weak' and not reveal['golden']
+    assert store.one('SELECT orig_side FROM grades')[0] == 'labelled'
     with pytest.raises(ValueError):
-        api.answer({'token': t['token'], 'grade': 2})
+        api.answer({'token': trial['token'], 'grade': 2})
+
+
+def test_blind_tags_are_asked_again_with_the_grade_kept(world):
+    store, *_ = world
+    api = make_api(store)
+    sample_id, fit_id = store.one('SELECT sample_id, id FROM fits ORDER BY id')
+    gid = store.run("INSERT INTO grades(sample_id, fit_id, grade, tags, note, orig_side, ts) VALUES(?,?,?,?,?,?,?)",
+                    sample_id, fit_id, 3, '["pitch low"]', 'old note', 'a', 1.0)
+    store.recompute_golden(sample_id)
+    assert api.summary()['todo_retag'] == 1 and api.summary()['default_mode'] == 'grade'
+    t = api.next({'mode': 'grade'})
+    assert t['kind'] == 'retag' and t['grade'] == 3 and t['old_note'] == 'old note'
+    assert api.media(t['token'], 'fit')[0].is_file()
+    reveal = api.answer({'token': t['token'], 'grade': 2, 'tags': ['pitch high'], 'note': ''})
+    assert reveal['retag'] and (reveal['grade'], reveal['was']) == ('Weak', 'Good') and not reveal['golden']
+    g = store.one('SELECT * FROM grades WHERE id=?', gid)
+    assert (json.loads(g['tags']), json.loads(g['blind_tags']), g['blind_grade'], g['note']) == (
+        ['pitch high'], ['pitch low'], 3, 'old note')
+    assert api.summary()['todo_retag'] == 0 and api.next({'mode': 'grade'})['kind'] == 'grade'
+    back = api.undo()
+    assert back['kind'] == 'retag'
+    g = store.one('SELECT * FROM grades WHERE id=?', gid)
+    assert (g['tags'], g['grade'], g['retagged']) == ('["pitch low"]', 3, None)
+    assert store.one('SELECT grade FROM golden WHERE sample_id=?', sample_id)[0] == 3
+    out = []
+    E.report(store, out.append)
+    assert any('1 grades with blind tags left out' in line for line in out)
 
 
 def test_good_grade_makes_the_sample_golden_and_leaves_the_queue(world):
@@ -267,7 +286,7 @@ def test_http_round_trip(world):
         assert summary['todo_grade'] == 3 and summary['default_mode'] == 'grade'
         trial = get('/api/next?mode=grade&order=folder')
         assert trial['name'] == 'BD Kick 01'
-        audio = urllib.request.urlopen(f'{base}/media/{trial["token"]}/a').read()
+        audio = urllib.request.urlopen(f'{base}/media/{trial["token"]}/fit').read()
         assert audio[:4] == b'RIFF'
         reveal = post('/api/answer', {'token': trial['token'], 'grade': 4, 'tags': [], 'note': 'x'})
         assert reveal['golden']

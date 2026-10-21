@@ -42,7 +42,8 @@ h1 { font-size: 18px; margin: 0 8px 0 0; }
 .plays { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .play { height: 120px; font-size: 34px; font-weight: 700; border-width: 2px; position: relative; }
 .play small { display: block; font-size: 12px; font-weight: 400; color: var(--dim); }
-.play[data-slot="a"] { border-color: var(--a); color: var(--a); }
+.play[data-slot="a"], .play[data-slot="fit"] { border-color: var(--a); color: var(--a); }
+.play[data-slot="orig"] { border-color: var(--ref); color: var(--ref); }
 .play[data-slot="b"] { border-color: var(--b); color: var(--b); }
 .plays.ladder { grid-template-columns: repeat(auto-fit, minmax(64px, 1fr)); gap: 8px; }
 .plays.ladder .play { height: 84px; font-size: 26px; color: var(--ink); }
@@ -122,7 +123,8 @@ kbd { font: 12px ui-monospace, monospace; border: 1px solid var(--line); border-
   <section class="card empty" id="empty" hidden></section>
   <div class="last" id="last"></div>
   <div class="help">
-    <kbd>A</kbd> <kbd>B</kbd> play · <kbd>0</kbd> reference · <kbd>Space</kbd> A B A B · <kbd>R</kbd> repeat ·
+    Original vs fit: <kbd>0</kbd> original, <kbd>F</kbd> fit, <kbd>U</kbd> untrimmed original · Old vs new: <kbd>A</kbd> <kbd>B</kbd>, <kbd>0</kbd> original ·
+    <kbd>Space</kbd> play both twice · <kbd>R</kbd> repeat ·
     <kbd>1</kbd>-<kbd>4</kbd> verdict (ladder: <kbd>1</kbd>-<kbd>7</kbd> play and pick, <kbd>X</kbd> none) · <kbd>T</kbd> tags (then <kbd>1</kbd>-<kbd>9</kbd>) · <kbd>Enter</kbd> save ·
     <kbd>Backspace</kbd> undo the last · <kbd>→</kbd> skip
   </div>
@@ -135,6 +137,10 @@ const GRADE_LABELS = [['1', 'Awful'], ['2', 'Weak'], ['3', 'Good'], ['4', 'Perfe
 const CHOICE_LABELS = [['a', 'A is better', ''], ['b', 'B is better', ''],
                        ['same', 'Same', 'no difference'], ['both_bad', 'Both bad', 'neither is good']];
 let slots = ['a', 'b'];
+// name and key of each slot (ladder slots are their own number)
+const SLOT_INFO = {orig: ['Original', '0'], fit: ['Fit', 'F'], a: ['A', 'A'], b: ['B', 'B']};
+const slotInfo = s => SLOT_INFO[s] || [s, s];
+const refKey = () => (trial && (trial.kind === 'grade' || trial.kind === 'retag')) ? 'u' : '0';
 let mode = 'grade', trial = null, buffers = {}, verdict = null, tags = new Set(), tagList = [];
 let ctx = null, master = null, current = null, lastSlot = 'a', seqToken = 0, summary = null;
 
@@ -191,7 +197,7 @@ function play(slot) {
 async function sequence() {
   stop(); const mine = seqToken;
   // ladder: the original then the picked candidate, twice (or every candidate once)
-  const order = mode !== 'ladder' ? ['a', 'b', 'a', 'b']
+  const order = mode !== 'ladder' ? [slots[0], slots[1], slots[0], slots[1]]
     : verdict && verdict !== 'none' ? ['ref', verdict, 'ref', verdict] : ['ref', ...slots];
   for (const s of order) {
     if (mine !== seqToken) return;
@@ -206,8 +212,9 @@ function renderPlays() {
   box.classList.toggle('ladder', mode === 'ladder');
   for (const s of slots) {
     const b = document.createElement('button'); b.className = 'play'; b.dataset.slot = s;
-    const big = document.createElement('span'); big.textContent = s.toUpperCase();
-    const small = document.createElement('small'); small.textContent = `key ${s.toUpperCase()}`;
+    const [name, key] = slotInfo(s);
+    const big = document.createElement('span'); big.textContent = name;
+    const small = document.createElement('small'); small.textContent = `key ${key}`;
     b.append(big, small);
     b.setAttribute('aria-pressed', mode === 'ladder' && verdict === s);
     b.onclick = () => { if (mode === 'ladder') choose(s); play(s); };
@@ -271,7 +278,7 @@ async function loadTrial(t) {
       : mode === 'ladder' ? 'No pitch ladder waiting. Queue some with tools/eval_ab.py ladder.'
       : 'No old-vs-new pair waiting. Queue some with tools/eval_ab.py compare or check --queue.';
     // point to the work waiting in the other modes
-    const waiting = summary ? [['grade', summary.todo_grade, 'fits to grade in Original vs fit'],
+    const waiting = summary ? [['grade', summary.todo_grade + summary.todo_retag, 'fits to grade or re-tag in Original vs fit'],
                                ['compare', summary.pending_compare, 'pairs in Old vs new'],
                                ['ladder', summary.pending_ladder, 'ladders in Pitch ladder']]
       .filter(([m, n]) => m !== mode && n > 0) : [];
@@ -284,10 +291,16 @@ async function loadTrial(t) {
   }
   $('card').hidden = false; $('empty').hidden = true;
   $('h-name').textContent = t.name; $('h-meta').textContent = `${t.machine} · ${t.category}` + (t.remaining ? ` · ${t.remaining} left` : '');
-  $('ref').textContent = `0  ${t.ref_label}`;
-  slots = t.kind === 'ladder' ? Array.from({length: t.slots}, (_, i) => String(i + 1)) : ['a', 'b'];
+  $('ref').textContent = `${(t.kind === 'grade' || t.kind === 'retag') ? 'U' : '0'}  ${t.ref_label}`;
+  slots = t.kind === 'ladder' ? Array.from({length: t.slots}, (_, i) => String(i + 1)) : t.slot_names;
   lastSlot = slots[0];
-  $('seq-label').textContent = t.kind === 'ladder' ? '0 then pick, twice' : 'A B A B';
+  $('seq-label').textContent = t.kind === 'ladder' ? '0 then pick, twice'
+    : slots.map(s => slotInfo(s)[0]).concat(slots.map(s => slotInfo(s)[0])).join(' ');
+  if (t.kind === 'retag') {
+    verdict = String(t.grade);
+    $('h-meta').textContent += ' · re-tag: you graded it blind, say what is wrong with the fit';
+    $('note').placeholder = t.old_note ? `note (was: ${t.old_note})` : 'note (N)';
+  } else $('note').placeholder = 'note (N)';
   renderPlays();
   const c = audioContext();
   await Promise.all([...slots, 'ref'].map(async s => {
@@ -308,7 +321,8 @@ async function refresh(keep) {
     sel.value = list.includes(old) ? old : '';
   }
   const g = summary.grade_counts;
-  $('stats').textContent = `${summary.todo_grade} fits to grade · ${summary.graded} graded (` +
+  $('stats').textContent = (summary.todo_retag ? `${summary.todo_retag} to re-tag · ` : '') +
+    `${summary.todo_grade} fits to grade · ${summary.graded} graded (` +
     Object.entries(g).map(([k, v]) => `${v} ${k}`).join(', ') + `) · ${summary.golden} golden · ${summary.pending_compare} pairs waiting` +
     ` · ${summary.pending_ladder} ladders waiting`;
   if (!keep) await loadTrial(await api('/api/next?' + new URLSearchParams(filters())));
@@ -322,10 +336,12 @@ async function submit() {
     const r = await api('/api/answer', body);
     const last = $('last'); last.textContent = '';
     const b = document.createElement('b'); b.textContent = `${r.machine} / ${r.name}`;
-    last.append(b, mode === 'ladder'
+    last.append(b, r.retag
+      ? ` re-tagged · grade ${r.grade}${r.grade !== r.was ? ` (was ${r.was})` : ''}` + (r.golden ? ' · golden' : '')
+      : mode === 'ladder'
       ? (r.shift == null ? ' none close' : ` you moved the fit ${r.shift > 0 ? '+' : ''}${r.shift} semitone${Math.abs(r.shift) === 1 ? '' : 's'}`)
       : mode === 'grade'
-      ? ` graded ${r.grade}${r.repeat ? ' (repeat)' : ''} · original was ${r.orig_side}` + (r.score != null ? ` · fitter score ${r.score.toFixed(2)}` : '') + (r.golden ? ' · golden' : '')
+      ? ` graded ${r.grade}${r.repeat ? ' (repeat)' : ''}` + (r.score != null ? ` · fitter score ${r.score.toFixed(2)}` : '') + (r.golden ? ' · golden' : '')
       : ` you chose ${r.choice === 'a' || r.choice === 'b' ? r.choice.toUpperCase() : r.choice.replace('_', ' ')} · new was ${r.new_side} → ${r.outcome.replace('_', ' ')} (${r.reason})` + (r.golden ? ' · golden' : ''));
     await refresh(false);
   } catch (e) { toast(e.message); }
@@ -334,7 +350,8 @@ async function undo() {
   try {
     const t = await api('/api/undo', {});
     if (t.empty) return toast('Nothing to undo');
-    if (t.kind !== mode) setMode(t.kind, true);
+    const m = t.kind === 'retag' ? 'grade' : t.kind;
+    if (m !== mode) setMode(m, true);
     $('last').textContent = 'Last verdict taken back.';
     await refresh(true); await loadTrial(t);
   } catch (e) { toast(e.message); }
@@ -370,10 +387,11 @@ document.addEventListener('keydown', e => {
     return;
   }
   const k = e.key.toLowerCase(), tagsOpen = !$('tags').classList.contains('hide');
-  if (mode === 'ladder' && !tagsOpen && slots.includes(k)) { choose(k); play(k); }
+  const hot = slots.find(s => slotInfo(s)[1].toLowerCase() === k);
+  if (mode === 'ladder' && !tagsOpen && hot) { choose(hot); play(hot); }
   else if (mode === 'ladder' && k === 'x') choose('none');
-  else if (mode !== 'ladder' && (k === 'a' || k === 'b')) play(k);
-  else if (k === '0') play('ref');
+  else if (k === refKey()) play('ref');
+  else if (hot && !(tagsOpen && /^[0-9]$/.test(k))) play(hot);
   else if (k === ' ') { e.preventDefault(); sequence(); }
   else if (k === 'r') play(lastSlot);
   else if (k === 't') $('tags').classList.toggle('hide');

@@ -20,7 +20,9 @@ register  snapshots a fit run: for each <fit dir>/<path>.mtdrum whose sample
           sees it) into originals/. Run it again for the same label to add the
           fits finished since. Scores come from fit_report.csv or <fit dir>.log.
 serve     the listening page. Mode 1 grades a fit against its original (Awful,
-          Weak, Good, Perfect; Good and Perfect make the sample golden). Mode 2
+          Weak, Good, Perfect; Good and Perfect make the sample golden), both
+          labelled, so that tags say what is wrong with the fit (grades given
+          blind before have their tags asked again: re-tag trials come first). Mode 2
           compares an old and a new version of a sample: you say which side
           is better (or Same, or Both bad) and the page turns it into Better or
           Worse for the new version. Which side is which is shuffled and hidden until you
@@ -150,8 +152,11 @@ class Store:
         self.db = sqlite3.connect(str(self.root / 'evals.sqlite'), check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
-        if 'ladder_id' not in {r[1] for r in self.db.execute('PRAGMA table_info(trials)')}:
-            self.db.execute('ALTER TABLE trials ADD COLUMN ladder_id INTEGER')
+        for table, column in (('trials', 'ladder_id INTEGER'), ('trials', 'grade_id INTEGER'),
+                              ('grades', 'blind_tags TEXT'), ('grades', 'blind_grade INTEGER'),
+                              ('grades', 'retagged REAL')):
+            if column.split()[0] not in {r[1] for r in self.db.execute(f'PRAGMA table_info({table})')}:
+                self.db.execute(f'ALTER TABLE {table} ADD COLUMN {column}')
         self.lock = threading.RLock()
 
     def q(self, sql, *args):
@@ -517,6 +522,7 @@ class Api:
                 'pending_compare': n("SELECT count(*) FROM comparisons WHERE status='pending'"),
                 'pending_ladder': n("SELECT count(*) FROM ladders WHERE status='pending'"),
                 'todo_grade': len(self._grade_candidates({})),
+                'todo_retag': len(self._retag_candidates({})),
                 'grade_counts': {GRADES[g]: dist.get(g, 0) for g in GRADES},
                 'sets': [r[0] for r in s.q('SELECT DISTINCT set_name FROM samples ORDER BY 1')],
                 'machines': [r[0] for r in s.q('SELECT DISTINCT machine FROM samples ORDER BY 1')],
@@ -524,7 +530,7 @@ class Api:
                 'runs': [r[0] for r in s.q('SELECT label FROM runs ORDER BY id')],
                 'tags': TAGS + sorted(self._custom_tags()),
                 'grades': GRADES, 'outcomes': list(OUTCOMES),
-                'default_mode': ('compare' if n("SELECT count(*) FROM comparisons WHERE status='pending'") else
+                'default_mode': ('grade' if self._retag_candidates({}) else 'compare' if n("SELECT count(*) FROM comparisons WHERE status='pending'") else
                                  'ladder' if n("SELECT count(*) FROM ladders WHERE status='pending'") else 'grade'),
             }
 
@@ -562,13 +568,13 @@ class Api:
         return {'machine': sample['machine'], 'category': sample['category'], 'name': pathlib.Path(sample['rel']).name}
 
     def _new_trial(self, kind, sample_id, layout, fit_id=None, comparison_id=None, repeat_of=None,
-                   ladder_id=None) -> str:
+                   ladder_id=None, grade_id=None) -> str:
         s = self.store
         s.db.execute('DELETE FROM trials WHERE answered=0')
         token = uuid.uuid4().hex
-        s.run('INSERT INTO trials(token, kind, sample_id, fit_id, comparison_id, layout, repeat_of, created, ladder_id)'
-              ' VALUES(?,?,?,?,?,?,?,?,?)', token, kind, sample_id, fit_id, comparison_id, json.dumps(layout),
-              repeat_of, time.time(), ladder_id)
+        s.run('INSERT INTO trials(token, kind, sample_id, fit_id, comparison_id, layout, repeat_of, created,'
+              ' ladder_id, grade_id) VALUES(?,?,?,?,?,?,?,?,?,?)', token, kind, sample_id, fit_id, comparison_id,
+              json.dumps(layout), repeat_of, time.time(), ladder_id, grade_id)
         return token
 
     def next(self, f: dict):
@@ -580,8 +586,18 @@ class Api:
                 return self._next_ladder(f)
             return self._next_grade(f)
 
+    def _retag_candidates(self, f: dict) -> list:
+        """Grades given blind with tags: the tags could not tell the fit from the original."""
+        sql, args = self._filters(f)
+        return self.store.q("SELECT g.id FROM grades g JOIN samples s ON s.id=g.sample_id JOIN fits f ON f.id=g.fit_id "
+                            "WHERE g.repeat_of IS NULL AND g.orig_side IN ('a', 'b') AND g.tags NOT IN ('', '[]') "
+                            'AND g.retagged IS NULL' + sql + ' ORDER BY g.id', *args)
+
     def _next_grade(self, f: dict):
         s = self.store
+        retag = [r for r in self._retag_candidates(f) if ('retag', r['id']) not in self.skipped]
+        if retag:
+            return self.retag_trial(retag[0]['id'], remaining=len(retag))
         graded = s.q('SELECT * FROM grades WHERE repeat_of IS NULL')
         if len(graded) >= REPEAT_AFTER and self.rng.random() < REPEAT_RATE:
             again = {r['repeat_of'] for r in s.q('SELECT repeat_of FROM grades WHERE repeat_of IS NOT NULL')}
@@ -604,16 +620,24 @@ class Api:
             row = max(rows, key=lambda r: (r['score'] is not None, r['score'] or 0.0))
         return self.grade_trial(row['fit_id'], remaining=len(rows))
 
-    def grade_trial(self, fit_id: int, repeat_of=None, remaining=None) -> dict:
+    def grade_trial(self, fit_id: int, repeat_of=None, remaining=None, kind='grade', grade=None) -> dict:
+        """The original and the fit, labelled (their tags must say which one is wrong)."""
         s = self.store
         fit = s.one('SELECT * FROM fits WHERE id=?', fit_id)
         sample = s.one('SELECT * FROM samples WHERE id=?', fit['sample_id'])
-        layout = self._layout('orig', 'fit')
-        token = self._new_trial('grade', sample['id'], layout, fit_id=fit_id, repeat_of=repeat_of)
-        gains = dict(zip(('orig', 'fit', 'raw'), gains_for(sample['trim_loud'], fit['loud'], sample['raw_loud'])))
-        return {'token': token, 'kind': 'grade', 'remaining': remaining, **self._heading(sample),
-                'gain': {'a': gains[layout['a']], 'b': gains[layout['b']], 'ref': gains['raw']},
-                'ref_label': 'untrimmed original'}
+        layout = {'orig': 'orig', 'fit': 'fit'}
+        token = self._new_trial(kind, sample['id'], layout, fit_id=fit_id, repeat_of=repeat_of,
+                                grade_id=grade['id'] if grade is not None else None)
+        gains = dict(zip(('orig', 'fit', 'ref'), gains_for(sample['trim_loud'], fit['loud'], sample['raw_loud'])))
+        out = {'token': token, 'kind': kind, 'remaining': remaining, **self._heading(sample),
+               'slot_names': ['orig', 'fit'], 'gain': gains, 'ref_label': 'untrimmed original'}
+        if grade is not None:
+            out.update(grade=grade['grade'], old_note=grade['note'] or '')
+        return out
+
+    def retag_trial(self, grade_id: int, remaining=None) -> dict:
+        g = self.store.one('SELECT * FROM grades WHERE id=?', grade_id)
+        return self.grade_trial(g['fit_id'], remaining=remaining, kind='retag', grade=g)
 
     def _next_compare(self, f: dict):
         sql, args = self._filters(f)
@@ -633,6 +657,7 @@ class Api:
         token = self._new_trial('compare', sample['id'], layout, comparison_id=comparison_id)
         gains = dict(zip(('old', 'new', 'orig'), gains_for(old['loud'], new['loud'], sample['trim_loud'])))
         return {'token': token, 'kind': 'compare', 'remaining': remaining, **self._heading(sample),
+                'slot_names': ['a', 'b'],
                 'reason': c['reason'], 'distance': c['distance'],
                 'gain': {'a': gains[layout['a']], 'b': gains[layout['b']], 'ref': gains['orig']},
                 'ref_label': 'original'}
@@ -675,7 +700,7 @@ class Api:
                 else:
                     return None
                 return path, 'audio/' + ('wav' if path.suffix == '.wav' else path.suffix.lstrip('.'))
-            if t['kind'] == 'grade':
+            if t['kind'] in ('grade', 'retag'):
                 fit = s.one('SELECT * FROM fits WHERE id=?', t['fit_id'])
                 files = {'orig': sample['trim_file'], 'fit': fit['wav_file'], 'raw': sample['raw_file']}
                 kinds = {**layout, 'ref': 'raw'}
@@ -705,17 +730,28 @@ class Api:
             note = str(body.get('note', ''))
             now = time.time()
             sample = s.one('SELECT * FROM samples WHERE id=?', t['sample_id'])
-            if t['kind'] == 'grade':
+            if t['kind'] == 'retag':
                 grade = int(body['grade'])
                 if grade not in GRADES:
                     raise ValueError('grade must be 1-4')
-                side = 'a' if layout['a'] == 'orig' else 'b'
+                g = s.one('SELECT * FROM grades WHERE id=?', t['grade_id'])
+                s.run('UPDATE grades SET blind_tags=tags, blind_grade=grade, tags=?, grade=?, retagged=?,'
+                      " note=CASE WHEN ?='' THEN note ELSE ? END WHERE id=?", tags, grade, now, note, note, g['id'])
+                s.recompute_golden(t['sample_id'])
+                reveal = {'machine': sample['machine'], 'name': pathlib.Path(sample['rel']).name, 'retag': True,
+                          'grade': GRADES[grade], 'was': GRADES[g['grade']], 'record': g['id'],
+                          'golden': bool(s.one('SELECT 1 FROM golden WHERE sample_id=?', t['sample_id']))}
+            elif t['kind'] == 'grade':
+                grade = int(body['grade'])
+                if grade not in GRADES:
+                    raise ValueError('grade must be 1-4')
+                side = 'labelled'
                 gid = s.run('INSERT INTO grades(sample_id, fit_id, grade, tags, note, orig_side, repeat_of, ts)'
                             ' VALUES(?,?,?,?,?,?,?,?)', t['sample_id'], t['fit_id'], grade, tags, note,
                             side, t['repeat_of'], now)
                 s.recompute_golden(t['sample_id'])
                 fit = s.one('SELECT * FROM fits WHERE id=?', t['fit_id'])
-                reveal = {'orig_side': side.upper(), 'machine': sample['machine'], 'name': pathlib.Path(sample['rel']).name,
+                reveal = {'machine': sample['machine'], 'name': pathlib.Path(sample['rel']).name,
                           'score': fit['score'], 'grade': GRADES[grade], 'record': gid,
                           'features': json.loads(fit['features'] or '{}'),
                           'golden': bool(s.one('SELECT 1 FROM golden WHERE sample_id=?', t['sample_id'])),
@@ -754,18 +790,26 @@ class Api:
             t = self.store.one('SELECT * FROM trials WHERE token=?', token)
             if t:
                 self.skipped.add(('grade', t['fit_id']) if t['kind'] == 'grade' else
+                                 ('retag', t['grade_id']) if t['kind'] == 'retag' else
                                  ('ladder', t['ladder_id']) if t['kind'] == 'ladder' else ('compare', t['comparison_id']))
 
     def undo(self):
         """Take back the latest verdict and return a new trial for the same item."""
         s = self.store
         with s.lock:
+            r = s.one('SELECT id, retagged AS ts, sample_id FROM grades WHERE retagged IS NOT NULL '
+                      'ORDER BY retagged DESC LIMIT 1')
             g = s.one('SELECT id, ts, sample_id, fit_id, repeat_of FROM grades ORDER BY ts DESC LIMIT 1')
             c = s.one("SELECT id, ts, sample_id FROM comparisons WHERE status='done' ORDER BY ts DESC LIMIT 1")
             lad = s.one("SELECT id, ts FROM ladders WHERE status='done' ORDER BY ts DESC LIMIT 1")
-            latest = max((x for x in (g, c, lad) if x is not None), key=lambda x: x['ts'], default=None)
+            latest = max((x for x in (g, c, lad, r) if x is not None), key=lambda x: x['ts'], default=None)
             if latest is None:
                 return None
+            if latest is r:
+                s.run('UPDATE grades SET tags=blind_tags, grade=blind_grade, retagged=NULL, blind_tags=NULL,'
+                      ' blind_grade=NULL WHERE id=?', r['id'])
+                s.recompute_golden(r['sample_id'])
+                return self.retag_trial(r['id'])
             if latest is lad:
                 s.run("UPDATE ladders SET status='pending', pick_fit=NULL, pick_shift=NULL, tags=NULL, note=NULL,"
                       ' ts=NULL WHERE id=?', lad['id'])
@@ -818,7 +862,16 @@ def report(store: Store, out=print) -> None:
     out('\nDefect tags: n, mean grade, mean fitter score (all graded: '
         f'{fmt(mean([g["score"] for g in grades]))}), mean measures of the fits tagged')
     by_tag = {}
+    # tags given blind could not tell the fit from the original: only those given with
+    # the sides labelled (or asked again since) count
+    blind = [g for g in grades if g['orig_side'] in ('a', 'b') and g['retagged'] is None
+             and json.loads(g['tags'] or '[]')]
+    if blind:
+        out(f'  ({len(blind)} grades with blind tags left out until re-tagged)')
+    blind_ids = {g['id'] for g in blind}
     for g in grades:
+        if g['id'] in blind_ids:
+            continue
         for t in json.loads(g['tags'] or '[]'):
             by_tag.setdefault(t, []).append(g)
     out('  ' + ' ' * 22 + ' n  grade  score  ' + '  '.join(f'{k[:9]:>9s}' for k in FEATURES))
@@ -850,7 +903,9 @@ def report(store: Store, out=print) -> None:
     both = store.q('SELECT g.grade, g.orig_side FROM grades g WHERE g.repeat_of IS NULL')
     for side in ('a', 'b'):
         v = [r['grade'] for r in both if r['orig_side'] == side]
-        out(f'  mean grade when the original was {side.upper()}: {fmt(mean(v))} (n={len(v)})')
+        out(f'  mean grade when the original was {side.upper()} (blind): {fmt(mean(v))} (n={len(v)})')
+    v = [r['grade'] for r in both if r['orig_side'] == 'labelled']
+    out(f'  mean grade with the sides labelled: {fmt(mean(v))} (n={len(v)})')
 
     out('\nGolden samples by category:')
     for r in store.q('SELECT s.category, count(*) n FROM golden g JOIN samples s ON s.id=g.sample_id '
