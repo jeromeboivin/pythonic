@@ -97,7 +97,7 @@ sys.path.insert(0, str(ROOT))
 
 from pythonic.preset_manager import DrumPatchParser, DrumPatchWriter  # noqa: E402
 from pythonic.voice import (DrumVoice, FILT_BP, FILT_HP, FILT_LP, METAL_FREQS, MOD_DECAY,  # noqa: E402
-                            NENV_EXP, VoiceParams, WAVE_SAW, WAVE_SINE, WAVE_TRI,
+                            NENV_EXP, NENV_LINEAR, NENV_MOD, VoiceParams, WAVE_SAW, WAVE_SINE, WAVE_TRI,
                             attack_norm, metal_on, params_from_patch)
 
 SR = 44100
@@ -176,6 +176,15 @@ NO_TRIANGLE_CATEGORIES = {'bd', 'tom', 'clap', 'perc', 'cowbell'}
 
 def waves_for(cats) -> tuple:
     return (0, 2) if set(cats) & NO_TRIANGLE_CATEGORIES else WAVES
+
+# A clap is a few bursts of noise ~10 ms apart, then its tail: the noise envelope's Mod
+# mode (bursts through its attack) makes them; fitted on the others, the shots blur
+# into one ("we do not hear the burst", "robotic")
+CLAP_CATEGORIES = {'clap'}
+
+
+def noise_envs_for(cats) -> tuple:
+    return (NENV_MOD,) if set(cats) & CLAP_CATEGORIES else (NENV_EXP, NENV_LINEAR, NENV_MOD)
 
 
 def mod_range(mod_mode: int) -> float:
@@ -968,7 +977,9 @@ def fit_one(job: dict) -> dict:
     target.bp_q_max = math.inf if set(job['cats']) & FREE_Q_CATEGORIES else NOISE_BP_Q_MAX
     back = lambda u, sw: decode(u, sw, target.metal_freqs, target.bp_q_max)
     waves = job.get('waves') or waves_for(job['cats'])
-    allowed = lambda p: p if p.wave in waves else VoiceParams(**{**p.__dict__, 'wave': waves[0]})
+    envs = noise_envs_for(job['cats'])
+    allowed = lambda p: VoiceParams(**{**p.__dict__, 'wave': p.wave if p.wave in waves else waves[0],
+                                       'noise_env': p.noise_env if p.noise_env in envs else envs[0]})
 
     # 1. starts, scored once
     sources = {'library': job['library'], 'partials': seed_starts(x),
@@ -1005,7 +1016,8 @@ def fit_one(job: dict) -> dict:
     for k in range(len(SWITCHES)):
         for v in range(SWITCH_CHOICES):
             sw = list(best_sw)
-            if sw[k] == v or (SWITCHES[k] == 'wave' and v not in waves):
+            if sw[k] == v or (SWITCHES[k] == 'wave' and v not in waves) \
+                    or (SWITCHES[k] == 'noise_env' and v not in envs):
                 continue
             sw[k] = v
             f, u, _ = cma_run(target, code(best), tuple(sw), job['sigma'] * 0.7,

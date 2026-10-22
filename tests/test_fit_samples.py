@@ -211,6 +211,12 @@ def test_a_strike_that_starts_too_high_is_heard():
     assert target.loss(pad(swept), parts=True)[8] > 2.0
 
 
+def test_a_clap_keeps_the_burst_envelope():
+    from pythonic.voice import NENV_MOD
+    assert F.noise_envs_for(['clap']) == (NENV_MOD,)
+    assert len(F.noise_envs_for(['sd'])) == 3
+
+
 def test_noise_has_no_strike_pitch():
     noise = np.random.default_rng(1).uniform(-1.0, 1.0, int(0.3 * SR)) * np.exp(-np.arange(int(0.3 * SR)) / (0.05 * SR))
     assert F.Target(noise).strike is None
