@@ -165,6 +165,17 @@ METAL_CONTINUOUS = [
 ]
 SWITCHES = ('wave', 'mod_mode', 'noise_filter', 'noise_env')
 SWITCH_CHOICES = 3
+WAVE_NAMES = ('sine', 'triangle', 'saw')
+WAVES = (0, 1, 2)          # oscillator waves a fit may use (--waves)
+# A triangle's odd harmonics copy the grit of an 8-bit kick or tom, but they were heard
+# as a tonal artifact, robotic or the wrong tone (19 of 52 fits against 3 of 43 on a
+# sine), and refitted without one these drums won by ear. Snares keep it: there it
+# fills a body that is mostly noise, and taken away it lost
+NO_TRIANGLE_CATEGORIES = {'bd', 'tom', 'clap', 'perc', 'cowbell'}
+
+
+def waves_for(cats) -> tuple:
+    return (0, 2) if set(cats) & NO_TRIANGLE_CATEGORIES else WAVES
 
 
 def mod_range(mod_mode: int) -> float:
@@ -943,10 +954,13 @@ def fit_one(job: dict) -> dict:
     code = lambda p: encode(p, metal)
     target.bp_q_max = math.inf if set(job['cats']) & FREE_Q_CATEGORIES else NOISE_BP_Q_MAX
     back = lambda u, sw: decode(u, sw, target.metal_freqs, target.bp_q_max)
+    waves = job.get('waves') or waves_for(job['cats'])
+    allowed = lambda p: p if p.wave in waves else VoiceParams(**{**p.__dict__, 'wave': waves[0]})
 
     # 1. starts, scored once
     sources = {'library': job['library'], 'partials': seed_starts(x),
                'prior': [neutral(p) for p in prior_starts(x, job['prior'])]}
+    sources = {src: [allowed(p) for p in ps] for src, ps in sources.items()}
     if metal:
         sources = {src: [m for p in ps for m in metal_starts(p, x, target.metal_freqs)]
                    for src, ps in sources.items()}
@@ -978,7 +992,7 @@ def fit_one(job: dict) -> dict:
     for k in range(len(SWITCHES)):
         for v in range(SWITCH_CHOICES):
             sw = list(best_sw)
-            if sw[k] == v:
+            if sw[k] == v or (SWITCHES[k] == 'wave' and v not in waves):
                 continue
             sw[k] = v
             f, u, _ = cma_run(target, code(best), tuple(sw), job['sigma'] * 0.7,
@@ -1061,6 +1075,9 @@ def main() -> None:
     ap.add_argument('--peak-db', type=float, default=-10.0, help='peak level of each patch at velocity 127')
     ap.add_argument('--jobs', type=int, default=os.cpu_count() or 1, help='samples fitted in parallel')
     ap.add_argument('--seed', type=int, default=1)
+    ap.add_argument('--waves', default='',
+                    help='oscillator waves a fit may use (comma-separated: ' + ', '.join(WAVE_NAMES)
+                         + '; default: no triangle on kicks, toms, claps, rims and cowbells)')
     ap.add_argument('--wav', action='store_true', help='also write <name>.fit.wav (sample left, patch right)')
     args = ap.parse_args()
 
@@ -1078,6 +1095,7 @@ def main() -> None:
         print(f'no prior model at {args.prior}: starting from the partials'
               + (' and the library' if args.library_dir else '') + ' only')
 
+    waves = tuple(WAVE_NAMES.index(w.strip().lower()) for w in args.waves.split(',') if w.strip())
     libraries, jobs = {}, []
     for path in paths:
         cats = categories_for(path, root)
@@ -1089,7 +1107,7 @@ def main() -> None:
                      'prior': args.prior, 'screen': args.screen, 'screen_evals': args.screen_evals,
                      'starts': args.starts, 'evals': args.evals, 'restarts': args.restarts,
                      'sigma': args.sigma, 'max_seconds': args.max_seconds, 'peak_db': args.peak_db,
-                     'seed': args.seed})
+                     'seed': args.seed, 'waves': waves})
     banks = metal_banks(paths, args.max_seconds)
     for job in jobs:
         job['banks'] = banks

@@ -128,6 +128,27 @@ def test_the_patches_mirror_the_sample_folders(tmp_path, monkeypatch):
     assert 'Kicks/Deep/Hit.mtdrum' in report.replace('\\', '/')
 
 
+def test_a_fit_keeps_to_the_waves_it_is_given(tmp_path, monkeypatch):
+    import soundfile as sf
+    from pythonic.preset_manager import DrumPatchParser
+    samples, out = tmp_path / 'samples', tmp_path / 'patches'
+    samples.mkdir()
+    tom = render(VoiceParams(wave=1, osc_freq=120.0, osc_decay_ms=250.0, osc_mix=1.0), 0.4)
+    sf.write(samples / 'Tom.wav', tom, SR)
+    monkeypatch.setattr('sys.argv', ['fit_samples.py', str(samples), str(out), '--prior', '', '--waves', 'sine,saw',
+                                     '--screen', '1', '--screen-evals', '4', '--starts', '1',
+                                     '--evals', '8', '--restarts', '0', '--jobs', '1'])
+    F.main()
+    assert DrumPatchParser().parse_file(str(out / 'Tom.mtdrum'))['OscWave'] != 'Triangle'
+
+
+def test_only_snares_and_cymbals_get_a_triangle_by_default():
+    triangle = F.WAVE_NAMES.index('triangle')
+    assert triangle in F.waves_for(['sd']) and triangle in F.waves_for(['cy'])
+    for cats in (['bd'], ['tom'], ['clap'], ['perc', 'sd'], ['cowbell']):
+        assert triangle not in F.waves_for(cats)
+
+
 def test_a_spiky_render_of_a_kick_loses_its_punch():
     # A squared sine with a fast sweep: as loud in its body as at its strike. The same
     # sound with a click on top has nearly its spectra, but its level set by the peak
