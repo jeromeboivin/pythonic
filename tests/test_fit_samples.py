@@ -104,6 +104,13 @@ def test_a_recording_off_zero_is_brought_back(tmp_path):
     assert abs(F.dc_offset(kick)) < 0.002          # its ring, far under a capture's offset
 
 
+def test_a_tom_is_never_distorted_past_its_cap():
+    u = F.encode(VoiceParams(distortion=0.6))
+    sw = F.switches_of(VoiceParams())
+    assert F.decode(u, sw, dist_max=F.TOM_DIST_MAX).distortion == F.TOM_DIST_MAX
+    assert F.decode(u, sw).distortion == pytest.approx(0.6)
+
+
 def test_a_metal_fit_leaves_the_eq_flat():
     p = F.metal_starts(VoiceParams(eq_gain_db=12.0), cymbal(), BANK_606)[0]
     assert p.eq_gain_db == 0.0

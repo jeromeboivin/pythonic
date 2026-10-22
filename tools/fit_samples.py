@@ -130,6 +130,11 @@ CHOKE_CATEGORIES = {'ch', 'oh'}
 # narrow noise carries the drum's note, and capped they lost
 NOISE_BP_Q_MAX = 4.0
 FREE_Q_CATEGORIES = {'tom'}
+# A tom rings with a clear note, and distortion is heard on it: of the toms fitted
+# with more than 20, 2 of 24 were good and 8 were noted "distorted" (10 of 17 under it);
+# capped, 5 weak toms of 11 won by ear and 1 lost
+DIST_CAP_CATEGORIES = {'tom'}
+TOM_DIST_MAX = 0.2
 
 CONTINUOUS = [
     ('osc_freq', 20.0, 20000.0, 'log'),
@@ -217,7 +222,8 @@ def encode(p: VoiceParams, metal: bool = False) -> np.ndarray:
 METAL_FIXED = {'eq_gain_db': 0.0}
 
 
-def decode(u: np.ndarray, switches: tuple, freqs: tuple = (), bp_q_max: float = NOISE_BP_Q_MAX) -> VoiceParams:
+def decode(u: np.ndarray, switches: tuple, freqs: tuple = (), bp_q_max: float = NOISE_BP_Q_MAX,
+           dist_max: float = 1.0) -> VoiceParams:
     """VoiceParams from a unit-cube vector and the (wave, mod mode, filter, env) switches;
     a vector longer than CONTINUOUS carries the metal section, on the oscillator freqs
     (and leaves METAL_FIXED as it says)."""
@@ -240,6 +246,7 @@ def decode(u: np.ndarray, switches: tuple, freqs: tuple = (), bp_q_max: float = 
         fields.update(METAL_FIXED)
     if fields['noise_filter'] == FILT_BP:
         fields['noise_q'] = min(fields['noise_q'], bp_q_max)
+    fields['distortion'] = min(fields['distortion'], dist_max)
     return VoiceParams(**fields)
 
 
@@ -504,6 +511,7 @@ class Target:
         self.metal_freqs = ()
         self.partial_bins = None
         self.bp_q_max = NOISE_BP_Q_MAX     # fit_one frees it for toms
+        self.dist_max = 1.0                # fit_one caps it on toms
 
     def use_metal(self, freqs: tuple):
         """Fit with the metal section on these oscillator frequencies: the render has the
@@ -933,7 +941,7 @@ def cma_run(target: Target, x0, sw: tuple, sigma: float, evals: int, seed: int, 
     es = cma.CMAEvolutionStrategy(np.asarray(x0, float), sigma, opts)
     while not es.stop():
         xs = es.ask()
-        es.tell(xs, [target.score(decode(x, sw, target.metal_freqs, target.bp_q_max)) for x in xs])
+        es.tell(xs, [target.score(decode(x, sw, target.metal_freqs, target.bp_q_max, target.dist_max)) for x in xs])
     if es.result.xbest is None:
         return float('inf'), np.asarray(x0, float), es.result.evaluations
     return float(es.result.fbest), np.array(es.result.xbest), es.result.evaluations
@@ -983,7 +991,8 @@ def fit_one(job: dict) -> dict:
     if target.strike is None and set(job['cats']) & STRIKE_STRAY_CATEGORIES and target.low_share > 0.5 \
             and strike_jitter(x, strays=False) < STRIKE_JITTER:
         target.strike = strike_track(x)
-    back = lambda u, sw: decode(u, sw, target.metal_freqs, target.bp_q_max)
+    target.dist_max = TOM_DIST_MAX if set(job['cats']) & DIST_CAP_CATEGORIES else 1.0
+    back = lambda u, sw: decode(u, sw, target.metal_freqs, target.bp_q_max, target.dist_max)
     waves = job.get('waves') or waves_for(job['cats'])
     envs = noise_envs_for(job['cats'])
     allowed = lambda p: VoiceParams(**{**p.__dict__, 'wave': p.wave if p.wave in waves else waves[0],
