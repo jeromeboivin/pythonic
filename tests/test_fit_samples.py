@@ -211,6 +211,21 @@ def test_a_strike_that_starts_too_high_is_heard():
     assert target.loss(pad(swept), parts=True)[8] > 2.0
 
 
+def test_a_strike_the_render_comes_in_too_late_for_is_missed():
+    # The same kick swelling in over 12 ms has no pitch where the sample strikes: those
+    # milliseconds count as missed, not as left out
+    kick = dict(wave=0, osc_freq=60.0, osc_decay_ms=400.0, mod_rate=60.0, mod_amount=24.0, osc_mix=1.0)
+    target = F.Target(render(VoiceParams(**kick), 0.5))
+    late = render(VoiceParams(**kick, osc_attack_ms=12.0), 0.5)
+    assert target._strike_err(np.concatenate([late, np.zeros(target.n - len(late))])) > 4.0
+
+
+def test_one_stray_half_cycle_does_not_unpitch_a_sweep(monkeypatch):
+    sweep = np.log2([157.0, 120.0, 97.0, 81.0, 72.0, 48.0, 64.0, 67.0])   # the 707's Kick 01
+    monkeypatch.setattr(F, '_half_cycles', lambda x: (np.arange(8.0), sweep))
+    assert F.strike_jitter(None) > F.STRIKE_JITTER > F.strike_jitter(None, strays=False)
+
+
 def test_a_clap_keeps_the_burst_envelope():
     from pythonic.voice import NENV_MOD
     assert F.noise_envs_for(['clap']) == (NENV_MOD,)

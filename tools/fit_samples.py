@@ -352,6 +352,7 @@ PUNCH_WINDOWS = ((0, 3), (3, 10), (10, 25), (25, 50), (50, 100), (100, 200))
 STRIKE_WEIGHT = 1.0    # score per semitone of strike pitch difference
 STRIKE_GRID = np.arange(1.0, 50.0)   # ms after the onset where the strike pitch is compared
 STRIKE_LP = scipy.signal.butter(4, 1500.0, 'low', fs=SR, output='sos')
+STRIKE_STRAY_CATEGORIES = {'bd'}   # read without single strays (strike_jitter)
 STRIKE_JITTER = 0.1    # octaves: a sample whose half cycles stray more from their neighbours
                        # (noise, claps, hats) has no strike pitch
 
@@ -437,10 +438,13 @@ def strike_track(x: np.ndarray):
                      left=np.nan, right=np.nan)
 
 
-def strike_jitter(x: np.ndarray) -> float:
+def strike_jitter(x: np.ndarray, strays: bool = True) -> float:
     """Median distance (octaves) of each half cycle's pitch from its neighbours' mean: small
-    for a held or swept pitch, large for noise."""
+    for a held or swept pitch, large for noise; without strays, single strays smoothed out
+    first (as strike_track does)."""
     f = _half_cycles(x)[1]
+    if not strays and len(f) >= 3:
+        f = scipy.ndimage.median_filter(f, 3, mode='nearest')
     return float(np.median(np.abs(f[1:-1] - (f[:-2] + f[2:]) / 2.0))) if len(f) >= 6 else math.inf
 
 
@@ -587,11 +591,11 @@ class Target:
         got = strike_track(y)
         if got is None:
             return 12.0
-        m = np.isfinite(got) & np.isfinite(self.strike)
-        if not m.any():
-            return 12.0
+        # where the sample strikes and the render has no pitch yet (a slow attack), a full miss
+        m = np.isfinite(self.strike)
+        err = np.where(np.isfinite(got[m]), np.abs(got[m] - self.strike[m]) * 12.0, 12.0)
         w = 1.0 / (STRIKE_GRID[m] + 5.0)
-        return float(np.sum(w * np.abs(got[m] - self.strike[m])) / np.sum(w)) * 12.0
+        return float(np.sum(w * np.minimum(err, 12.0)) / np.sum(w)) if m.any() else 12.0
 
     def score(self, p: VoiceParams) -> float:
         return self.loss(render(p, self.n))
@@ -975,6 +979,10 @@ def fit_one(job: dict) -> dict:
     seeds = itertools.count(job['seed'] + 1)
     code = lambda p: encode(p, metal)
     target.bp_q_max = math.inf if set(job['cats']) & FREE_Q_CATEGORIES else NOISE_BP_Q_MAX
+    # A kick's sweep with one stray half cycle (a ROM's step, a click) is still a sweep
+    if target.strike is None and set(job['cats']) & STRIKE_STRAY_CATEGORIES and target.low_share > 0.5 \
+            and strike_jitter(x, strays=False) < STRIKE_JITTER:
+        target.strike = strike_track(x)
     back = lambda u, sw: decode(u, sw, target.metal_freqs, target.bp_q_max)
     waves = job.get('waves') or waves_for(job['cats'])
     envs = noise_envs_for(job['cats'])
