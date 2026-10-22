@@ -267,8 +267,21 @@ def load_target(path: str, max_seconds: float) -> np.ndarray:
     peak = np.abs(x).max()
     if peak <= 0:
         raise ValueError('silent sample')
+    x = x - dc_offset(x)
+    peak = np.abs(x).max()
     start = int(np.argmax(np.abs(x) > peak * 1e-3))
     return x[max(start - 2, 0):][:int(max_seconds * SR)]
+
+
+DC_TAIL_MS = 5.0        # a recording's offset is read off its last milliseconds ...
+DC_TAIL_STILL = 0.02    # ... when they stay this still (re its peak): a sound still going has none
+
+
+def dc_offset(x: np.ndarray) -> float:
+    """The constant a recording stands on (some captures sit a few % off zero, which reads
+    as a sound that never ends), from its quiet end; 0 when its end is not quiet."""
+    tail = x[-max(int(DC_TAIL_MS / 1000.0 * SR), 1):]
+    return float(np.median(tail)) if tail.std() < DC_TAIL_STILL * np.abs(x).max() else 0.0
 
 
 def mel_bank(n_fft: int, n_mels: int) -> np.ndarray:

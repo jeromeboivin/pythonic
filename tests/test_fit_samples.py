@@ -92,6 +92,18 @@ def test_a_band_passed_noise_is_never_narrow_enough_to_ring():
     assert F.decode(u, F.switches_of(VoiceParams(noise_filter=FILT_BP)), bp_q_max=math.inf).noise_q == pytest.approx(20.0)
 
 
+def test_a_recording_off_zero_is_brought_back(tmp_path):
+    import soundfile as sf
+    t = np.arange(int(0.2 * SR)) / SR
+    hat = np.random.default_rng(1).standard_normal(len(t)) * np.exp(-t / 0.02) * 0.5
+    sf.write(tmp_path / 'hat.wav', hat - 0.03, SR, subtype='FLOAT')
+    x = F.load_target(str(tmp_path / 'hat.wav'), 2.5)
+    assert abs(np.median(x[-200:])) < 1e-4
+    # a lopsided hit ending on zero keeps its shape
+    kick = np.sin(2 * np.pi * 50.0 * t) * np.exp(-t / 0.03) + 0.2 * np.exp(-t / 0.01)
+    assert abs(F.dc_offset(kick)) < 0.002          # its ring, far under a capture's offset
+
+
 def test_a_metal_fit_leaves_the_eq_flat():
     p = F.metal_starts(VoiceParams(eq_gain_db=12.0), cymbal(), BANK_606)[0]
     assert p.eq_gain_db == 0.0
