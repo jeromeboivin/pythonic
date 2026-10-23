@@ -273,8 +273,34 @@ def render(p: VoiceParams, n: int) -> np.ndarray:
     return v.process(n).astype(np.float64).mean(axis=1)
 
 
+LEAD_IN_DB = -30.0      # a stretch before the hit never louder than this re its loudest is a lead-in
+
+
+def onset(x: np.ndarray) -> int:
+    """Index of x's hit, 0 unless x has a lead-in (45-100 ms of a recording's noise above
+    -60 dB on some machines, or a few ms of near-silence on many captures): the first
+    millisecond whose RMS comes within 20 dB of its loudest, backed up to where the RMS
+    (over 0.25 ms) last stood 40 dB under that loudest, at most 10 ms back, less 2 samples -
+    when what it leaves out stays LEAD_IN_DB under the loudest. A render starts at once, so
+    a target that starts late asks the patch for a slow attack. A quiet attack, a flam or
+    the first bursts of a clap are kept."""
+    rms = lambda n: np.sqrt(np.convolve(x ** 2, np.ones(n) / n, 'same'))
+    e1, e = rms(44), rms(11)
+    top = float(e1.max())
+    i = int(np.argmax(e1 > top * 0.1))
+    lo = max(0, i - int(0.010 * SR))
+    quiet = np.nonzero(e[lo:i] < top * 0.01)[0]
+    start = max(lo + (int(quiet[-1]) if len(quiet) else 0) - 2, 0)
+    # (the last millisecond's RMS already hears the hit)
+    ahead = e1[:max(start - 44, 0)]
+    if start == 0 or (len(ahead) and ahead.max() > top * 10.0 ** (LEAD_IN_DB / 20.0)):
+        return 0
+    return start
+
+
 def load_target(path: str, max_seconds: float) -> np.ndarray:
-    """Mono sample, resampled to SR if needed, trimmed to its onset and to max_seconds."""
+    """Mono sample, resampled to SR if needed, trimmed to where it rises over -60 dB, then to
+    its hit (onset: the same place unless it has a lead-in), and to max_seconds."""
     x, sr = sf.read(path, always_2d=True)
     x = x.mean(axis=1)
     if sr != SR:
@@ -285,8 +311,8 @@ def load_target(path: str, max_seconds: float) -> np.ndarray:
         raise ValueError('silent sample')
     x = x - dc_offset(x)
     peak = np.abs(x).max()
-    start = int(np.argmax(np.abs(x) > peak * 1e-3))
-    return x[max(start - 2, 0):][:int(max_seconds * SR)]
+    x = x[max(int(np.argmax(np.abs(x) > peak * 1e-3)) - 2, 0):]
+    return x[onset(x):][:int(max_seconds * SR)]
 
 
 DC_TAIL_MS = 5.0        # a recording's offset is read off its last milliseconds ...

@@ -119,6 +119,38 @@ def test_a_tom_is_never_distorted_past_its_cap():
     assert F.decode(u, sw).distortion == pytest.approx(0.6)
 
 
+def test_a_sample_starts_at_its_hit_past_a_lead_in(tmp_path):
+    import soundfile as sf
+    kick = render(VoiceParams(osc_freq=60.0, osc_decay_ms=150.0, osc_mix=1.0), 0.25)
+    kick /= np.abs(kick).max()
+    rng = np.random.default_rng(1)
+    # 60 ms of a recording's noise (about -60 dB, so over the old -60 dB trim) before the hit
+    lead = rng.standard_normal(int(0.06 * SR)) * 0.001
+    sf.write(tmp_path / 'lead.wav', np.concatenate([lead, kick]), SR, subtype='FLOAT')
+    sf.write(tmp_path / 'plain.wav', kick, SR, subtype='FLOAT')
+    plain = F.load_target(str(tmp_path / 'plain.wav'), 2.0)
+    led = F.load_target(str(tmp_path / 'lead.wav'), 2.0)
+    assert abs(len(led) - len(plain)) < 0.001 * SR
+
+
+def test_a_few_ms_of_near_silence_before_the_hit_are_left_out():
+    hat = np.random.default_rng(2).standard_normal(int(0.1 * SR)) * np.exp(-np.arange(int(0.1 * SR)) / SR / 0.02)
+    hat /= np.abs(hat).max()
+    pre = np.random.default_rng(3).standard_normal(int(0.007 * SR)) * 0.001     # 7 ms at -60 dB
+    x = np.concatenate([pre, hat])
+    assert abs(F.onset(x) - len(pre)) < 0.001 * SR
+
+
+def test_a_quiet_attack_or_a_flam_is_kept():
+    # a soft first hit 25 dB under the main one, 20 ms before it: part of the sound
+    hit = render(VoiceParams(osc_freq=200.0, osc_decay_ms=8.0, osc_mix=1.0), 0.05)
+    hit /= np.abs(hit).max()
+    x = np.zeros(int(0.2 * SR))
+    x[:len(hit)] += 0.056 * hit
+    x[int(0.02 * SR):int(0.02 * SR) + len(hit)] += hit
+    assert F.onset(x) == 0
+
+
 def test_a_metal_fit_leaves_the_eq_flat():
     p = F.metal_starts(VoiceParams(eq_gain_db=12.0), cymbal(), BANK_606)[0]
     assert p.eq_gain_db == 0.0
