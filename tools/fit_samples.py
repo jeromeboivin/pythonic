@@ -5,11 +5,21 @@ Fit a .mtdrum drum patch to each one-shot WAV in a folder.
 
 Each sample is matched in four steps:
 
-A sample whose energy above 2 kHz is mostly steady partials (cymbals, hats,
-cowbells) is fitted with the metal section on: the six oscillator
-frequencies are the square-wave fundamentals whose odd harmonics explain those
-partials, and the search adds the band-passes, their decays and levels, the Q
-and the high-pass.
+A hat, cymbal or shaker (by its folder or file name) gets the partials
+section, fitted by analysis in tools/fit_partials.py: noise in 32 bands of 48
+dB an octave, each with a level, a decay and a click at the hit, its real
+tones as partials, and a cut where the sound drops away or the sample ends. The
+oscillator and noise of the patch then hold a classic version of the same
+sound, fitted as below without the metal section, for engines that have
+neither section (the PO-32 among them); --no-partials leaves the section out,
+and --sections refits only the section of patches already in the output
+folder, keeping their classic version.
+
+A sample whose energy above 2 kHz is mostly steady partials (cowbells, and
+hats and cymbals without the partials section) is fitted with the metal
+section on: the six oscillator frequencies are the square-wave fundamentals
+whose odd harmonics explain those partials, and the search adds the
+band-passes, their decays and levels, the Q and the high-pass.
 
 1. Starts: patches built on the partials found in the sample, the
    predictions of the model trained by tools/fit_prior.py (fit_prior.pt at the
@@ -59,11 +69,14 @@ at --peak-db. It sums:
   are too long to hear where a sweep starts, and a strike that starts too
   high makes the drum sound small.
 
-Samples are mixed to mono and trimmed to their onset. The output folder gets
-one <sample name>.mtdrum per sample, in the same subfolder as the sample in
-the sample folder, and fit_report.csv; --wav adds <sample name>.fit.wav next
-to it, the patch rendered next to the trimmed sample (left: sample, right:
-patch) for listening.
+Samples are mixed to mono and trimmed to their hit, past any near-silent
+lead-in before it (a recording's noise, or a capture's few milliseconds). The
+output folder gets one <sample name>.mtdrum per sample, in the same subfolder
+as the sample in the sample folder, and fit_report.csv; --wav adds <sample
+name>.fit.wav next to it: the patch alone, in stereo, as the app plays it
+(loaded into a new channel and hit at velocity 127, until it dies away).
+--previews writes those again for the patches already in the output folder,
+without fitting.
 """
 
 from __future__ import annotations
@@ -95,10 +108,15 @@ import soundfile as sf
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from pythonic.preset_manager import DrumPatchParser, DrumPatchWriter  # noqa: E402
+from pythonic.preset_manager import (DrumPatchParser, DrumPatchWriter,  # noqa: E402
+                                     apply_drum_patch_to_channel, convert_drum_patch_data)
+from pythonic.synthesizer import PythonicSynthesizer  # noqa: E402
 from pythonic.voice import (DrumVoice, FILT_BP, FILT_HP, FILT_LP, METAL_FREQS, MOD_DECAY,  # noqa: E402
                             NENV_EXP, NENV_LINEAR, NENV_MOD, VoiceParams, WAVE_SAW, WAVE_SINE, WAVE_TRI,
-                            attack_norm, metal_on, params_from_patch)
+                            PARTIALS_DEFAULTS, attack_norm, metal_on, params_from_patch, partials_on)
+
+sys.path.insert(0, str(ROOT / 'tools'))
+import fit_partials  # noqa: E402  (next to this script)
 
 SR = 44100
 DEFAULT_PRIOR = ROOT / 'fit_prior.pt'
@@ -120,6 +138,7 @@ CATEGORIES = [
     ('perc', ['perc']),
 ]
 CHOKE_CATEGORIES = {'ch', 'oh'}
+PARTIAL_CATEGORIES = {'ch', 'oh', 'cy', 'shaker'}     # get the partials section (unless --no-partials)
 
 # Continuous controls: (VoiceParams field, low, high, scale). 'knob' attacks
 # are fitted as the knob position of the attack curve; 'amount' is the
@@ -181,6 +200,7 @@ NO_TRIANGLE_CATEGORIES = {'bd', 'tom', 'clap', 'perc', 'cowbell'}
 
 def waves_for(cats) -> tuple:
     return (0, 2) if set(cats) & NO_TRIANGLE_CATEGORIES else WAVES
+
 
 # A clap is a few bursts of noise ~10 ms apart, then its tail: the noise envelope's Mod
 # mode (bursts through its attack) makes them; fitted on the others, the shots blur
@@ -248,6 +268,7 @@ def decode(u: np.ndarray, switches: tuple, freqs: tuple = (), bp_q_max: float = 
         fields['noise_q'] = min(fields['noise_q'], bp_q_max)
     fields['distortion'] = min(fields['distortion'], dist_max)
     return VoiceParams(**fields)
+
 
 
 def attack_time_s_from_knob(p: float) -> float:
@@ -637,10 +658,16 @@ class Target:
 
 # --------------------------------------------------------------------------- starts
 def categories_for(path: pathlib.Path, root: pathlib.Path) -> list:
-    text = ' '.join(path.relative_to(root).with_suffix('').parts).lower().replace('_', ' ')
-    for key, cats in CATEGORIES:
-        if key in text.split() or (len(key) > 3 and key in text):
-            return cats
+    """The categories of a sample, from its file name without the words of its folders'
+    names, else from its folders: a machine called Sequential TOM, whose samples are named
+    'CC TOM Crash 01', does not make its cymbals toms."""
+    parts = [p.lower().replace('_', ' ') for p in path.relative_to(root).with_suffix('').parts]
+    folders = ' '.join(parts[:-1])
+    name = ' '.join(w for w in parts[-1].split() if w not in folders.split()) or parts[-1]
+    for text in (name, folders):
+        for key, cats in CATEGORIES:
+            if key in text.split() or (len(key) > 3 and key in text):
+                return cats
     return []
 
 
@@ -719,6 +746,8 @@ def _partials(x: np.ndarray) -> tuple:
     peaks, _ = scipy.signal.find_peaks(db - scipy.ndimage.median_filter(db, 801, mode='nearest'),
                                        height=10.0, distance=8)
     peaks = peaks[(hz[peaks] > 400.0) & (hz[peaks] < 16000.0) & (peaks > 0) & (peaks < len(db) - 1)]
+    if not len(peaks):
+        return np.zeros(0), np.zeros(0), SR / n
     a, b, c = db[peaks - 1], db[peaks], db[peaks + 1]
     shift = 0.5 * (a - c) / np.where(a - 2 * b + c == 0, -1e-9, a - 2 * b + c)
     return hz[peaks] + shift * hz[1], pw[peaks] / pw[peaks].max(), SR / n
@@ -1012,9 +1041,12 @@ def fit_one(job: dict) -> dict:
     t0 = time.time()
     x = load_target(job['path'], job['max_seconds'])
     target = Target(x, ended=len(x) < int(job['max_seconds'] * SR))
+    section = job.get('partials', True) and bool(set(job['cats']) & PARTIAL_CATEGORIES)
     # Only a sample whose partials are those of six squares gets the metal section: on an
-    # acoustic cymbal, six squares sound like a drum machine, however well they score
-    target.use_metal(metal_fundamentals(x, job.get('banks', ())))
+    # acoustic cymbal, six squares sound like a drum machine, however well they score. A
+    # sample with the partials section gets none: its classic version is for engines
+    # without either section
+    target.use_metal(() if section else metal_fundamentals(x, job.get('banks', ())))
     metal = bool(target.metal_freqs)
     seeds = itertools.count(job['seed'] + 1)
     code = lambda p: encode(p, metal)
@@ -1084,8 +1116,45 @@ def fit_one(job: dict) -> dict:
     peak = np.abs(render(best, target.n)).max()
     level = job['peak_db'] - 20.0 * math.log10(max(peak, 1e-9))
     best = VoiceParams(**{**best.__dict__, 'level_db': min(max(level, -60.0), 10.0)})
+
+    if section:
+        best, how = fit_section(best, job['path'], target, job['peak_db'])
+        best_loss = target.score(best)
+        best_src = f'partials ({how}) over {best_src}'
     return {'path': job['path'], 'name': job['name'], 'cats': job['cats'], 'params': best,
             'start_loss': start_loss, 'loss': best_loss, 'source': best_src + (' ' + switched if switched else ''),
+            'seconds': time.time() - t0, 'target': target.x, 'n': target.n}
+
+
+def _fit_length(y: np.ndarray, n: int) -> np.ndarray:
+    return np.concatenate([y[:n], np.zeros(max(n - len(y), 0))])
+
+
+SECTION_SECONDS = 10.0     # of a sample the partials section is analysed over (it stops at the end)
+
+
+
+
+def fit_section(classic: VoiceParams, path: str, target: 'Target', peak_db: float):
+    """(classic with the partials section fitted to the sample by analysis over it,
+    description): the section peaks at the same peak_db as the classic version."""
+    base = VoiceParams(**{**classic.__dict__, **PARTIALS_DEFAULTS})
+    with_section = lambda fields: render(VoiceParams(**{**base.__dict__, **fields}), target.n)
+    fields, how = fit_partials.fit(load_target(path, SECTION_SECONDS))
+    fields['partials_level_db'] = fit_partials.peak_level_db(fields, with_section, peak_db)
+    return VoiceParams(**{**base.__dict__, **fields}), how
+
+
+def section_one(job: dict) -> dict:
+    """Refit only the partials section of an existing patch, its classic version kept."""
+    t0 = time.time()
+    x = load_target(job['path'], job['max_seconds'])
+    target = Target(x, ended=len(x) < int(job['max_seconds'] * SR))
+    classic = params_from_patch(DrumPatchParser().parse_file(job['patch']))
+    start = target.score(classic) if partials_on(classic) else float('nan')
+    best, how = fit_section(classic, job['path'], target, job['peak_db'])
+    return {'path': job['path'], 'name': job['name'], 'cats': job['cats'], 'params': best,
+            'start_loss': start, 'loss': target.score(best), 'source': f'partials ({how}), classic kept',
             'seconds': time.time() - t0, 'target': target.x, 'n': target.n}
 
 
@@ -1121,7 +1190,44 @@ def patch_dict(p: VoiceParams, name: str, choke: bool) -> dict:
         'NVel': 25.0,
         'ModVel': 0.0,
         **(DrumPatchWriter.metal_keys({**p.__dict__, 'metal_vel': 0.25}) if metal_on(p) else {}),
+        **(DrumPatchWriter.partials_keys({**p.__dict__, 'partials_vel': 0.25}) if partials_on(p) else {}),
     }
+
+
+PREVIEW_SECONDS = 4.0      # longest .fit.wav
+PREVIEW_FLOOR_DB = -70.0   # a .fit.wav ends once the patch stays this far under its peak
+PREVIEW_CHUNK = 512
+
+
+def write_preview(patch_path, wav_path) -> None:
+    """<name>.fit.wav: the patch alone, in stereo, as the app plays it: loaded into a new
+    channel, hit at velocity 127 and rendered until it stays PREVIEW_FLOOR_DB under its peak
+    (at most PREVIEW_SECONDS), peak-limited to 0.99 like the app's export."""
+    synth = PythonicSynthesizer(SR, parallel_channel_processing=False)
+    try:
+        channel = synth.channels[0]
+        apply_drum_patch_to_channel(channel, convert_drum_patch_data(DrumPatchParser().parse_file(str(patch_path))))
+        channel.trigger(127)
+        chunks = [channel.process(PREVIEW_CHUNK) for _ in range(int(PREVIEW_SECONDS * SR) // PREVIEW_CHUNK)]
+    finally:
+        synth.cleanup()
+    y = np.concatenate(chunks).astype(np.float64)
+    level = np.abs(y).max(axis=1)
+    peak = float(level.max())
+    if peak > 0.0:
+        loud = np.nonzero(level > peak * 10.0 ** (PREVIEW_FLOOR_DB / 20.0))[0]
+        y = y[:min(len(y), loud[-1] + 1 + int(0.05 * SR))]
+    if peak > 0.99:
+        y *= 0.99 / peak
+    sf.write(str(wav_path), y, SR, subtype='PCM_24')
+
+
+def write_previews(out: pathlib.Path, only: str, jobs: int) -> None:
+    """Rewrite the .fit.wav of every .mtdrum under ``out`` whose path contains ``only``."""
+    patches = sorted(p for p in out.rglob('*.mtdrum') if only.lower() in str(p).lower())
+    with concurrent.futures.ProcessPoolExecutor(max_workers=jobs) as pool:
+        list(pool.map(write_preview, patches, [p.with_suffix('.fit.wav') for p in patches], chunksize=16))
+    print(f'wrote {len(patches)} previews under {out}')
 
 
 REPORT_FIELDS = ['sample', 'patch', 'categories', 'start_score', 'score', 'won_from', 'seconds']
@@ -1133,6 +1239,11 @@ def main() -> None:
     ap.add_argument('samples', help='folder of one-shot WAVs (searched recursively)')
     ap.add_argument('out', help='output folder for the .mtdrum files')
     ap.add_argument('--only', default='', help='fit only the samples whose path contains this text')
+    ap.add_argument('--categories', default='',
+                    help='fit only the samples of these categories, guessed from their names '
+                         '(comma-separated: bd, sd, ch, oh, clap, tom, perc, cowbell, cy, shaker)')
+    ap.add_argument('--resume', action='store_true',
+                    help='skip the samples that already have a patch in the output folder')
     ap.add_argument('--library-dir', default='',
                     help='optional folder of .mtdrum patches in category subfolders '
                          '(bd, sd, ch, oh, clap, tom, perc, cowbell, cy, shaker) to start from too')
@@ -1149,19 +1260,35 @@ def main() -> None:
     ap.add_argument('--peak-db', type=float, default=-10.0, help='peak level of each patch at velocity 127')
     ap.add_argument('--jobs', type=int, default=os.cpu_count() or 1, help='samples fitted in parallel')
     ap.add_argument('--seed', type=int, default=1)
+    ap.add_argument('--wav', action='store_true',
+                    help='also write <name>.fit.wav: the patch alone, in stereo, as the app plays it')
     ap.add_argument('--waves', default='',
                     help='oscillator waves a fit may use (comma-separated: ' + ', '.join(WAVE_NAMES)
                          + '; default: no triangle on kicks, toms, claps, rims and cowbells)')
-    ap.add_argument('--wav', action='store_true', help='also write <name>.fit.wav (sample left, patch right)')
+    ap.add_argument('--no-partials', action='store_true',
+                    help='fit hats and cymbals without the partials section')
+    ap.add_argument('--sections', action='store_true',
+                    help='only refit the partials section of the hats and cymbals already in the output '
+                         'folder, their classic version kept (minutes instead of hours)')
+    ap.add_argument('--previews', action='store_true',
+                    help='only write the .fit.wav of the patches already in the output folder (no fitting)')
     args = ap.parse_args()
 
     root = pathlib.Path(args.samples)
     out = pathlib.Path(args.out)
+    if args.previews:
+        write_previews(out, args.only, args.jobs)
+        return
     out.mkdir(parents=True, exist_ok=True)
     paths = sorted(p for p in root.rglob('*') if p.suffix.lower() in ('.wav', '.aif', '.aiff', '.flac')
                    and args.only.lower() in str(p).lower())
+    wanted = {c.strip() for c in args.categories.split(',') if c.strip()}
+    if wanted:
+        paths = [p for p in paths if wanted & set(categories_for(p, root))]
+    if args.resume:
+        paths = [p for p in paths if not (out / p.relative_to(root).parent / f'{p.stem}.mtdrum').is_file()]
     if not paths:
-        sys.exit(f'no samples under {root}')
+        sys.exit(f'no samples to fit under {root}')
     if args.prior and os.path.exists(args.prior) and importlib.util.find_spec('torch') is None:
         print('PyTorch is not installed (pip install -e ".[ml]"): the prior model is not used')
         args.prior = ''
@@ -1173,6 +1300,12 @@ def main() -> None:
     libraries, jobs = {}, []
     for path in paths:
         cats = categories_for(path, root)
+        if args.sections:
+            patch = out / path.relative_to(root).parent / f'{path.stem}.mtdrum'
+            if set(cats) & PARTIAL_CATEGORIES and patch.is_file():
+                jobs.append({'path': str(path), 'name': path.stem, 'cats': cats, 'patch': str(patch),
+                             'max_seconds': args.max_seconds, 'peak_db': args.peak_db})
+            continue
         key = tuple(cats)
         if key not in libraries:
             libraries[key] = (load_library(pathlib.Path(args.library_dir), cats, args.library, args.seed)
@@ -1181,16 +1314,19 @@ def main() -> None:
                      'prior': args.prior, 'screen': args.screen, 'screen_evals': args.screen_evals,
                      'starts': args.starts, 'evals': args.evals, 'restarts': args.restarts,
                      'sigma': args.sigma, 'max_seconds': args.max_seconds, 'peak_db': args.peak_db,
-                     'seed': args.seed, 'waves': waves})
-    banks = metal_banks(paths, args.max_seconds)
-    for job in jobs:
-        job['banks'] = banks
-    print(f'{len(jobs)} samples, {args.jobs} jobs'
-          + ''.join(f'\nmetal bank: {", ".join(f"{f:.1f}" for f in b)} Hz' for b in banks), flush=True)
+                     'seed': args.seed, 'partials': not args.no_partials, 'waves': waves})
+    if args.sections:
+        print(f'{len(jobs)} sections to refit, {args.jobs} jobs', flush=True)
+    else:
+        banks = metal_banks(paths, args.max_seconds)
+        for job in jobs:
+            job['banks'] = banks
+        print(f'{len(jobs)} samples, {args.jobs} jobs'
+              + ''.join(f'\nmetal bank: {", ".join(f"{f:.1f}" for f in b)} Hz' for b in banks), flush=True)
 
     rows = []
     with concurrent.futures.ProcessPoolExecutor(max_workers=args.jobs) as pool:
-        futures = {pool.submit(fit_one, job): job for job in jobs}
+        futures = {pool.submit(section_one if args.sections else fit_one, job): job for job in jobs}
         for fut in concurrent.futures.as_completed(futures):
             job = futures[fut]
             try:
@@ -1205,10 +1341,7 @@ def main() -> None:
             patch = patch_dict(r['params'], r['name'], bool(set(r['cats']) & CHOKE_CATEGORIES))
             dst.write_text(DrumPatchWriter.format_patch(patch), encoding='utf-8')
             if args.wav:
-                y = render(params_from_patch(DrumPatchParser().parse_file(str(dst))), r['n'])
-                xt = np.concatenate([r['target'], np.zeros(r['n'] - len(r['target']))])
-                y = y * (np.abs(xt).max() / max(np.abs(y).max(), 1e-9))
-                sf.write(folder / f'{r["name"]}.fit.wav', np.stack([xt, y], 1), SR, subtype='PCM_24')
+                write_preview(dst, folder / f'{r["name"]}.fit.wav')
             rows.append({'sample': os.path.relpath(r['path'], root), 'patch': os.path.relpath(dst, out),
                          'categories': '+'.join(r['cats']) or 'all',
                          'start_score': round(r['start_loss'], 3), 'score': round(r['loss'], 3),

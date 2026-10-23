@@ -413,16 +413,34 @@ the predictions of `fit_prior.pt`, then refines them with CMA-ES against the
 sample's spectrogram, its pitch below 2 kHz, its envelope and, above 2 kHz, how
 much of its energy sits in partials rather than noise. It also compares how loud
 the first 200 ms are next to the peak (the punch of a kick) and, for a pitched
-drum, the pitch of its first cycles (where a sweep starts, or how long it holds). A metallic sample (a
-cymbal, a hi-hat) gets the metal section: the six oscillator frequencies are the
-square waves whose harmonics explain its partials, found in the longest samples
-of the folder and shared with the short ones of the same machine. Level is set so
-every patch peaks at -10 dBFS (`--peak-db`); hi-hats get choke. `--wav` also writes
-`<name>.fit.wav`, the sample on the left and the patch on the right, to compare
-them by ear; `fit_report.csv` lists the scores (lower is closer). A sample takes
+drum, the pitch of its first cycles (where a sweep starts, or how long it holds).
+
+A hi-hat, cymbal or tambourine (by its folder or file name) also gets the partials section,
+fitted by analysis in a few seconds: noise in 32 bands of 48 dB an octave, each
+band's decay read at about a millisecond and a click per band at the hit; its real
+tones as partials (only peaks that stand out more than noise ever does, and only
+when they carry a real share of the sound); and a cut where the sound holds then
+drops away (a gated closed hat), or where the sample ends. The rest of the
+patch holds a classic version of the sound, fitted as above, for engines without
+the section (`--no-partials` leaves it out). `--sections` refits only the section
+of the patches already in the output folder, keeping their classic version.
+Another metallic sample (a cowbell) gets the metal section: the six oscillator
+frequencies are the square waves whose harmonics explain its partials, found in
+the longest samples of the folder and shared with the short ones of the same
+machine.
+
+Samples are trimmed to their hit, past any near-silent lead-in before it (a
+recording's noise, or the few milliseconds of silence many captures start with). Level is set so every patch peaks at
+-10 dBFS (`--peak-db`); hi-hats get choke.
+`--wav` also writes `<name>.fit.wav`: the patch alone, in stereo, exactly as the
+app plays it, to compare with the sample by ear (`--previews` rewrites them
+without fitting); `fit_report.csv` lists the scores (lower is closer). A sample takes
 from one minute (a short rim shot) to half an hour (a long crash) per CPU core;
 `--jobs` sets how many are fitted in parallel, `--evals` and `--screen-evals`
-trade time for accuracy.
+trade time for accuracy. `--categories ch,oh,cy` fits only the samples of those
+categories (guessed from their names), `--only TEXT` only those whose path contains
+it, and `--resume` skips the samples already fitted, so an interrupted run goes on
+where it stopped.
 
 `tools/fit_prior.py <patches dir>` retrains the starting-patch model on your own
 `.mtdrum` patches (one to two hours on 8 CPU cores for the default 60,000).
