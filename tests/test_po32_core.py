@@ -457,6 +457,17 @@ def test_the_po32_has_no_metal_section(make_core, card_wav):
     assert core.get('ch2.metal.band1_level') == 0.0
 
 
+def test_the_po32_has_no_partials_section(make_core, card_wav):
+    core = make_core()
+    core.at_block_start(lambda: core.synth.channels[2].set_partials('partials', '3000 -6 300 0'))
+    # sent as its classic version, and said so
+    assert run(core, 'po32.prepare')['partials_dropped'] == [3]
+    # an imported sound turns it off
+    run(core, 'po32.decode', path=str(card_wav))
+    run(core, 'po32.import')
+    assert core.synth.channels[2].partials['partials'] == ''
+
+
 def test_import_sets_the_morph_endpoints(make_core, card_wav):
     core = make_core()
     run(core, 'po32.decode', path=str(card_wav))

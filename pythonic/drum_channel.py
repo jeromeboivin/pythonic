@@ -20,7 +20,8 @@ from .lfo import LFO, PumpSource, ModTarget, LFORetrigger
 from .vintage import VintageProcessor
 from .reverb import FastStereoReverb
 from .delay import FastStereoDelay, DelayTime
-from .voice import DrumVoice, METAL_DEFAULTS, METAL_PARAMS, MOD_HOLD_MAX_MS, VoiceParams
+from .voice import (DrumVoice, METAL_DEFAULTS, METAL_PARAMS, MOD_HOLD_MAX_MS, PARTIALS_DEFAULTS,
+                    PARTIALS_PARAMS, PARTIALS_TABLES, VoiceParams)
 
 
 class DrumChannel:
@@ -90,6 +91,9 @@ class DrumChannel:
 
         # Metal section (off while both band levels are 0)
         self.metal = dict(METAL_DEFAULTS)
+
+        # Partials section (off while both its tables are empty)
+        self.partials = dict(PARTIALS_DEFAULTS)
 
         self.is_active = False
         self.current_velocity = 1.0
@@ -212,6 +216,7 @@ class DrumChannel:
             pitch_ratio=float(2.0 ** (pitch / 12.0)),
             mono=bool(self.mono),
             **self.metal,
+            **self.partials,
         )
 
     # ------------------------------------------------------------------ playback
@@ -462,12 +467,22 @@ class DrumChannel:
             'lfo2': self.lfo2.get_parameters(),
             'pump': self.pump.get_parameters(),
             **self.metal,
+            **self.partials,
         }
 
     def set_metal(self, name: str, value: float):
         """Set one metal section parameter (a key of voice.METAL_PARAMS), clamped to its range."""
         lo, hi = METAL_PARAMS[name][3:]
         self.metal[name] = float(np.clip(float(value), lo, hi))
+
+    def set_partials(self, name: str, value):
+        """Set one partials section parameter: a table (a key of voice.PARTIALS_TABLES) as
+        its text, or a knob (of voice.PARTIALS_PARAMS) clamped to its range."""
+        if name in PARTIALS_TABLES:
+            self.partials[name] = str(value or '')
+            return
+        lo, hi = PARTIALS_PARAMS[name][3:]
+        self.partials[name] = float(np.clip(float(value), lo, hi))
 
     def reset_to_defaults(self):
         """Restore the init patch of a freshly created channel (name included)."""
@@ -591,3 +606,6 @@ class DrumChannel:
         for name in METAL_PARAMS:
             if name in params:
                 self.set_metal(name, params[name])
+        for name in PARTIALS_DEFAULTS:
+            if name in params:
+                self.set_partials(name, params[name])

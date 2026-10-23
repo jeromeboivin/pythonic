@@ -9,7 +9,9 @@ import os
 import numpy as np
 from typing import Dict, Any, List, Optional
 from .pattern_manager import DEFAULT_VELOCITY, clamp_velocity
-from .voice import METAL_DEFAULTS, METAL_PARAMS, METAL_PERCENT, metal_from_patch, metal_on
+from .voice import (METAL_DEFAULTS, METAL_PARAMS, METAL_PERCENT, PARTIALS_DEFAULTS, PARTIALS_PARAMS,
+                    PARTIALS_PERCENT, PARTIALS_TABLES, metal_from_patch, metal_on, partials_from_patch,
+                    partials_on)
 
 
 # ─────────────────────────────────────────────
@@ -68,6 +70,7 @@ def convert_drum_patch_data(patch: Dict) -> Dict:
         'mod_vel_sensitivity': patch.get('ModVel', 0.0) / 100.0,
         **({'choke_enabled': bool(patch['Choke'])} if 'Choke' in patch else {}),
         **metal_from_patch(patch),
+        **partials_from_patch(patch),
     }
 
 
@@ -155,9 +158,11 @@ def apply_drum_patch_to_channel(channel, data: Dict):
     channel.mod_vel_sensitivity = data.get('mod_vel_sensitivity', 0.0)
     if 'choke_enabled' in data:
         channel.choke_enabled = bool(data['choke_enabled'])
-    # a patch without the metal section turns it off
+    # a patch without the metal or partials section turns it off
     for name, default in METAL_DEFAULTS.items():
         channel.set_metal(name, data.get(name, default))
+    for name, default in PARTIALS_DEFAULTS.items():
+        channel.set_partials(name, data.get(name, default))
 
 class PythonicPresetParser:
     """
@@ -838,6 +843,7 @@ class DrumPatchWriter:
         'NFilFrq': ' Hz', 'NEnvAtk': ' ms', 'NEnvDcy': ' ms', 'EQFreq': ' Hz',
         'EQGain': ' dB', 'Level': ' dB', 'OscVel': '%', 'NVel': '%', 'ModVel': '%', 'ModHold': ' ms',
         **{spec[1]: spec[2] for spec in METAL_PARAMS.values()},
+        **{spec[1]: spec[2] for spec in PARTIALS_PARAMS.values()},
     }
 
     @staticmethod
@@ -876,7 +882,18 @@ class DrumPatchWriter:
             'ModVel': channel.mod_vel_sensitivity * 100.0,
             # the metal section only when it is on, so other patches stay plain V3 files
             **(DrumPatchWriter.metal_keys(channel.metal) if metal_on(channel.metal) else {}),
+            # and so the partials section (the oscillator and noise above then hold its
+            # classic version, for engines without it)
+            **(DrumPatchWriter.partials_keys(channel.partials) if partials_on(channel.partials) else {}),
         }
+
+    @staticmethod
+    def partials_keys(partials: Dict[str, Any]) -> Dict[str, Any]:
+        """The .mtdrum keys and display values of a partials section (VoiceParams field
+        names; the tables as their text)."""
+        return {**{spec[1]: partials[name] * (100.0 if name in PARTIALS_PERCENT else 1.0)
+                   for name, spec in PARTIALS_PARAMS.items()},
+                **{key: str(partials[name]) for name, key in PARTIALS_TABLES.items()}}
 
     @staticmethod
     def metal_keys(metal: Dict[str, float]) -> Dict[str, float]:

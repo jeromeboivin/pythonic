@@ -92,7 +92,7 @@ from pythonic.po32_decoder import (SAMPLE_RATE, decode_audio_samples, decode_wav
                                    get_pattern_summary, get_pattern_triggers_for_bank,
                                    get_patch_summary)
 from pythonic.synthesizer import PythonicSynthesizer
-from pythonic.voice import METAL_DEFAULTS, metal_on
+from pythonic.voice import METAL_DEFAULTS, PARTIALS_DEFAULTS, metal_on, partials_on
 
 from .audio import PLAYING, DONE, Player
 from .presets import _with_suffix
@@ -478,7 +478,9 @@ class Po32:
         info = {'bank': bank, 'chain': label, 'slots': list(range(1, len(indexes) + 1)),
                 'channels': channels,
                 # the PO-32 has no metal section: these channels are sent without it
-                'metal_dropped': [c for c in channels if metal_on(sounds[c - 1])]}
+                'metal_dropped': [c for c in channels if metal_on(sounds[c - 1])],
+                # nor a partials section: these send its classic version instead
+                'partials_dropped': [c for c in channels if partials_on(sounds[c - 1])]}
         return sounds, silent, len(indexes), info
 
     def _signal(self, bank, chain, channels):
@@ -894,15 +896,16 @@ class Po32:
         current = core.undo.capture((CHANNELS, PATTERNS))
         channels = current[CHANNELS]
         drums = 0
-        # PO-32 sounds have no metal section nor pitch hold: an imported one turns them off
+        # PO-32 sounds have no metal or partials section nor pitch hold: an imported one turns them off
         for d, params in enumerate(self._bank_sounds()):
             if params:
-                channels[d].update(METAL_DEFAULTS, pitch_mod_hold=0.0, **copy.deepcopy(params))
+                channels[d].update(METAL_DEFAULTS, **PARTIALS_DEFAULTS, pitch_mod_hold=0.0, **copy.deepcopy(params))
                 drums += 1
         endpoint_b = copy.deepcopy(channels)
         for d, params in enumerate(self._bank_sounds(right=True)):
             if params:
-                endpoint_b[d].update(METAL_DEFAULTS, pitch_mod_hold=0.0, **copy.deepcopy(params))
+                endpoint_b[d].update(METAL_DEFAULTS, **PARTIALS_DEFAULTS, pitch_mod_hold=0.0,
+                                     **copy.deepcopy(params))
         morph = {'position': 0.0, 'endpoint_a': copy.deepcopy(channels),
                  'endpoint_b': endpoint_b}
         patterns = current[PATTERNS]

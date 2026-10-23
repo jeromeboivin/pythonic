@@ -23,6 +23,12 @@ Perfect for producers, sound designers, and developers interested in audio synth
   - Two band-pass filters, each with its own Q, drive (an asymmetric saturation), decay and level, then a high-pass
   - Decay curve, from exponential to linear (a hold, then a fall)
   - Off while both band levels are at 0: drum patches without it load, sound and save as before
+- **Partials Section** (optional, for hats, cymbals and tambourines fitted to samples)
+  - Up to 384 decaying partials, each with its own frequency, level, decay and phase
+  - White noise in 32 bands of 24 or 48 dB an octave, each with its own level and decay, and an optional click at the hit (a second, short level and decay)
+  - Level, tune, decay scale, velocity, band slope, a rise that fades it in (for a sound that swells), and a cut that fades it out (60 dB in its fade time) where the sound drops away
+  - While on, a hit plays it instead of the oscillator, noise and metal section, which keep a classic version of the sound for engines without it (the PO-32 transfer sends that one)
+  - Off while its tables are empty: drum patches without it load, sound and save as before
 - **Advanced Mixing**
   - Oscillator/Noise blend control
   - Soft-clipping distortion
@@ -292,6 +298,12 @@ MIDI/Key Input
    ┌────────────────────┐               │
    │ Metal: 6 squares   │──→ 2 band-passes, each with ──→ High-pass ─┘
    │ (optional)         │    its drive, decay and level
+   └────────────────────┘
+
+   ┌────────────────────┐   (optional, instead of the three above)
+   │ Partials: decaying │──→ Rise/Cut ──→ Level/Pan ──→ Vintage ──→ Delay ──→ Reverb ──→ Output
+   │ sines + 32 noise   │
+   │ bands (+ clicks)   │
    └────────────────────┘
 ```
 

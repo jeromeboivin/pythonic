@@ -10,6 +10,10 @@ Envelope runs and oscillator segments restart at the start of every render
 call (and at an oscillator reset), and every value is computed from the start
 of its run or segment, so the output does not depend on how the audio is split
 into calls once the block grid is fixed.
+
+The partials section (decaying partials plus noise bands) keeps its own arrays:
+`sp` (derived constants), `ss` (state) and `su` (one noise generator per band),
+laid out as described at `_section_run`.
 """
 
 import math
@@ -56,7 +60,15 @@ P_M_LSTEP = 65          # 2 per-sample steps of the linear band envelopes
 P_M_CURVE = 67          # 0 exponential .. 1 linear band envelopes
 P_M_DRIVE = 68          # band saturation gain (0 = linear)
 P_MOD_HOLD = 69         # blocks the decay pitch modulation holds before it decays
-NUM_P = 70
+# partials section (used only while it sounds)
+P_PS_OUT_L = 70         # output gains of the section (level, pan)
+P_PS_OUT_R = 71
+P_PS_CUT = 72           # samples after the hit where the cut starts (0 = no cut)
+P_PS_FADE = 73          # samples of the cut's fade (-60 dB at its end, then silence)
+P_PS_REL = 74           # per-sample step of the release (choke)
+P_PS_END = 75           # a band gain under this has ended
+P_PS_RISE = 76          # samples the section fades in over from the hit (0 = at once)
+NUM_P = 77
 
 # ---------------------------------------------------------------- int parameters
 IP_WAVE = 0
@@ -66,7 +78,12 @@ IP_STEREO = 3
 IP_MOD_HOLD8 = 4
 IP_N_BURSTS = 5
 IP_METAL = 6            # 1 when the metal section is on
-NUM_IP = 7
+IP_PS = 7               # 1 when the partials section is on (it then replaces osc, noise and metal)
+IP_PS_N = 8             # partials
+IP_PS_NB = 9            # noise bands
+IP_PS_NSEC = 10         # second-order sections a noise band has (4: 24 dB an octave each side, 8: 48)
+IP_PS_CLICK = 11        # 1 when the noise bands have click envelopes
+NUM_IP = 12
 
 # ---------------------------------------------------------------- float state
 S_PHASE = 0
@@ -99,7 +116,10 @@ S_M_Z2 = 46             # band 2 filter state, 2 values
 S_M_ZH = 48             # high-pass state, 2 values
 S_M_LIN = 50            # 2 linear band envelopes (S_M_ENV holds the exponential ones)
 S_PHOLD = 52            # blocks of pitch-modulation hold left at the segment start
-NUM_S = 53
+S_PS_VEL = 53           # partials section velocity gain
+S_PS_REL = 54           # its release gain (1 until a choke)
+S_PS_DRIFT = 55         # pitch drift its rotations were computed for (0 = not yet)
+NUM_S = 56
 
 # ---------------------------------------------------------------- int state
 I_PMODE4 = 0
@@ -113,7 +133,10 @@ I_NRUNK = 7
 I_LATCH = 8             # decay-mod latch inside the current segment
 I_SEGCUT = 9
 I_MSTAGE = 10           # metal section: 0 silent, 1 decaying, 2 released (choke)
-NUM_I = 11
+I_PSTAGE = 11           # partials section: 0 silent, 1 sounding, 2 released (choke)
+I_PS_T = 12             # samples since its hit
+I_PS_M = 13             # partials still sounding (the first ones: they are sorted by length)
+NUM_I = 14
 
 MOD_DECAY, MOD_SINE, MOD_NOISE = 0, 1, 2
 NENV_EXP, NENV_LINEAR, NENV_MOD = 0, 1, 2
@@ -127,6 +150,10 @@ METAL_END = 1e-5        # a band envelope this low has ended
 METAL_BIAS = 0.35       # asymmetry of the band saturation: even products, difference tones
 METAL_SCALE = 3.0       # band-pass output that reaches the saturation's knee at drive 0
 TWO_PI = 2.0 * np.pi
+PS_CHUNK = 64           # partials that have ended drop out on this grid of samples after the hit
+PS_SECTIONS = 4         # second-order sections of a noise band at 24 dB an octave (two high-pass, two low-pass)
+PS_UNIFORM = 1.0 / 9007199254740992.0   # 2**-53
+SQRT3 = 1.7320508075688772              # uniform -1..1 to unit variance
 
 
 # ---------------------------------------------------------------- helpers
@@ -607,6 +634,149 @@ def _metal_sample(p, fs, ist):
     return y
 
 
+# ---------------------------------------------------------------- partials section
+@njit(cache=True, nogil=True, fastmath=True)
+def _partials_loop(c, s, re, im, m, buf, i0, i1):
+    """Advance the first m partials (complex one-pole rotations) over buf[i0:i1], adding
+    their real parts: a partial at amplitude A, phase ph sounds A r**t cos(w t + ph)."""
+    for i in range(i0, i1):
+        acc = 0.0
+        for k in range(m):
+            a = re[k]
+            b = im[k]
+            re[k] = c[k] * a - s[k] * b
+            im[k] = s[k] * a + c[k] * b
+            acc += a
+        buf[i] += acc
+
+
+@njit(cache=True, nogil=True, fastmath=True)
+def _bands_loop(bc, bz, bg, bd, cg, cd, clicks, su, nb, nsec, buf, i0, i1):
+    """Noise bands over buf[i0:i1]: each band its own white noise (xorshift64) through
+    nsec second-order sections (bc: b0 b1 b2 a1 a2 each; bz: 2 states each) under its
+    gain bg, which decays by bd a sample, plus (with clicks) its click gain cg, decaying by
+    cd."""
+    s13 = np.uint64(13)
+    s7 = np.uint64(7)
+    s17 = np.uint64(17)
+    s11 = np.uint64(11)
+    for i in range(i0, i1):
+        acc = 0.0
+        for j in range(nb):
+            x = su[j]
+            x ^= x << s13
+            x ^= x >> s7
+            x ^= x << s17
+            su[j] = x
+            y = (float(x >> s11) * PS_UNIFORM * 2.0 - 1.0) * SQRT3
+            for q in range(nsec):
+                o = 5 * (nsec * j + q)
+                z = 2 * (nsec * j + q)
+                u = y
+                y = bc[o] * u + bz[z]
+                bz[z] = bc[o + 1] * u - bc[o + 3] * y + bz[z + 1]
+                bz[z + 1] = bc[o + 2] * u - bc[o + 4] * y
+            if clicks:
+                acc += y * (bg[j] + cg[j])
+                cg[j] *= cd[j]
+            else:
+                acc += y * bg[j]
+            bg[j] *= bd[j]
+        buf[i] += acc
+
+
+@njit(cache=True, nogil=True)
+def _section_run(p, ip, fs, ist, sp, ss, su, n, out):
+    """n samples of the partials section, added to out at its own output gains.
+
+    sp (constants, n partials, nb bands of nsec sections): w (rad/sample), r (decay a
+    sample), life (samples a partial lasts), re0, im0 (its start), 5 coefficients for each
+    filter section of a band, band decays, band start gains, click decays, click start
+    gains.  ss (state): re, im, c, s (the rotations at the current drift), 2 states for each
+    filter section of a band, band gains, click gains.  Partials are sorted by life,
+    longest first; the
+    ones past their life drop out on a PS_CHUNK grid of samples after the hit, so the
+    output does not depend on how the audio is split into calls."""
+    np_ = ip[IP_PS_N]
+    nb = ip[IP_PS_NB]
+    nsec = ip[IP_PS_NSEC]
+    clicks = ip[IP_PS_CLICK] != 0
+    o_r = np_
+    o_life = 2 * np_
+    o_bc = 5 * np_
+    o_bd = o_bc + 5 * nsec * nb
+    o_cd = o_bd + 2 * nb
+    s_c = 2 * np_
+    s_s = 3 * np_
+    s_bz = 4 * np_
+    s_bg = s_bz + 2 * nsec * nb
+    s_cg = s_bg + nb
+    drift = fs[S_DRIFT]
+    if fs[S_PS_DRIFT] != drift:
+        for k in range(np_):
+            w = sp[k] * drift
+            r = sp[o_r + k]
+            ss[s_c + k] = r * math.cos(w)
+            ss[s_s + k] = r * math.sin(w)
+        fs[S_PS_DRIFT] = drift
+    buf = np.zeros(n)
+    t0 = ist[I_PS_T]
+    i = 0
+    m = ist[I_PS_M]
+    ended = False
+    while i < n:
+        t = t0 + i
+        if t % PS_CHUNK == 0:
+            while m > 0 and sp[o_life + m - 1] <= t:
+                m -= 1
+            if m == 0:
+                ended = True
+                for j in range(nb):
+                    if ss[s_bg + j] >= p[P_PS_END] or (clicks and ss[s_cg + j] >= p[P_PS_END]):
+                        ended = False
+                        break
+                if ended:
+                    break
+        i1 = min(n, i + PS_CHUNK - t % PS_CHUNK)
+        if m > 0:
+            _partials_loop(ss[s_c:s_c + np_], ss[s_s:s_s + np_], ss[0:np_], ss[np_:2 * np_], m, buf, i, i1)
+        if nb > 0:
+            _bands_loop(sp[o_bc:o_bd], ss[s_bz:s_bg], ss[s_bg:s_bg + nb], sp[o_bd:o_bd + nb],
+                        ss[s_cg:s_cg + nb], sp[o_cd:o_cd + nb], clicks, su, nb, nsec, buf, i, i1)
+        i = i1
+    ist[I_PS_M] = m
+    vel = fs[S_PS_VEL]
+    gl = p[P_PS_OUT_L] * vel
+    gr = p[P_PS_OUT_R] * vel
+    cut = p[P_PS_CUT]
+    fade = p[P_PS_FADE]
+    rise = p[P_PS_RISE]
+    rel = fs[S_PS_REL]
+    released = ist[I_PSTAGE] == 2
+    step = p[P_PS_REL]
+    g = 1.0
+    for k in range(n):
+        g = rel
+        if released:
+            rel = max(rel - step, 0.0)
+        if rise > 0.0 and t0 + k < rise:
+            g *= (t0 + k) / rise
+        if cut > 0.0:
+            u = t0 + k - cut
+            if u >= fade:
+                g = 0.0
+            elif u >= 0.0:
+                g *= math.exp(-6.907755279 * u / fade)
+        y = buf[k] * g
+        out[k, 0] += y * gl
+        out[k, 1] += y * gr
+    fs[S_PS_REL] = rel
+    t1 = t0 + n
+    ist[I_PS_T] = t1
+    if ended or (released and rel <= 0.0) or (cut > 0.0 and t1 >= cut + fade):
+        ist[I_PSTAGE] = 0
+
+
 # ---------------------------------------------------------------- render
 @njit(cache=True, nogil=True)
 def _ring_eq(p, ip, fs, ist, out, n):
@@ -615,17 +785,18 @@ def _ring_eq(p, ip, fs, ist, out, n):
     gr = fs[S_G + 4]
     ge = fs[S_G + 5]
     chans = 2 if ip[IP_STEREO] else 1
+    tail = np.zeros((n, 2))
     level = 0.0
     for c in range(chans):
         iz = S_EQ_ZI + 2 * c
         for i in range(n):
-            out[i, c] = ge * _biquad(p, P_EQ_B, P_EQ_A, 0.0, fs, iz)
+            tail[i, c] = ge * _biquad(p, P_EQ_B, P_EQ_A, 0.0, fs, iz)
         level = max(level, abs(fs[iz]), abs(fs[iz + 1]))
     for i in range(n):
         if chans == 1:
-            out[i, 1] = out[i, 0]
-        out[i, 0] *= gl
-        out[i, 1] *= gr
+            tail[i, 1] = tail[i, 0]
+        out[i, 0] += tail[i, 0] * gl
+        out[i, 1] += tail[i, 1] * gr
     if level < 1e-7 or ge == 0.0:
         for i in range(4):
             fs[S_EQ_ZI + i] = 0.0
@@ -633,12 +804,14 @@ def _ring_eq(p, ip, fs, ist, out, n):
 
 
 @njit(cache=True, nogil=True)
-def render(p, ip, fs, ist, rng, mod_rng, nb, blk0, out):
+def render(p, ip, fs, ist, rng, mod_rng, nb, blk0, out, sp, ss, su):
     """Render `nb` 4-sample blocks starting at absolute block `blk0` into out[:nb*4]."""
     n = nb * 4
     for i in range(n):
         out[i, 0] = 0.0
         out[i, 1] = 0.0
+    if ist[I_PSTAGE] != 0:
+        _section_run(p, ip, fs, ist, sp, ss, su, n, out)
     if ist[I_OSTAGE] == 4 and ist[I_NSTAGE] == 4 and ist[I_MSTAGE] == 0:
         if ist[I_EQ_TAIL]:
             _ring_eq(p, ip, fs, ist, out, n)
@@ -721,8 +894,8 @@ def render(p, ip, fs, ist, rng, mod_rng, nb, blk0, out):
                     s = s + ge * _biquad(p, P_EQ_B, P_EQ_A, s, fs, S_EQ_ZI + 2 * c)
                 sig[c] = s
             i = b * 4 + k
-            out[i, 0] = sig[0] * gl
-            out[i, 1] = sig[chans - 1] * gr
+            out[i, 0] += sig[0] * gl
+            out[i, 1] += sig[chans - 1] * gr
     if osc_alive and seg_j > 0:
         _segment_end(p, ip, fs, ist, seg_j)
     if eq_on:

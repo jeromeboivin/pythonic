@@ -15,9 +15,15 @@ Signal flow (per channel):
       saturated (drive), with its own decay envelope and level -> high-pass)
     mix (osc / noise gains, plus metal) -> drive -> asymmetric soft shaper
       -> SVF peaking EQ -> level / pan / makeup gains
+    partials (optional, for hats and cymbals: decaying partials, each with its
+      frequency, level, decay and phase, plus white noise in 32 bands of 24 or 48 dB
+      an octave, each with its level and decay and an optional click (a second,
+      short level and decay); an optional cut fades it out) -> level / pan
 
 With both metal band levels at 0 the metal section is off and the voice
-renders exactly as without it.
+renders exactly as without it. While the partials section is on, a hit starts
+it instead of the oscillator, noise and metal: those keep a classic version of
+the same sound, for engines without the section.
 
 Everything is processed on a 4-sample block grid in absolute time: envelopes advance per sample but change stage only at block ends,
 triggers take effect at the next block boundary, and slow pitch modulation is
@@ -26,6 +32,7 @@ updated on an 8 (oversampled) / 128 (oversampled) sample grid.
 
 from __future__ import annotations
 
+import functools
 import math
 from dataclasses import dataclass
 
@@ -81,10 +88,182 @@ METAL_FREQS = tuple(f'metal_freq{i}' for i in range(1, 7))
 METAL_GAIN = 0.6        # a band at level 1 is about as loud (RMS) as the noise at full mix
 
 
+# Partials section: VoiceParams field -> (default, .mtdrum key, unit, minimum, maximum).
+PARTIALS_PARAMS = {
+    'partials_level_db': (0.0, 'PartLevel', ' dB', -60.0, 24.0),
+    'partials_tune': (0.0, 'PartTune', ' sm', -24.0, 24.0),
+    'partials_decay': (1.0, 'PartDecay', '%', 0.1, 4.0),         # scales every decay
+    'partials_vel': (0.0, 'PartVel', '%', 0.0, 2.0),
+    'partials_rise_ms': (0.0, 'PartRise', ' ms', 0.0, 100.0),     # fades in over this (0 = at once)
+    'partials_cut_ms': (0.0, 'PartCut', ' ms', 0.0, 10000.0),    # 0 = no cut
+    'partials_fade_ms': (5.0, 'PartFade', ' ms', 1.0, 4000.0),        # -60 dB at its end
+    'partials_slope': (24.0, 'PartSlope', ' dB', 24.0, 48.0),    # each side of a noise band: 24 or 48 dB an octave
+}
+PARTIALS_PERCENT = {'partials_decay', 'partials_vel'}
+# The two tables, as text (format_partials, format_bands): VoiceParams field -> .mtdrum key
+PARTIALS_TABLES = {'partials': 'Partials', 'partial_bands': 'PartBands'}
+PARTIALS_DEFAULTS = {**{name: spec[0] for name, spec in PARTIALS_PARAMS.items()},
+                     **{name: '' for name in PARTIALS_TABLES}}
+MAX_PARTIALS = 384
+PARTIAL_BANDS = 32
+PARTIAL_BAND_LO = 100.0     # Hz, lower edge of the first band (at pitch 0)
+PARTIAL_BAND_HI = 22050.0   # Hz, upper edge of the last
+PART_END = 1e-5             # a partial or band this far under the section's loudest has ended
+PART_TOP = 0.45             # cycles/sample: partials and band edges above are left out
+
+
 def metal_on(params) -> bool:
     """True when a VoiceParams or channel-format dict turns the metal section on."""
     get = params.get if isinstance(params, dict) else lambda k, d: getattr(params, k, d)
     return get('metal_band1_level', 0.0) > 0.0 or get('metal_band2_level', 0.0) > 0.0
+
+
+def partials_on(params) -> bool:
+    """True when a VoiceParams or channel-format dict turns the partials section on."""
+    get = params.get if isinstance(params, dict) else lambda k, d: getattr(params, k, d)
+    return bool(get('partials', '')) or bool(get('partial_bands', ''))
+
+
+def format_partials(table) -> str:
+    """Text of a partials table, rows (frequency Hz, amplitude, decay s, phase rad): one
+    'Hz dB ms rad' entry per partial, separated by commas."""
+    rows = np.asarray(table, dtype=float).reshape(-1, 4)
+    return ', '.join(f'{f:.2f} {20.0 * math.log10(max(a, 1e-12)):.1f} {d * 1000.0:.4g} {ph:.2f}'
+                     for f, a, d, ph in rows)
+
+
+def format_bands(table) -> str:
+    """Text of a noise band table, rows (amplitude, decay s[, click amplitude, click decay
+    s]) from the lowest band up: one 'dB ms' entry per band, 'dB ms dB ms' for a band with
+    a click, separated by commas."""
+    rows = np.asarray(table, dtype=float)
+    rows = rows.reshape(-1, 4 if rows.ndim == 2 and rows.shape[1] == 4 else 2)
+    db = lambda a: f'{20.0 * math.log10(max(a, 1e-12)):.1f}'
+    return ', '.join(f'{db(r[0])} {r[1] * 1000.0:.4g}' + (f' {db(r[2])} {r[3] * 1000.0:.4g}' if len(r) == 4 and r[2] > 0.0 else '')
+                     for r in rows)
+
+
+def _table(text: str, widths: tuple, limit: int) -> np.ndarray:
+    """Rows of a table text: comma-separated entries of one of `widths` numbers, the
+    narrower ones padded with zeros to the widest; (dB, ms) pairs from the first number
+    on (partials: from the second) become (amplitude, s)."""
+    width = max(widths)
+    rows = []
+    for entry in str(text).split(','):
+        try:
+            v = [float(x) for x in entry.split()]
+        except ValueError:
+            continue
+        if len(v) in widths and all(math.isfinite(x) for x in v):
+            rows.append(v + [None] * (width - len(v)))
+    out = np.array(rows[:limit], dtype=float).reshape(-1, width)
+    pad = np.isnan(out)
+    first = 1 if width == 4 and widths == (4,) else 0
+    for c in range(first, width - 1 if first else width, 2):
+        out[:, c] = 10.0 ** (out[:, c] / 20.0)
+        out[:, c + 1] /= 1000.0
+    out[pad] = 0.0
+    out.flags.writeable = False
+    return out
+
+
+@functools.lru_cache(maxsize=256)
+def parse_partials(text: str) -> np.ndarray:
+    """(n, 4) rows (frequency Hz, amplitude, decay s, phase rad) of a partials text
+    (format_partials); at most MAX_PARTIALS, malformed entries left out."""
+    return _table(text, (4,), MAX_PARTIALS)
+
+
+@functools.lru_cache(maxsize=256)
+def parse_bands(text: str) -> np.ndarray:
+    """(n, 4) rows (amplitude, decay s, click amplitude, click decay s) of a noise band
+    text (format_bands), the click 0 where a band has none; at most PARTIAL_BANDS, from the
+    lowest band up."""
+    return _table(text, (2, 4), PARTIAL_BANDS)
+
+
+def partial_band_edges(ratio: float = 1.0) -> np.ndarray:
+    """The PARTIAL_BANDS + 1 band edges in Hz, geometric from PARTIAL_BAND_LO to
+    PARTIAL_BAND_HI, times the pitch ratio."""
+    k = np.arange(PARTIAL_BANDS + 1) / PARTIAL_BANDS
+    return PARTIAL_BAND_LO * (PARTIAL_BAND_HI / PARTIAL_BAND_LO) ** k * ratio
+
+
+# The second-order sections of a Butterworth filter of order 4 (24 dB an octave) and 8 (48)
+BAND_QS = {4: (0.5411961, 1.3065630),
+           8: (0.5097956, 0.6013449, 0.8999762, 2.5629154)}
+
+
+def band_order(slope: float) -> int:
+    """Butterworth order of each side of a noise band for a PartSlope (dB an octave)."""
+    return 8 if slope >= 36.0 else 4
+
+
+def partial_band_filters(sr: float, ratio: float = 1.0, slope: float = 24.0) -> np.ndarray:
+    """(PARTIAL_BANDS, 2 * order * 5) coefficients: band k is a Butterworth high-pass at its
+    lower edge into one low-pass at its upper edge (of the order band_order(slope): 24 or
+    48 dB an octave each side), as second-order sections, b0 b1 b2 a1 a2 each, the
+    high-pass ones first. A band reaching past PART_TOP has no low-pass; one starting past
+    it is silent."""
+    qs = BAND_QS[band_order(slope)]
+    half = len(qs)
+    out = np.zeros((PARTIAL_BANDS, 2 * half, 5))
+    edges = partial_band_edges(ratio) / sr
+    for k in range(PARTIAL_BANDS):
+        lo, hi = edges[k], edges[k + 1]
+        if lo >= PART_TOP:
+            continue
+        for i, q in enumerate(qs):
+            b, a = _rbj(lo, q, 'hp')
+            out[k, i] = (b[0], b[1], b[2], a[1], a[2])
+            if hi < PART_TOP:
+                b, a = _rbj(hi, q, 'lp')
+                out[k, half + i] = (b[0], b[1], b[2], a[1], a[2])
+            else:
+                out[k, half + i, 0] = 1.0
+    return out.reshape(PARTIAL_BANDS, 2 * half * 5)
+
+
+def partial_band_power(sr: float, freqs, ratio: float = 1.0, slope: float = 24.0) -> np.ndarray:
+    """(PARTIAL_BANDS, len(freqs)) power gains of the noise band filters at freqs (Hz)."""
+    z = np.exp(-2j * np.pi * np.asarray(freqs, dtype=float) / sr)
+    out = []
+    for c in partial_band_filters(sr, ratio, slope):
+        h = np.ones_like(z)
+        for b0, b1, b2, a1, a2 in c.reshape(-1, 5):
+            h = h * (b0 + b1 * z + b2 * z * z) / (1.0 + a1 * z + a2 * z * z)
+        out.append(np.abs(h) ** 2)
+    return np.array(out)
+
+
+@functools.lru_cache(maxsize=32)
+def _section(partials: str, bands: str, tune: float, decay: float, ratio: float, sr: float, slope: float = 24.0):
+    """(partials, bands, kernel constants sp, end level, filter sections a band, whether
+    the bands have clicks) of a partials section; see voice_kernel._section_run for the
+    layout of sp."""
+    rt = ratio * 2.0 ** (min(max(tune, -48.0), 48.0) / 12.0)
+    scale = min(max(decay, 0.05), 8.0)
+    P = parse_partials(partials)
+    f = P[:, 0] * rt
+    P = P[(f > 0.0) & (f < PART_TOP * sr)]
+    amp = P[:, 1]
+    tau = np.maximum(P[:, 2] * scale, 1e-4) * sr        # samples
+    B = parse_bands(bands)
+    bamp = B[:, 0]
+    btau = np.maximum(B[:, 1] * scale, 1e-4) * sr
+    camp = B[:, 2]
+    ctau = np.maximum(B[:, 3] * scale, 1e-4) * sr
+    peak = max(float(amp.max(initial=0.0)), float(bamp.max(initial=0.0)), float(camp.max(initial=0.0)))
+    end = PART_END * peak
+    life = np.where(amp > end, np.log(np.maximum(amp, 1e-300) / max(end, 1e-300)) * tau, 0.0)
+    order = np.argsort(-life, kind='stable')
+    P, amp, tau, life = P[order], amp[order], tau[order], life[order]
+    w = 2.0 * np.pi * P[:, 0] * rt / sr
+    sp = np.concatenate([w, np.exp(-1.0 / tau), life, amp * np.cos(P[:, 3]), amp * np.sin(P[:, 3]),
+                         partial_band_filters(sr, rt, slope)[:len(B)].ravel(), np.exp(-1.0 / btau), bamp,
+                         np.exp(-1.0 / ctau), camp])
+    sp.flags.writeable = False
+    return len(P), len(B), sp, end, band_order(slope), bool((camp > 0.0).any())
 
 
 # --------------------------------------------------------------------------- helpers
@@ -249,6 +428,17 @@ class VoiceParams:
     metal_drive: float = 0.0            # band saturation, 0..1 (0 = clean)
     metal_hp_freq: float = 2000.0       # Hz
     metal_vel: float = 0.0              # 1.0 == 100 %
+    # partials section (off while both tables are empty), see PARTIALS_PARAMS / PARTIALS_TABLES
+    partials: str = ''                  # format_partials text
+    partial_bands: str = ''             # format_bands text
+    partials_level_db: float = 0.0
+    partials_tune: float = 0.0          # semitones, on every partial and band edge
+    partials_decay: float = 1.0         # scales every decay (1.0 == 100 %)
+    partials_vel: float = 0.0           # 1.0 == 100 %
+    partials_rise_ms: float = 0.0       # the section fades in (linearly) over this long from the hit
+    partials_cut_ms: float = 0.0        # the section fades out from this long after the hit (0 = never)
+    partials_fade_ms: float = 5.0       # exponentially, -60 dB at this time, then silent
+    partials_slope: float = 24.0        # dB an octave each side of a noise band: 24 or 48
 
 
 class _Derived:
@@ -353,6 +543,25 @@ class _Derived:
         self.smooth = 1.0 - math.exp(-2.0 * math.pi * min(40.0 / sr, 0.5))
         self.release_slope = -100.0 / sr
 
+        # partials section: straight to level and pan
+        self.section = partials_on(p)
+        if self.section:
+            self.ps_n, self.ps_nb, self.ps_sp, self.ps_end, self.ps_nsec, self.ps_click = _section(
+                str(p.partials), str(p.partial_bands), float(p.partials_tune), float(p.partials_decay),
+                float(p.pitch_ratio), float(sr), float(band_order(p.partials_slope) * 6))
+            lv = p.partials_level_db
+            g = MASTER_SCALE * level * (10.0 ** (min(lv, 24.0) / 20.0) if lv > -60.0 else 0.0)
+            if p.mono:
+                self.ps_out_l = self.ps_out_r = 0.75 * g
+            else:
+                self.ps_out_l = (1.0 - pn * pn) * g
+                self.ps_out_r = (2.0 * pn - pn * pn) * g
+            cut = float(p.partials_cut_ms)
+            self.ps_cut = cut / 1000.0 * sr if math.isfinite(cut) and cut > 0.0 else 0.0
+            self.ps_fade = max(float(p.partials_fade_ms), 1.0) / 1000.0 * sr
+            rise = float(p.partials_rise_ms)
+            self.ps_rise = rise / 1000.0 * sr if math.isfinite(rise) and rise > 0.0 else 0.0
+
         # metal section
         self.metal = metal_on(p)
         if self.metal:
@@ -373,7 +582,8 @@ class _Derived:
 
 
 def _rbj(f: float, q: float, kind: str):
-    """(b, a) of a bilinear band-pass (0 dB at its centre) or high-pass, f in cycles/sample."""
+    """(b, a) of a bilinear band-pass (0 dB at its centre), high-pass or low-pass, f in
+    cycles/sample."""
     w = 2.0 * math.pi * min(max(f, 1e-5), 0.45)
     alpha = math.sin(w) / (2.0 * q)
     c = math.cos(w)
@@ -381,6 +591,8 @@ def _rbj(f: float, q: float, kind: str):
     a = np.array([1.0, -2.0 * c / a0, (1.0 - alpha) / a0])
     if kind == 'bp':
         b = np.array([alpha, 0.0, -alpha]) / a0
+    elif kind == 'lp':
+        b = np.array([(1.0 - c) / 2.0, 1.0 - c, (1.0 - c) / 2.0]) / a0
     else:
         b = np.array([(1.0 + c) / 2.0, -(1.0 + c), (1.0 + c) / 2.0]) / a0
     return b, a
@@ -434,6 +646,19 @@ def _pack(d: _Derived):
         p[K.P_M_LSTEP:K.P_M_LSTEP + 2] = d.metal_lstep
         p[K.P_M_CURVE] = d.metal_curve
         p[K.P_M_DRIVE] = d.metal_drive
+    if d.section:
+        ip[K.IP_PS] = 1
+        ip[K.IP_PS_N] = d.ps_n
+        ip[K.IP_PS_NB] = d.ps_nb
+        ip[K.IP_PS_NSEC] = d.ps_nsec
+        ip[K.IP_PS_CLICK] = int(d.ps_click)
+        p[K.P_PS_OUT_L] = d.ps_out_l
+        p[K.P_PS_OUT_R] = d.ps_out_r
+        p[K.P_PS_CUT] = d.ps_cut
+        p[K.P_PS_FADE] = d.ps_fade
+        p[K.P_PS_RISE] = d.ps_rise
+        p[K.P_PS_REL] = -d.release_slope
+        p[K.P_PS_END] = d.ps_end
     return p, ip
 
 
@@ -454,6 +679,11 @@ class DrumVoice:
         # the metal section draws its oscillator phases from its own stream, so a
         # patch without it renders as before
         self._metal_rng = np.random.default_rng((seed, 2))
+        # and the partials section seeds its band noise from another
+        self._ps_rng = np.random.default_rng((seed, 3))
+        self._sp = np.zeros(0)
+        self._ss = np.zeros(0)
+        self._su = np.zeros(0, dtype=np.uint64)
         self.params = VoiceParams()
         self.d = _Derived(self.params, self.sr)
         self._p, self._ip = _pack(self.d)
@@ -478,7 +708,7 @@ class DrumVoice:
         fs, st = self._fs.copy(), self._is.copy()
         rng = np.random.default_rng(0)
         K.reset_osc(self._p, self._ip, fs, st, rng)
-        K.render(self._p, self._ip, fs, st, rng, rng, 1, 0, np.empty((4, 2)))
+        K.render(self._p, self._ip, fs, st, rng, rng, 1, 0, np.empty((4, 2)), self._sp, self._ss, self._su)
         DrumVoice._kernel_ready = True
 
     @property
@@ -497,15 +727,36 @@ class DrumVoice:
         self.params = params
         self.d = _Derived(params, self.sr)
         self._p, self._ip = _pack(self.d)
+        self._update_section(old)
         if old.noise_filter != params.noise_filter:
             self._fs[K.S_NF_ZI:K.S_NF_ZI + 4] = 0.0
         if not self.is_active:
             self._fs[K.S_G:K.S_G + 6] = self._p[K.P_GAINS:K.P_GAINS + 6]
 
+    def _update_section(self, old: VoiceParams):
+        """Point the kernel at the partials section's constants. Its state is kept when only
+        a knob changed; other tables silence it (the next hit starts them)."""
+        d = self.d
+        if not d.section:
+            self._sp = np.zeros(0)
+            self._is[K.I_PSTAGE] = 0
+            return
+        self._sp = d.ps_sp
+        n, nb = d.ps_n, d.ps_nb
+        same = ((old.partials, old.partial_bands, band_order(old.partials_slope))
+                == (self.params.partials, self.params.partial_bands, band_order(self.params.partials_slope)))
+        size = 4 * n + (2 * d.ps_nsec + 2) * nb
+        if not same or len(self._ss) != size or len(self._su) != nb:
+            self._ss = np.zeros(size)
+            self._su = self._ps_rng.integers(1, 2 ** 63, size=nb, dtype=np.uint64)
+            self._is[K.I_PSTAGE] = 0
+        self._fs[K.S_PS_DRIFT] = 0.0    # the rotations follow the new tuning at the next render
+
     @property
     def is_active(self) -> bool:
         # a silent carry (block remainder) is not activity: idle() consumes it as well
         return (self._is[K.I_OSTAGE] != 4 or self._is[K.I_NSTAGE] != 4 or self._is[K.I_MSTAGE] != 0
+                or self._is[K.I_PSTAGE] != 0
                 or len(self._pending) > 0 or bool(self._is[K.I_EQ_TAIL]) or bool(self._carry.any()))
 
     # ---------------------------------------------------------------- events
@@ -531,6 +782,8 @@ class DrumVoice:
                         fs[K.S_M_ENV + i] = fs[K.S_M_LIN + i] = level
                         fs[K.S_M_REL + i] = -level * self.d.release_slope
                     st[K.I_MSTAGE] = 2
+                if st[K.I_PSTAGE] == 1:
+                    st[K.I_PSTAGE] = 2
             else:
                 self._do_trigger(ev[1])
         self._pending = []
@@ -540,6 +793,9 @@ class DrumVoice:
         p = self.params
         fs, st = self._fs, self._is
         fs[K.S_G:K.S_G + 6] = self._p[K.P_GAINS:K.P_GAINS + 6]
+        if d.section:
+            self._start_section(velocity)
+            return
         osc_vel = velocity_gain(velocity, p.osc_vel) * OSC_GAIN
         noise_vel = velocity_gain(velocity, p.noise_vel)
         fs[K.S_OSC_VEL] = osc_vel
@@ -568,11 +824,31 @@ class DrumVoice:
             fs[K.S_M_VEL] = velocity_gain(velocity, p.metal_vel)
             st[K.I_MSTAGE] = 1
 
+    def _start_section(self, velocity):
+        """A hit of the partials section: every partial at its start, the band filters
+        cleared, the band and click gains at their levels."""
+        d = self.d
+        n, nb = d.ps_n, d.ps_nb
+        sp, ss = self._sp, self._ss
+        sec = d.ps_nsec
+        ss[0:n] = sp[3 * n:4 * n]
+        ss[n:2 * n] = sp[4 * n:5 * n]
+        ss[4 * n:4 * n + 2 * sec * nb] = 0.0
+        o = 5 * n + 5 * sec * nb             # band decays, band gains, click decays, click gains
+        ss[4 * n + 2 * sec * nb:4 * n + (2 * sec + 1) * nb] = sp[o + nb:o + 2 * nb]
+        ss[4 * n + (2 * sec + 1) * nb:] = sp[o + 3 * nb:o + 4 * nb]
+        self._fs[K.S_PS_VEL] = velocity_gain(velocity, self.params.partials_vel)
+        self._fs[K.S_PS_REL] = 1.0
+        self._fs[K.S_PS_DRIFT] = 0.0
+        self._is[K.I_PSTAGE] = 1
+        self._is[K.I_PS_T] = 0
+        self._is[K.I_PS_M] = n
+
     # ---------------------------------------------------------------- render
     def _render_blocks(self, nb):
         out = np.empty((nb * 4, 2))
         K.render(self._p, self._ip, self._fs, self._is, self._rng, self._mod_rng,
-                 nb, self.clock // 4, out)
+                 nb, self.clock // 4, out, self._sp, self._ss, self._su)
         self.clock += nb * 4
         return out
 
@@ -669,7 +945,21 @@ def params_from_patch(patch: dict, pitch_ratio: float = 1.0, mono: bool = False)
         pitch_ratio=pitch_ratio,
         mono=mono,
         **metal_from_patch(patch),
+        **partials_from_patch(patch),
     )
+
+
+def partials_from_patch(patch: dict) -> dict:
+    """Partials section fields of a parsed .mtdrum / .mtpreset patch (all defaults, so off,
+    when it has none of its keys)."""
+    out = {}
+    for name, (default, key, *_) in PARTIALS_PARAMS.items():
+        v = _num(patch[key], default) if key in patch else default
+        out[name] = v / 100.0 if name in PARTIALS_PERCENT and key in patch else v
+    for name, key in PARTIALS_TABLES.items():
+        v = patch.get(key, '')
+        out[name] = v.strip().strip('"') if isinstance(v, str) else ''
+    return out
 
 
 def metal_from_patch(patch: dict) -> dict:

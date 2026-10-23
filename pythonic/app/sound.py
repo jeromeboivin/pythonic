@@ -21,7 +21,7 @@ from pythonic.delay import DelayTime
 from pythonic.lfo import LFOPolarity, LFORetrigger, LFOWaveform, ModTarget, SyncDivision
 from pythonic.noise import NoiseEnvelopeMode, NoiseFilterMode
 from pythonic.oscillator import PitchModMode, WaveformType
-from pythonic.voice import METAL_PARAMS, MOD_HOLD_MAX_MS
+from pythonic.voice import METAL_PARAMS, MOD_HOLD_MAX_MS, PARTIALS_PARAMS
 
 
 @dataclass(frozen=True)
@@ -139,6 +139,27 @@ METAL_SOUND_PARAMS = (
 )
 
 
+def _partials(suffix, name, unit, curve='linear'):
+    """One partials section knob (a VoiceParams field of voice.PARTIALS_PARAMS)."""
+    lo, hi = PARTIALS_PARAMS[name][3:]
+    return _number(suffix, name, lambda ch: ch.partials[name],
+                   lambda ch, v: ch.set_partials(name, v), lo, hi, unit, curve)
+
+
+# Partials section: its knobs scale the partials and noise bands of the drum patch (the
+# tables themselves come with the patch: they are not addresses). Its tables empty, it is off
+PARTIALS_SOUND_PARAMS = (
+    _partials('partials.level', 'partials_level_db', 'dB'),
+    _partials('partials.tune', 'partials_tune', 'st'),
+    _partials('partials.decay', 'partials_decay', 'ratio', 'log'),
+    _partials('partials.vel', 'partials_vel', 'ratio'),
+    _partials('partials.rise', 'partials_rise_ms', 'ms'),
+    _partials('partials.cut', 'partials_cut_ms', 'ms'),
+    _partials('partials.fade', 'partials_fade_ms', 'ms', 'log'),
+    _partials('partials.slope', 'partials_slope', 'dB'),
+)
+
+
 SOUND_PARAMS = tuple([
     # Oscillator
     _enum('osc.wave', 'osc_waveform', WaveformType,
@@ -178,6 +199,7 @@ SOUND_PARAMS = tuple([
     _number('noise.decay', 'noise_decay', lambda ch: ch.noise_gen.decay_ms,
             lambda ch, v: ch.set_noise_decay(v), 10.0, 10000.0, 'ms', 'log'),
     *METAL_SOUND_PARAMS,
+    *PARTIALS_SOUND_PARAMS,
     # Mixing (1 = all oscillator, 0 = all noise)
     _ratio('mix.osc_noise', 'osc_noise_mix', lambda ch: ch.osc_noise_mix,
            lambda ch, v: ch.set_osc_noise_mix(v)),

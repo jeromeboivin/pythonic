@@ -19,7 +19,7 @@ import copy
 import numpy as np
 from typing import Dict, List, Any, Optional
 
-from .voice import METAL_DEFAULTS
+from .voice import METAL_DEFAULTS, PARTIALS_PARAMS, PARTIALS_TABLES
 
 
 # Parameters that can be linearly interpolated
@@ -36,6 +36,7 @@ INTERPOLATABLE_PARAMS = {
     'reverb_decay', 'reverb_mix', 'reverb_width',
     'delay_feedback', 'delay_mix',
     *METAL_DEFAULTS,
+    *PARTIALS_PARAMS,
 }
 
 # Parameters that use logarithmic interpolation (frequencies)
@@ -51,6 +52,8 @@ DISCRETE_PARAMS = {
     'osc_waveform', 'pitch_mod_mode', 'noise_filter_mode',
     'noise_envelope_mode', 'noise_stereo', 'choke_enabled',
     'output_pair', 'delay_time', 'delay_ping_pong',
+    # partial tables of different sounds do not blend: each endpoint's up to the midpoint
+    *PARTIALS_TABLES,
 }
 
 # LFO/pump stay independent of morph A/B states: interpolation never writes

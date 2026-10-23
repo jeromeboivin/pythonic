@@ -101,7 +101,8 @@ def a_value(info, current=None):
 
 def test_every_engine_sound_parameter_has_an_address(make_core):
     core = make_core(audio_backend=None)
-    engine_keys = set(flat_engine_keys(DrumChannel(0).get_parameters())) - {'name'}
+    # the partials section's tables come with a drum patch: data, not addresses
+    engine_keys = set(flat_engine_keys(DrumChannel(0).get_parameters())) - {'name', 'partials', 'partial_bands'}
     assert {p.key for p in SOUND_PARAMS} == engine_keys
     for channel in range(1, 9):
         for name in sound_addresses(core, channel):
