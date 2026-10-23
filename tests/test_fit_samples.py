@@ -37,6 +37,14 @@ def test_the_bank_of_a_metal_sound_is_found():
     assert found == pytest.approx(BANK_606, rel=0.002)
 
 
+def test_a_cowbell_of_two_squares_gets_two_notes_without_near_copies():
+    from scipy import signal
+    t = np.arange(int(0.5 * SR)) / SR
+    bell = (signal.square(2 * np.pi * 552.0 * t) + signal.square(2 * np.pi * 816.0 * t)) * np.exp(-t / 0.15)
+    found = F.metal_fundamentals(bell)
+    assert sorted(set(round(f) for f in found)) == [552, 816]
+
+
 def test_a_short_hit_takes_the_bank_of_its_machine():
     other = (205.3, 304.4, 369.6, 522.7, 540.0, 800.0)
     hit = cymbal(seconds=0.12)

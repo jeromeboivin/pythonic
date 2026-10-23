@@ -741,7 +741,10 @@ def metal_fundamentals(x: np.ndarray, banks=()) -> tuple:
             hit = (k >= 1) & (np.abs(freqs - k * grid[:, None]) < tol) & left
             weight = np.where(k % 2 == 1, 1.0, EVEN_WEIGHT)
             chance = (power * left) @ np.minimum((1.0 + EVEN_WEIGHT) * tol[:, None] / grid[None, :], 1.0)
-            f0 = float(grid[np.argmax((hit * weight) @ power - chance)])
+            gain = (hit * weight) @ power - chance
+            if found and gain.max() < BANK_PICK_SHARE * power.sum():
+                break       # the rest are leftovers of the notes found (near-copies would beat)
+            f0 = float(grid[np.argmax(gain)])
             ok, k = _odd_matches(freqs, tol, f0)
             ok &= left
             for m in (3, 5):
@@ -752,6 +755,8 @@ def metal_fundamentals(x: np.ndarray, banks=()) -> tuple:
             f0 = float(np.sum(k[ok] * freqs[ok]) / max(np.sum(k[ok] ** 2), 1e-9)) if ok.any() else f0
             found.append(min(max(f0, 20.0), 2000.0))
             left &= ~ok
+        # fewer real notes than squares (a cowbell's two): the squares double them exactly
+        found = [found[i % len(found)] for i in range(6)] if found else found
     if found:
         # a greedy pick can be a submultiple of the real fundamental (2.5 x 114.7 Hz = 286.8 Hz):
         # keep any multiple or submultiple that explains the partials better as a whole bank
@@ -912,6 +917,7 @@ def metal_starts(p: VoiceParams, x: np.ndarray, freqs: tuple) -> list:
     return out
 
 
+BANK_PICK_SHARE = 0.01  # a bank note explains at least this share of the partial power
 BANK_RESOLUTION = 3.0   # Hz: a sample analysed more coarsely takes a bank from another one
 BANK_SECONDS = 0.5      # samples at least this long give the banks of a folder
 OWN_BANK_SHARE = 0.5    # partial power a sample's own bank must explain, beyond chance
