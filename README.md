@@ -415,7 +415,8 @@ much of its energy sits in partials rather than noise. It also compares how loud
 the first 200 ms are next to the peak (the punch of a kick) and, for a pitched
 drum, the pitch of its first cycles (where a sweep starts, or how long it holds).
 
-A hi-hat, cymbal or tambourine (by its folder or file name) also gets the partials section,
+A hi-hat, cymbal, shaker, conga, bongo, timbale, block or clave (by its folder or
+file name) also gets the partials section (a shaker's fades in over its swell),
 fitted by analysis in a few seconds: noise in 32 bands of 48 dB an octave, each
 band's decay read at about a millisecond and a click per band at the hit; its real
 tones as partials (only peaks that stand out more than noise ever does, and only

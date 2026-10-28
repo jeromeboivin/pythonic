@@ -119,6 +119,18 @@ def test_a_tom_is_never_distorted_past_its_cap():
     assert F.decode(u, sw).distortion == pytest.approx(0.6)
 
 
+def test_hand_drums_and_wood_get_the_partials_section_but_not_plain_toms():
+    assert F.gets_section(['tom', 'perc']) and F.gets_section(['wood', 'perc']) and F.gets_section(['shaker'])
+    assert not F.gets_section(['tom']) and not F.gets_section(['perc', 'sd']) and not F.gets_section(['cowbell'])
+
+
+def test_a_shaker_fades_in_over_its_time_to_peak():
+    rng = np.random.default_rng(4)
+    t = np.arange(int(0.15 * SR)) / SR
+    shake = rng.standard_normal(len(t)) * np.minimum(t / 0.035, 1.0) * np.exp(-np.maximum(t - 0.035, 0.0) / 0.02)
+    assert F.time_to_peak(shake) == pytest.approx(35.0, abs=5.0)
+
+
 def test_a_metal_fit_leaves_the_eq_flat():
     p = F.metal_starts(VoiceParams(eq_gain_db=12.0), cymbal(), BANK_606)[0]
     assert p.eq_gain_db == 0.0

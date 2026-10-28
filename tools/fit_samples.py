@@ -5,10 +5,12 @@ Fit a .mtdrum drum patch to each one-shot WAV in a folder.
 
 Each sample is matched in four steps:
 
-A hat, cymbal or shaker (by its folder or file name) gets the partials
-section, fitted by analysis in tools/fit_partials.py: noise in 32 bands of 48
-dB an octave, each with a level, a decay and a click at the hit, its real
-tones as partials, and a cut where the sound drops away or the sample ends. The
+A hat, cymbal, shaker, hand drum or timbale (tom and percussion at once), or
+a block or clave (by its folder or file name) gets the partials section,
+fitted by analysis in tools/fit_partials.py: noise in 32 bands of 48 dB an
+octave, each with a level, a decay and a click at the hit, its real tones as
+partials, and a cut where the sound drops away or the sample ends; a shaker's
+fades in over its time to peak. The
 oscillator and noise of the patch then hold a classic version of the same
 sound, fitted as below without the metal section, for engines that have
 neither section (the PO-32 among them); --no-partials leaves the section out,
@@ -135,10 +137,22 @@ CATEGORIES = [
     ('crash', ['cy']), ('ride', ['cy']), ('cymbal', ['cy']),
     ('shaker', ['shaker']), ('rachet', ['shaker', 'perc']), ('ratchet', ['shaker', 'perc']),
     ('maraca', ['shaker']), ('tamb', ['shaker']), ('cabasa', ['shaker']),
+    ('block', ['wood', 'perc']), ('clave', ['wood', 'perc']),
     ('perc', ['perc']),
 ]
 CHOKE_CATEGORIES = {'ch', 'oh'}
-PARTIAL_CATEGORIES = {'ch', 'oh', 'cy', 'shaker'}     # get the partials section (unless --no-partials)
+PARTIAL_CATEGORIES = {'ch', 'oh', 'cy', 'shaker', 'wood'}     # get the partials section (unless --no-partials)
+# ... and so do hand drums and timbales (tom and perc at once): their fixed modes are what
+# the classic voice cannot copy (on the TR-727, 13 of 13 bongos and timbales won with the
+# section). Not plain toms: the section's partials cannot sweep down like an analog tom
+SECTION_PAIR = {'tom', 'perc'}
+# A shaker swells into its shake (its loudest 6-45 ms in), where a section starts at its
+# loudest: "sounds like a closed hat". Its section fades in over that time (8 of 9 won)
+SWELL_CATEGORIES = {'shaker'}
+
+
+def gets_section(cats) -> bool:
+    return bool(set(cats) & PARTIAL_CATEGORIES) or SECTION_PAIR <= set(cats)
 
 # Continuous controls: (VoiceParams field, low, high, scale). 'knob' attacks
 # are fitted as the knob position of the attack curve; 'amount' is the
@@ -1041,7 +1055,7 @@ def fit_one(job: dict) -> dict:
     t0 = time.time()
     x = load_target(job['path'], job['max_seconds'])
     target = Target(x, ended=len(x) < int(job['max_seconds'] * SR))
-    section = job.get('partials', True) and bool(set(job['cats']) & PARTIAL_CATEGORIES)
+    section = job.get('partials', True) and gets_section(job['cats'])
     # Only a sample whose partials are those of six squares gets the metal section: on an
     # acoustic cymbal, six squares sound like a drum machine, however well they score. A
     # sample with the partials section gets none: its classic version is for engines
@@ -1118,7 +1132,7 @@ def fit_one(job: dict) -> dict:
     best = VoiceParams(**{**best.__dict__, 'level_db': min(max(level, -60.0), 10.0)})
 
     if section:
-        best, how = fit_section(best, job['path'], target, job['peak_db'])
+        best, how = fit_section(best, job['path'], target, job['peak_db'], job['cats'])
         best_loss = target.score(best)
         best_src = f'partials ({how}) over {best_src}'
     return {'path': job['path'], 'name': job['name'], 'cats': job['cats'], 'params': best,
@@ -1133,16 +1147,27 @@ def _fit_length(y: np.ndarray, n: int) -> np.ndarray:
 SECTION_SECONDS = 10.0     # of a sample the partials section is analysed over (it stops at the end)
 
 
-
-
-def fit_section(classic: VoiceParams, path: str, target: 'Target', peak_db: float):
+def fit_section(classic: VoiceParams, path: str, target: 'Target', peak_db: float, cats=()):
     """(classic with the partials section fitted to the sample by analysis over it,
-    description): the section peaks at the same peak_db as the classic version."""
+    description): the section peaks at the same peak_db as the classic version; a
+    sample of SWELL_CATEGORIES fades in over its time to peak (time_to_peak)."""
     base = VoiceParams(**{**classic.__dict__, **PARTIALS_DEFAULTS})
     with_section = lambda fields: render(VoiceParams(**{**base.__dict__, **fields}), target.n)
-    fields, how = fit_partials.fit(load_target(path, SECTION_SECONDS))
+    x = load_target(path, SECTION_SECONDS)
+    fields, how = fit_partials.fit(x)
+    if set(cats) & SWELL_CATEGORIES:
+        fields['partials_rise_ms'] = time_to_peak(x)
+        how += f', rise {fields["partials_rise_ms"]:g} ms'
     fields['partials_level_db'] = fit_partials.peak_level_db(fields, with_section, peak_db)
     return VoiceParams(**{**base.__dict__, **fields}), how
+
+
+def time_to_peak(x: np.ndarray) -> float:
+    """Milliseconds from x's start to its loudest 10 ms (RMS), to 0.1 ms."""
+    x = np.concatenate([np.asarray(x, float), np.zeros(int(0.1 * SR))])
+    n = int(0.010 * SR)
+    rms = np.sqrt(np.convolve(x ** 2, np.ones(n) / n, 'same'))
+    return round(float(np.argmax(rms)) / SR * 1000.0, 1)
 
 
 def section_one(job: dict) -> dict:
@@ -1152,7 +1177,7 @@ def section_one(job: dict) -> dict:
     target = Target(x, ended=len(x) < int(job['max_seconds'] * SR))
     classic = params_from_patch(DrumPatchParser().parse_file(job['patch']))
     start = target.score(classic) if partials_on(classic) else float('nan')
-    best, how = fit_section(classic, job['path'], target, job['peak_db'])
+    best, how = fit_section(classic, job['path'], target, job['peak_db'], job['cats'])
     return {'path': job['path'], 'name': job['name'], 'cats': job['cats'], 'params': best,
             'start_loss': start, 'loss': target.score(best), 'source': f'partials ({how}), classic kept',
             'seconds': time.time() - t0, 'target': target.x, 'n': target.n}
@@ -1241,7 +1266,7 @@ def main() -> None:
     ap.add_argument('--only', default='', help='fit only the samples whose path contains this text')
     ap.add_argument('--categories', default='',
                     help='fit only the samples of these categories, guessed from their names '
-                         '(comma-separated: bd, sd, ch, oh, clap, tom, perc, cowbell, cy, shaker)')
+                         '(comma-separated: bd, sd, ch, oh, clap, tom, perc, wood, cowbell, cy, shaker)')
     ap.add_argument('--resume', action='store_true',
                     help='skip the samples that already have a patch in the output folder')
     ap.add_argument('--library-dir', default='',
@@ -1302,7 +1327,7 @@ def main() -> None:
         cats = categories_for(path, root)
         if args.sections:
             patch = out / path.relative_to(root).parent / f'{path.stem}.mtdrum'
-            if set(cats) & PARTIAL_CATEGORIES and patch.is_file():
+            if gets_section(cats) and patch.is_file():
                 jobs.append({'path': str(path), 'name': path.stem, 'cats': cats, 'patch': str(patch),
                              'max_seconds': args.max_seconds, 'peak_db': args.peak_db})
             continue
