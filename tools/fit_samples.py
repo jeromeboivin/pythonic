@@ -838,12 +838,16 @@ def metal_fundamentals(x: np.ndarray, banks=()) -> tuple:
     # A bank found in this sample must explain half its partials beyond chance: a real
     # drum machine bank explains 0.75-0.85, while the modes of an acoustic cymbal leave
     # about 0.3 to a bank of low fundamentals. A bank of the folder, already found in a
-    # long sample of the machine, only needs to explain a quarter of a short hit's.
-    candidates = [(tuple(sorted(found)), OWN_BANK_SHARE)] if found else []
-    candidates += [(tuple(b), BORROWED_BANK_SHARE) for b in banks]
-    best = max(((_bank_share(freqs, power, tol, b) - need, b) for b, need in candidates),
+    # long sample of the machine, only needs to explain a quarter of a short hit's - and is
+    # only borrowed when the sample has none of its own: with its lower bar, a cymbal's bank
+    # holding a cowbell's two notes beat the cowbell's own, and added four tones to it.
+    own = tuple(sorted(found))
+    if found and _bank_share(freqs, power, tol, own) >= OWN_BANK_SHARE:
+        return own
+    best = max(((_bank_share(freqs, power, tol, tuple(b)) - BORROWED_BANK_SHARE, tuple(b)) for b in banks),
                default=(-1.0, ()))
-    return best[1] if best[0] >= 0.0 else ()
+    # a bank of fewer notes (merged from two-note cowbells) doubles them for the six squares
+    return tuple(sorted(best[1][i % len(best[1])] for i in range(6))) if best[0] >= 0.0 and best[1] else ()
 
 
 def _shared(a, b) -> int:
@@ -1343,11 +1347,16 @@ def main() -> None:
     if args.sections:
         print(f'{len(jobs)} sections to refit, {args.jobs} jobs', flush=True)
     else:
-        banks = metal_banks(paths, args.max_seconds)
+        # a short hit borrows the banks of the long samples of its own kind (a cowbell's two
+        # notes, not a cymbal's six)
+        kinds = {tuple(categories_for(path, root)) for path in paths}
+        banks = {k: metal_banks([p for p in paths if tuple(categories_for(p, root)) == k], args.max_seconds)
+                 for k in kinds}
         for job in jobs:
-            job['banks'] = banks
+            job['banks'] = banks[tuple(job['cats'])]
         print(f'{len(jobs)} samples, {args.jobs} jobs'
-              + ''.join(f'\nmetal bank: {", ".join(f"{f:.1f}" for f in b)} Hz' for b in banks), flush=True)
+              + ''.join(f'\nmetal bank ({"+".join(k) or "other"}): {", ".join(f"{f:.1f}" for f in b)} Hz'
+                        for k in sorted(banks) for b in banks[k]), flush=True)
 
     rows = []
     with concurrent.futures.ProcessPoolExecutor(max_workers=args.jobs) as pool:
