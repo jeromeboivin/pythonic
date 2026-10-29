@@ -132,6 +132,11 @@ def test_hand_drums_and_wood_get_the_partials_section_but_not_plain_toms():
     assert not F.gets_section(['tom']) and not F.gets_section(['perc', 'sd']) and not F.gets_section(['cowbell'])
 
 
+def test_wood_and_hand_drums_get_quieter_noise_bands():
+    assert F.bands_db(['wood', 'perc']) == F.WOOD_BANDS_DB < F.bands_db(['tom', 'perc']) == F.HAND_DRUM_BANDS_DB < 0.0
+    assert F.bands_db(['ch']) == F.bands_db(['shaker']) == F.bands_db(['tom']) == 0.0
+
+
 def test_a_shaker_fades_in_over_its_time_to_peak():
     rng = np.random.default_rng(4)
     t = np.arange(int(0.15 * SR)) / SR

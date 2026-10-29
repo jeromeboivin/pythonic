@@ -115,7 +115,8 @@ from pythonic.preset_manager import (DrumPatchParser, DrumPatchWriter,  # noqa: 
 from pythonic.synthesizer import PythonicSynthesizer  # noqa: E402
 from pythonic.voice import (DrumVoice, FILT_BP, FILT_HP, FILT_LP, METAL_FREQS, MOD_DECAY,  # noqa: E402
                             NENV_EXP, NENV_LINEAR, NENV_MOD, VoiceParams, WAVE_SAW, WAVE_SINE, WAVE_TRI,
-                            PARTIALS_DEFAULTS, attack_norm, metal_on, params_from_patch, partials_on)
+                            PARTIALS_DEFAULTS, attack_norm, format_bands, metal_on, params_from_patch, parse_bands,
+                            partials_on)
 
 sys.path.insert(0, str(ROOT / 'tools'))
 import fit_partials  # noqa: E402  (next to this script)
@@ -153,6 +154,20 @@ SWELL_CATEGORIES = {'shaker'}
 
 def gets_section(cats) -> bool:
     return bool(set(cats) & PARTIAL_CATEGORIES) or SECTION_PAIR <= set(cats)
+
+
+# On a short hit of wood or skin the analysis underrates the fast-dying tones, and the noise
+# bands take what they leave: "too noisy", "missing harmonics". Bands 9 dB down won 23 of 24;
+# then 15 dB down won 6 of 7 blocks and claves, while congas wanted no more than 9
+WOOD_BANDS_DB = -15.0
+HAND_DRUM_BANDS_DB = -9.0
+
+
+def bands_db(cats) -> float:
+    """How far under the analysis a section's noise bands are set for these categories."""
+    if 'wood' in cats:
+        return WOOD_BANDS_DB
+    return HAND_DRUM_BANDS_DB if SECTION_PAIR <= set(cats) else 0.0
 
 # Continuous controls: (VoiceParams field, low, high, scale). 'knob' attacks
 # are fitted as the knob position of the attack curve; 'amount' is the
@@ -1162,6 +1177,12 @@ def fit_section(classic: VoiceParams, path: str, target: 'Target', peak_db: floa
     if set(cats) & SWELL_CATEGORIES:
         fields['partials_rise_ms'] = time_to_peak(x)
         how += f', rise {fields["partials_rise_ms"]:g} ms'
+    quieter = bands_db(cats)
+    if quieter:
+        rows = parse_bands(fields['partial_bands']).copy()
+        rows[:, [0, 2]] *= 10.0 ** (quieter / 20.0)
+        fields['partial_bands'] = format_bands(rows)
+        how += f', bands {quieter:g} dB'
     fields['partials_level_db'] = fit_partials.peak_level_db(fields, with_section, peak_db)
     return VoiceParams(**{**base.__dict__, **fields}), how
 
