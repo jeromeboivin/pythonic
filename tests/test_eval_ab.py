@@ -484,3 +484,23 @@ def test_the_grading_queue_offers_the_fit_you_preferred(world, tmp_path):
     first = {r['id'] for r in store.q(
         "SELECT f.id FROM fits f JOIN run_fits rf ON rf.fit_id=f.id JOIN runs r ON r.id=rf.run_id AND r.label='first'")}
     assert {r['fit_id'] for r in api._grade_candidates({})} == first
+
+
+def test_a_big_instrument_is_sampled_until_its_grades_disagree(tmp_path, monkeypatch):
+    monkeypatch.setattr(E, 'REPEAT_RATE', 0.0)
+    samples, fits = tmp_path / 'Vintage', tmp_path / 'Vintage-fit'
+    names = [f'Machine/BD Kick {i:02d}' for i in range(1, 13)] + ['Machine/SD Snare 01']
+    write_run(samples, fits, names)
+    store = E.Store(tmp_path / 'eval')
+    E.register(store, samples, fits, 'first', log=lambda *_: None)
+    api = make_api(store)
+    # 8 of the 12 kicks are offered, and the snare
+    assert api.summary()['todo_grade'] == 9
+    grade_kicks = lambda grades: [api.answer({'token': api.next({'mode': 'grade', 'category': 'bd'})['token'],
+                                              'grade': g}) for g in grades]
+    grade_kicks([3] * 8)
+    assert api.summary()['todo_grade'] == 1          # all 8 agree: the other 4 kicks wait
+    assert api.summary()['held_grade'] == 4
+    back = api.undo()                                # the last kick was Weak after all
+    api.answer({'token': back['token'], 'grade': 2})
+    assert api.summary()['todo_grade'] == 5          # mixed: the rest of the kicks come back

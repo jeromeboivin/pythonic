@@ -98,6 +98,7 @@ TAGS = ['too dark', 'too bright', 'pitch low', 'pitch high', 'too short', 'too l
         'weak attack', 'too noisy', 'no body', 'wrong tone', 'tonal artifact', 'tail too quiet']
 REPEAT_RATE = 0.05          # share of the grade trials that silently repeat an earlier one
 REPEAT_AFTER = 20           # graded fits before repeats start
+SAMPLE_PER_INSTRUMENT = 8   # an instrument's fits offered before its grades decide whether to go on
 DEFAULT_THRESHOLD = 0.75    # check: distance over which a re-render goes back to the ear
 MAX_SECONDS = 2.5           # length the fitter matches (tools/fit_samples.py)
 
@@ -599,6 +600,7 @@ class Api:
                 'pending_compare': n("SELECT count(*) FROM comparisons WHERE status='pending'"),
                 'pending_ladder': n("SELECT count(*) FROM ladders WHERE status='pending'"),
                 'todo_grade': len(self._grade_candidates({})),
+                'held_grade': self._held(),
                 'todo_retag': len(self._retag_candidates({})),
                 'grade_counts': {GRADES[g]: dist.get(g, 0) for g in GRADES},
                 'sets': [r[0] for r in s.q('SELECT DISTINCT set_name FROM samples ORDER BY 1')],
@@ -631,7 +633,42 @@ class Api:
 
     def _grade_candidates(self, f: dict) -> list:
         """The current fit (current_fit) of each sample without a golden fit or a mark,
-        when it has no grade yet."""
+        when it has no grade yet, sampled per instrument (_sampled)."""
+        return self._sampled(self._ungraded(f))[0]
+
+    def _held(self) -> int:
+        """Ungraded fits held back by the sampling."""
+        return len(self._sampled(self._ungraded({}))[1])
+
+    @staticmethod
+    def instrument(rel: str) -> str:
+        """A sample's instrument: its name without its take number ('BD 808 Kick')."""
+        return re.sub(r'\s*\d+$', '', pathlib.Path(rel).name)
+
+    def _sampled(self, rows: list) -> tuple:
+        """(offered, held) ungraded fits. Of each instrument (a machine's samples of one name)
+        SAMPLE_PER_INSTRUMENT are graded first, the worst fitter scores first; then the rest
+        only while their grades disagree (Good or better and Weak or worse both): grades that
+        agree say all there is to say about the others."""
+        groups = {}
+        for r in rows:
+            groups.setdefault((r['machine'], self.instrument(r['rel'])), []).append(r)
+        offered, held = [], []
+        for (machine, name), group in groups.items():
+            latest = [r['grade'] for r in self.store.q(
+                'SELECT s.rel, (SELECT g.grade FROM grades g JOIN fits f ON f.id=g.fit_id WHERE f.sample_id=s.id '
+                'AND g.repeat_of IS NULL ORDER BY g.id DESC LIMIT 1) AS grade FROM samples s WHERE s.machine=?',
+                machine) if r['grade'] is not None and self.instrument(r['rel']) == name]
+            group.sort(key=lambda r: (r['score'] is not None, r['score'] or 0.0), reverse=True)
+            if len(latest) < SAMPLE_PER_INSTRUMENT:
+                n = SAMPLE_PER_INSTRUMENT - len(latest)
+            else:
+                n = len(group) if any(g >= 3 for g in latest) and any(g <= 2 for g in latest) else 0
+            offered += group[:n]
+            held += group[n:]
+        return offered, held
+
+    def _ungraded(self, f: dict) -> list:
         sql, args = self._filters(f)
         out = []
         for r in self.store.q('SELECT s.id AS sample_id, s.set_name, s.machine, s.rel, f.id AS fit_id, f.score '

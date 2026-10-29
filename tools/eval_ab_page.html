@@ -328,7 +328,8 @@ async function refresh(keep) {
   }
   const g = summary.grade_counts;
   $('stats').textContent = (summary.todo_retag ? `${summary.todo_retag} to re-tag · ` : '') +
-    `${summary.todo_grade} fits to grade · ${summary.graded} graded (` +
+    `${summary.todo_grade} fits to grade` + (summary.held_grade ? ` (${summary.held_grade} more held: their instrument's grades agree)` : '') +
+    ` · ${summary.graded} graded (` +
     Object.entries(g).map(([k, v]) => `${v} ${k}`).join(', ') + `) · ${summary.golden} golden · ${summary.pending_compare} pairs waiting` +
     ` · ${summary.pending_ladder} ladders waiting`;
   if (!keep) await loadTrial(await api('/api/next?' + new URLSearchParams(filters())));

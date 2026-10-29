@@ -465,7 +465,9 @@ page has two modes. *Original vs fit* grades a fit Awful, Weak, Good or Perfect
 (keys 1-4) with defect tags and a note; the original and the fit are labelled, so
 the tags say what is wrong with the fit, and every sound plays at the same
 K-weighted loudness (about 5 % of the trials silently repeat an earlier one, to
-measure how consistent your ears are).
+measure how consistent your ears are). The worst fitter scores come first, and a
+big set is sampled: of each instrument (a machine's samples of one name, such as
+its 34 kicks) 8 are offered, then the rest only while their grades disagree.
 *Old vs new* compares two versions of a sample: you say which side is better (or
 Same, or Both bad), and the page records Better or Worse for the new version.
 Samples graded Good or Perfect are the golden set: Better passes it on to the new
