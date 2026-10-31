@@ -817,8 +817,16 @@ class DrumVoice:
             st[K.I_NSTAGE] = 0
             fs[K.S_NSLOPE] = max(fs[K.S_NLVL], 1e-6) * (-1.0 / d.n_fade_n)
         if d.metal:
-            # free-running oscillators: their phases at a hit are unrelated
-            fs[K.S_M_PH:K.S_M_PH + 6] = self._metal_rng.random(6)
+            # free-running oscillators: their phases at a hit are unrelated, but copies of a
+            # note stand for one oscillator (a cowbell's two notes fill all six) and start
+            # together, else they cancel or add anew at every hit
+            phases = self._metal_rng.random(6)
+            for i in range(1, 6):
+                for j in range(i):
+                    if d.metal_inc[i] == d.metal_inc[j]:
+                        phases[i] = phases[j]
+                        break
+            fs[K.S_M_PH:K.S_M_PH + 6] = phases
             fs[K.S_M_ENV:K.S_M_ENV + 2] = 1.0
             fs[K.S_M_LIN:K.S_M_LIN + 2] = 1.0
             fs[K.S_M_VEL] = velocity_gain(velocity, p.metal_vel)

@@ -158,6 +158,29 @@ def test_the_oscillators_run_free_from_hit_to_hit():
     assert np.abs(second).max() == pytest.approx(np.abs(first).max(), rel=0.5)
 
 
+def test_copies_of_a_note_start_in_phase_at_every_hit():
+    # a cowbell's two notes, each on three oscillators: a copy stands for the same oscillator,
+    # so the notes' balance is the same at every hit, and the same in every voice
+    cowbell = metal(metal_freq1=541.0, metal_freq2=541.0, metal_freq3=541.0,
+                    metal_freq4=801.0, metal_freq5=801.0, metal_freq6=801.0, metal_band1_freq=800.0)
+    t = np.arange(4096)
+
+    def balance(y):
+        w = y[:4096].mean(axis=1) * np.hanning(4096)
+        level = lambda f: abs(np.sum(w * np.exp(-2j * np.pi * f * t / SR)))
+        return 20.0 * np.log10(level(541.0) / level(801.0))
+
+    hits = []
+    for seed in (1, 2):
+        voice = DrumVoice(SR, seed=seed)
+        voice.set_params(cowbell)
+        for _ in range(4):
+            voice.trigger(127)
+            hits.append(balance(voice.process(4096)))
+            voice.process(SR)
+    assert max(hits) - min(hits) < 0.5
+
+
 def test_choke_ends_the_metal_in_10_ms():
     voice = DrumVoice(SR, seed=1)
     voice.set_params(metal())
