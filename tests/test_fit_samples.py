@@ -170,6 +170,26 @@ def test_a_maraca_holds_to_its_top_then_falls_as_fast_as_it():
     assert not F.swells(maraca, {'partials': '5000.0 -20.0 50 0.0'})
 
 
+def test_the_fitter_scores_what_the_preview_plays(tmp_path):
+    from pythonic.preset_manager import DrumPatchParser, DrumPatchWriter
+    from pythonic.voice import params_from_patch
+    patches = {
+        'kick': VoiceParams(osc_freq=55.0, osc_decay_ms=300.0, mod_amount=24.0, osc_mix=0.8, noise_decay_ms=30.0),
+        # a cowbell's two notes repeated over the six squares, and noise in the mix
+        'cowbell': VoiceParams(osc_mix=0.3, noise_decay_ms=40.0, metal_band1_level=0.8, metal_band1_freq=800.0,
+                               **dict(zip(F.METAL_FREQS, (541.0, 541.0, 541.0, 801.0, 801.0, 801.0)))),
+        'hat': VoiceParams(partial_bands=', '.join(['-240.0 5'] * 24 + ['-20.0 80'] * 8),
+                           partials='7000.0 -20.0 120 0.0, 9300.0 -24.0 90 1.0'),
+    }
+    n = int(0.3 * SR)
+    for name, p in patches.items():
+        path = tmp_path / f'{name}.mtdrum'
+        path.write_text(DrumPatchWriter.format_patch(F.patch_dict(p, name, False)), encoding='utf-8')
+        heard = F.preview_audio(path)[:n].mean(axis=1)
+        scored = F.render(params_from_patch(DrumPatchParser().parse_file(str(path))), n)
+        assert np.abs(heard - scored).max() < 1e-6 * max(np.abs(heard).max(), 1e-9), name
+
+
 def test_a_metal_fit_leaves_the_eq_flat():
     p = F.metal_starts(VoiceParams(eq_gain_db=12.0), cymbal(), BANK_606)[0]
     assert p.eq_gain_db == 0.0

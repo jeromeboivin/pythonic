@@ -24,6 +24,11 @@ from .voice import (DrumVoice, METAL_DEFAULTS, METAL_PARAMS, MOD_HOLD_MAX_MS, PA
                     PARTIALS_PARAMS, PARTIALS_TABLES, VoiceParams)
 
 
+def voice_seed(channel_id: int) -> int:
+    """The noise and free-running phases seed of a channel's voice."""
+    return channel_id + 1
+
+
 class DrumChannel:
     """One of the 8 drum channels."""
 
@@ -39,7 +44,7 @@ class DrumChannel:
         self.osc_envelope = Envelope()
 
         # Voice engine
-        self.voice = DrumVoice(sample_rate, seed=channel_id + 1)
+        self.voice = DrumVoice(sample_rate, seed=voice_seed(channel_id))
 
         # Pythonic extras
         self.vintage = VintageProcessor(sample_rate)

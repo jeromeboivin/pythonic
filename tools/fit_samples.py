@@ -112,6 +112,7 @@ import soundfile as sf
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from pythonic.drum_channel import voice_seed  # noqa: E402
 from pythonic.preset_manager import (DrumPatchParser, DrumPatchWriter,  # noqa: E402
                                      apply_drum_patch_to_channel, convert_drum_patch_data)
 from pythonic.synthesizer import PythonicSynthesizer  # noqa: E402
@@ -346,7 +347,9 @@ def neutral(p: VoiceParams) -> VoiceParams:
 
 # --------------------------------------------------------------------------- audio
 def render(p: VoiceParams, n: int) -> np.ndarray:
-    v = DrumVoice(SR, seed=0)
+    """n mono samples of p hit at velocity 127, exactly as the previews play it (preview_audio):
+    the voice of the app's first channel, its noise and free-running phases included."""
+    v = DrumVoice(SR, seed=voice_seed(0))
     v.set_params(p)
     v.trigger(127)
     return v.process(n).astype(np.float64).mean(axis=1)
@@ -1320,10 +1323,9 @@ PREVIEW_FLOOR_DB = -70.0   # a .fit.wav ends once the patch stays this far under
 PREVIEW_CHUNK = 512
 
 
-def write_preview(patch_path, wav_path) -> None:
-    """<name>.fit.wav: the patch alone, in stereo, as the app plays it: loaded into a new
-    channel, hit at velocity 127 and rendered until it stays PREVIEW_FLOOR_DB under its peak
-    (at most PREVIEW_SECONDS), peak-limited to 0.99 like the app's export."""
+def preview_audio(patch_path) -> np.ndarray:
+    """(PREVIEW_SECONDS of samples, 2): the patch alone as the app plays it, loaded into the
+    first channel of a new synthesizer and hit at velocity 127."""
     synth = PythonicSynthesizer(SR, parallel_channel_processing=False)
     try:
         channel = synth.channels[0]
@@ -1332,7 +1334,13 @@ def write_preview(patch_path, wav_path) -> None:
         chunks = [channel.process(PREVIEW_CHUNK) for _ in range(int(PREVIEW_SECONDS * SR) // PREVIEW_CHUNK)]
     finally:
         synth.cleanup()
-    y = np.concatenate(chunks).astype(np.float64)
+    return np.concatenate(chunks).astype(np.float64)
+
+
+def write_preview(patch_path, wav_path) -> None:
+    """<name>.fit.wav: preview_audio, rendered until it stays PREVIEW_FLOOR_DB under its peak
+    (at most PREVIEW_SECONDS), peak-limited to 0.99 like the app's export."""
+    y = preview_audio(patch_path)
     level = np.abs(y).max(axis=1)
     peak = float(level.max())
     if peak > 0.0:
