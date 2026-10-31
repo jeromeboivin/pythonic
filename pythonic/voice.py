@@ -89,17 +89,19 @@ METAL_GAIN = 0.6        # a band at level 1 is about as loud (RMS) as the noise 
 
 
 # Second tone: VoiceParams field -> (default, .mtdrum key, unit, minimum, maximum). A
-# second oscillator at a ratio of the first one's pitch, under its own level and decay,
-# added to it before the oscillator envelope. It is off while its level is 0, and a drum
-# patch that leaves it off has none of these keys
+# second oscillator at a ratio of the first one's pitch, under its own decay, added to it
+# before the oscillator envelope. Its balance against the oscillator runs from the
+# oscillator alone (0) through both at full (50 %) to the second tone alone (100 %), as the
+# TR-808 snare's tone knob does: there the upper tone can hit 20 dB over the lower. It is
+# off while its balance is 0, and a drum patch that leaves it off has none of these keys
 TONE2_PARAMS = {
-    'tone2_level': (0.0, 'Tone2Lvl', '%', 0.0, 1.0),
+    'tone2_balance': (0.0, 'Tone2Bal', '%', 0.0, 1.0),
     'tone2_ratio': (2.0, 'Tone2Ratio', '', 0.25, 8.0),          # of the oscillator's pitch
     'tone2_decay_ms': (100.0, 'Tone2Dcy', ' ms', 10.0, 10000.0),  # at most the oscillator's
 }
 TONE2_DEFAULTS = {name: spec[0] for name, spec in TONE2_PARAMS.items()}
 TONE2_DEFAULTS['tone2_wave'] = WAVE_SINE
-TONE2_PERCENT = {'tone2_level'}
+TONE2_PERCENT = {'tone2_balance'}
 WAVE_KEYS = ('Sine', 'Triangle', 'Saw')     # .mtdrum names of the waves (OscWave, Tone2Wave)
 
 
@@ -136,7 +138,7 @@ def metal_on(params) -> bool:
 def tone2_on(params) -> bool:
     """True when a VoiceParams or channel-format dict turns the second tone on."""
     get = params.get if isinstance(params, dict) else lambda k, d: getattr(params, k, d)
-    return get('tone2_level', 0.0) > 0.0
+    return get('tone2_balance', 0.0) > 0.0
 
 
 def partials_on(params) -> bool:
@@ -450,7 +452,7 @@ class VoiceParams:
     metal_hp_freq: float = 2000.0       # Hz
     metal_vel: float = 0.0              # 1.0 == 100 %
     # second tone (off while its level is 0), see TONE2_PARAMS
-    tone2_level: float = 0.0            # 0..1
+    tone2_balance: float = 0.0          # 0..1, 0.5 == both at full
     tone2_ratio: float = 2.0            # of the oscillator's pitch
     tone2_decay_ms: float = 100.0       # at most the oscillator decay
     tone2_wave: int = WAVE_SINE
@@ -488,7 +490,8 @@ class _Derived:
         if self.tone2:
             t2 = min(max(p.tone2_decay_ms, 10.0), 10000.0) / 1000.0
             self.tone2_q = min(1000.0 ** (-1.0 / max(min(t2, t_dcy) * sr, 1.0)) / self.osc_dcy_c, 1.0)
-            self.tone2_lvl = min(max(p.tone2_level, 0.0), 1.0)
+            bal = min(max(p.tone2_balance, 0.0), 1.0)
+            self.tone2_gain, self.tone2_osc = min(2.0 * bal, 1.0), min(2.0 - 2.0 * bal, 1.0)
             self.tone2_ratio = min(max(p.tone2_ratio, 0.25), 8.0)
             self.tone2_wave = int(p.tone2_wave) if int(p.tone2_wave) in (0, 1, 2) else 0
 
@@ -670,7 +673,8 @@ def _pack(d: _Derived):
     ip[K.IP_N_BURSTS] = d.n_bursts
     if d.tone2:
         ip[K.IP_T2_WAVE] = d.tone2_wave
-        p[K.P_T2_LVL] = d.tone2_lvl
+        p[K.P_T2_GAIN] = d.tone2_gain
+        p[K.P_T2_OSC] = d.tone2_osc
         p[K.P_T2_RATIO] = d.tone2_ratio
         p[K.P_T2_Q] = d.tone2_q
     if d.metal:

@@ -46,7 +46,7 @@ def test_every_sound_widget_has_an_address(app):
     metal = {s for s in SOUND_SUFFIXES if s.startswith('metal.')} | {'vel.metal'}
     assert len(metal) == 19
     tone2 = {s for s in SOUND_SUFFIXES if s.startswith('tone2.')}
-    assert tone2 == {'tone2.wave', 'tone2.ratio', 'tone2.decay', 'tone2.level'}
+    assert tone2 == {'tone2.wave', 'tone2.ratio', 'tone2.decay', 'tone2.balance'}
     partials = {s for s in SOUND_SUFFIXES if s.startswith('partials.')}
     assert len(partials) == 8
     assert SOUND_SUFFIXES - set(app._sound_widgets) == {'lfo1.phase', 'lfo2.phase', 'pump.sync', 'osc.mod_hold',

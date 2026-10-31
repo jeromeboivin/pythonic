@@ -153,8 +153,8 @@ TONE2_SOUND_PARAMS = (
           lambda ch, v: ch.set_tone2('tone2_wave', v.value)),
     _tone2('tone2.ratio', 'tone2_ratio', '', 'log'),
     _tone2('tone2.decay', 'tone2_decay_ms', 'ms', 'log'),
-    _ratio('tone2.level', 'tone2_level', lambda ch: ch.tone2['tone2_level'],
-           lambda ch, v: ch.set_tone2('tone2_level', v)),
+    _ratio('tone2.balance', 'tone2_balance', lambda ch: ch.tone2['tone2_balance'],
+           lambda ch, v: ch.set_tone2('tone2_balance', v)),
 )
 
 

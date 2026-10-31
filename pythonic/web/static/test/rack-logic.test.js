@@ -84,7 +84,7 @@ test('the rack holds every sound parameter once, except those on the face', () =
   assert.deepEqual(FACE_ONLY, ['osc.pitch', 'osc.decay', 'mix.level']);
   for (const s of ['osc.attack', 'noise.attack', 'noise.decay', 'mix.pan', 'mix.output', 'fx.delay_time',
     'lfo1.target', 'lfo2.phase', 'pump.sync', 'pump.target', 'vel.mod', 'vel.metal', 'metal.freq6',
-    'metal.band2_level', 'metal.hp', 'tone2.wave', 'tone2.ratio', 'tone2.decay', 'tone2.level']) {
+    'metal.band2_level', 'metal.hp', 'tone2.wave', 'tone2.ratio', 'tone2.decay', 'tone2.balance']) {
     assert.ok(suffixes.includes(s), s);
   }
   assert.deepEqual(RACK_SECTIONS.map((s) => s.title),

@@ -21,7 +21,7 @@ The optional part of a drum patch for cymbals, hi-hats and cowbells: six square-
 _Avoid_: Metal engine, cymbal mode, metal bank (for the whole section)
 
 **Second tone**:
-The optional part of a drum patch for drums that ring at two pitches, such as analog snares and rims: a second oscillator with its own wave, level and decay, at a ratio of the oscillator's pitch, so it follows the oscillator's pitch modulation and tuning. It sounds under the oscillator envelope, and its decay is never longer than the oscillator's. It is off while its level is 0, and a drum patch saved with it off is the same file as before it existed. The PO-32 has no second tone, so a transfer drops it and says so.
+The optional part of a drum patch for drums that ring at two pitches, such as analog snares and rims: a second oscillator with its own wave and decay, at a ratio of the oscillator's pitch, so it follows the oscillator's pitch modulation and tuning. Its **balance** against the oscillator runs from the oscillator alone through both at full (50 %) to the second tone alone. It sounds under the oscillator envelope, and its decay is never longer than the oscillator's. It is off while its balance is 0, and a drum patch saved with it off is the same file as before it existed. The PO-32 has no second tone, so a transfer drops it and says so.
 _Avoid_: Oscillator 2, sub oscillator, overtone
 
 **Partials section**:

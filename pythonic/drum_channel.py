@@ -197,10 +197,10 @@ class DrumChannel:
                 nvel = min(2.0, max(0.0, nvel + g(ModTarget.NOISE_VEL_SENSITIVITY)))
             if ModTarget.MOD_VEL_SENSITIVITY in mod:
                 mvel = min(2.0, max(0.0, mvel + g(ModTarget.MOD_VEL_SENSITIVITY)))
-            if ModTarget.TONE2_LEVEL in mod or ModTarget.TONE2_RATIO in mod:
+            if ModTarget.TONE2_BALANCE in mod or ModTarget.TONE2_RATIO in mod:
                 tone2 = dict(tone2)
-                if ModTarget.TONE2_LEVEL in mod:
-                    tone2['tone2_level'] = min(1.0, max(0.0, tone2['tone2_level'] + g(ModTarget.TONE2_LEVEL)))
+                if ModTarget.TONE2_BALANCE in mod:
+                    tone2['tone2_balance'] = min(1.0, max(0.0, tone2['tone2_balance'] + g(ModTarget.TONE2_BALANCE)))
                 if ModTarget.TONE2_RATIO in mod:
                     tone2['tone2_ratio'] = min(8.0, max(0.25, tone2['tone2_ratio'] + g(ModTarget.TONE2_RATIO)))
         return VoiceParams(

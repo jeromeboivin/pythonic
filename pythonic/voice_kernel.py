@@ -68,11 +68,12 @@ P_PS_FADE = 73          # samples of the cut's fade (-60 dB at its end, then sil
 P_PS_REL = 74           # per-sample step of the release (choke)
 P_PS_END = 75           # a band gain under this has ended
 P_PS_RISE = 76          # samples the section fades in over from the hit (0 = at once)
-# second tone (used only while its level is above 0)
-P_T2_LVL = 77           # its level against the oscillator
+# second tone (used only while its balance is above 0)
+P_T2_GAIN = 77          # its gain, of the balance
 P_T2_RATIO = 78         # its pitch, as a ratio of the oscillator's
 P_T2_Q = 79             # per-sample factor of its decay on top of the oscillator envelope's
-NUM_P = 80
+P_T2_OSC = 80           # the oscillator's own gain, of the balance
+NUM_P = 81
 
 # ---------------------------------------------------------------- int parameters
 IP_WAVE = 0
@@ -569,10 +570,11 @@ def _osc_block(p, ip, fs, ist, mod_rng, j, blk, w, out):
         fs[S_DEC_Y] = y
         out[k] = y
     fs[S_ACC] = acc
-    lvl = p[P_T2_LVL]
-    if lvl > 0.0:
+    gain = p[P_T2_GAIN]
+    if gain > 0.0:
         # the second tone: the oscillator's increments times its ratio, its own phase and
-        # decimator, under its decay factor
+        # decimator, under its decay factor, balanced against the oscillator
+        osc = p[P_T2_OSC]
         wave2 = ip[IP_T2_WAVE]
         ratio = p[P_T2_RATIO]
         max_inc = p[P_MAX_INC]
@@ -590,7 +592,7 @@ def _osc_block(p, ip, fs, ist, mod_rng, j, blk, w, out):
             y = u + a2 * fs[S_T2_DEC_Y]
             fs[S_T2_DEC_X] = xo
             fs[S_T2_DEC_Y] = y
-            out[k] += lvl * q * y
+            out[k] = osc * out[k] + gain * q * y
             q *= qs
         fs[S_T2_PH] = ph
         fs[S_T2_Q] = q

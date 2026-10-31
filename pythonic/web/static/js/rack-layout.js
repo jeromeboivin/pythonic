@@ -58,10 +58,10 @@ export const RACK_SECTIONS = [
     [sw('osc.mod_mode', 'pitch mod', 'pitch mod', 'dec,sine,rand'), knob('osc.mod_hold', 'hold', 'pitch hold')],
     [knob('osc.freq', 'freq', 'osc freq'), knob('osc.mod_amount', 'amount', 'pitch amount'),
       knob('osc.mod_rate', 'rate', 'pitch rate')],
-    // the second tone: an oscillator at a ratio of this one's pitch (its level at 0 turns it off)
+    // the second tone: an oscillator at a ratio of this one's pitch (its balance at 0 turns it off)
     [sw('tone2.wave', 'tone 2', 'tone 2 wave', 'sin,tri,saw')],
     [mk('tone2.ratio', 'ratio', 'tone 2 ratio'), mk('tone2.decay', 'decay', 'tone 2 decay'),
-      mk('tone2.level', 'level', 'tone 2 level')],
+      mk('tone2.balance', 'balance', 'tone 2 balance')],
   ] },
   { key: 'noise', title: 'noise', rows: [
     [sw('noise.filter', 'filter', 'noise filter', 'LP,BP,HP'), toggle('noise.stereo', 'stereo', 'noise stereo')],
