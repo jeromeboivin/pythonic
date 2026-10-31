@@ -42,13 +42,15 @@ def apply(gui):
 def test_every_sound_widget_has_an_address(app):
     assert set(app._sound_widgets) <= SOUND_SUFFIXES
     # Not on the tkinter panel: LFO phase offsets, the pump tempo sync, the pitch hold, the metal
-    # and the partials sections (new controls are on the web panel only)
+    # section, the second tone and the partials section (new controls are on the web panel only)
     metal = {s for s in SOUND_SUFFIXES if s.startswith('metal.')} | {'vel.metal'}
     assert len(metal) == 19
+    tone2 = {s for s in SOUND_SUFFIXES if s.startswith('tone2.')}
+    assert tone2 == {'tone2.wave', 'tone2.ratio', 'tone2.decay', 'tone2.level'}
     partials = {s for s in SOUND_SUFFIXES if s.startswith('partials.')}
     assert len(partials) == 8
     assert SOUND_SUFFIXES - set(app._sound_widgets) == {'lfo1.phase', 'lfo2.phase', 'pump.sync', 'osc.mod_hold',
-                                                        *metal, *partials}
+                                                        *metal, *tone2, *partials}
 
 
 def test_no_handler_writes_the_engine_directly():

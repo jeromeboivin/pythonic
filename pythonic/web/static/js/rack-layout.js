@@ -27,7 +27,7 @@ const fader = (s, label, name) => ({ s, type: 'fader', label, name, length: 112 
 const toggle = (s, label, name) => ({ s, type: 'toggle', label, name });
 const sw = (s, label, name, options, extra = {}) => ({ s, type: 'switch', label, name, options, ...extra });
 const list = (s, label, name, options) => ({ s, type: 'list', label, name, options });
-const mk = (s, label, name) => knob(s, label, name, { size: 22 });  // the metal section's small knobs
+const mk = (s, label, name) => knob(s, label, name, { size: 22 });  // the metal section's and second tone's small knobs
 
 const LFO_WAVES = 'sin,tri,saw▲,saw▼,sq,s&h';
 const SYNCS = 'free,1/1,1/2,1/4,1/8,1/16,1/4.,1/8.,1/4T,1/8T,2 bar,4 bar';
@@ -58,6 +58,10 @@ export const RACK_SECTIONS = [
     [sw('osc.mod_mode', 'pitch mod', 'pitch mod', 'dec,sine,rand'), knob('osc.mod_hold', 'hold', 'pitch hold')],
     [knob('osc.freq', 'freq', 'osc freq'), knob('osc.mod_amount', 'amount', 'pitch amount'),
       knob('osc.mod_rate', 'rate', 'pitch rate')],
+    // the second tone: an oscillator at a ratio of this one's pitch (its level at 0 turns it off)
+    [sw('tone2.wave', 'tone 2', 'tone 2 wave', 'sin,tri,saw')],
+    [mk('tone2.ratio', 'ratio', 'tone 2 ratio'), mk('tone2.decay', 'decay', 'tone 2 decay'),
+      mk('tone2.level', 'level', 'tone 2 level')],
   ] },
   { key: 'noise', title: 'noise', rows: [
     [sw('noise.filter', 'filter', 'noise filter', 'LP,BP,HP'), toggle('noise.stereo', 'stereo', 'noise stereo')],

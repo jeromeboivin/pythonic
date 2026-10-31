@@ -21,7 +21,7 @@ from pythonic.delay import DelayTime
 from pythonic.lfo import LFOPolarity, LFORetrigger, LFOWaveform, ModTarget, SyncDivision
 from pythonic.noise import NoiseEnvelopeMode, NoiseFilterMode
 from pythonic.oscillator import PitchModMode, WaveformType
-from pythonic.voice import METAL_PARAMS, MOD_HOLD_MAX_MS, PARTIALS_PARAMS
+from pythonic.voice import METAL_PARAMS, MOD_HOLD_MAX_MS, PARTIALS_PARAMS, TONE2_PARAMS
 
 
 @dataclass(frozen=True)
@@ -139,6 +139,25 @@ METAL_SOUND_PARAMS = (
 )
 
 
+def _tone2(suffix, name, unit, curve='linear'):
+    """One second tone parameter (a VoiceParams field of voice.TONE2_PARAMS)."""
+    lo, hi = TONE2_PARAMS[name][3:]
+    return _number(suffix, name, lambda ch: ch.tone2[name],
+                   lambda ch, v: ch.set_tone2(name, v), lo, hi, unit, curve)
+
+
+# Second tone: a second oscillator at a ratio of the first one's pitch, under its own
+# level and decay (its level at 0 turns it off)
+TONE2_SOUND_PARAMS = (
+    _enum('tone2.wave', 'tone2_wave', WaveformType, lambda ch: WaveformType(ch.tone2['tone2_wave']),
+          lambda ch, v: ch.set_tone2('tone2_wave', v.value)),
+    _tone2('tone2.ratio', 'tone2_ratio', '', 'log'),
+    _tone2('tone2.decay', 'tone2_decay_ms', 'ms', 'log'),
+    _ratio('tone2.level', 'tone2_level', lambda ch: ch.tone2['tone2_level'],
+           lambda ch, v: ch.set_tone2('tone2_level', v)),
+)
+
+
 def _partials(suffix, name, unit, curve='linear'):
     """One partials section knob (a VoiceParams field of voice.PARTIALS_PARAMS)."""
     lo, hi = PARTIALS_PARAMS[name][3:]
@@ -199,6 +218,7 @@ SOUND_PARAMS = tuple([
     _number('noise.decay', 'noise_decay', lambda ch: ch.noise_gen.decay_ms,
             lambda ch, v: ch.set_noise_decay(v), 10.0, 10000.0, 'ms', 'log'),
     *METAL_SOUND_PARAMS,
+    *TONE2_SOUND_PARAMS,
     *PARTIALS_SOUND_PARAMS,
     # Mixing (1 = all oscillator, 0 = all noise)
     _ratio('mix.osc_noise', 'osc_noise_mix', lambda ch: ch.osc_noise_mix,

@@ -21,7 +21,7 @@ from .vintage import VintageProcessor
 from .reverb import FastStereoReverb
 from .delay import FastStereoDelay, DelayTime
 from .voice import (DrumVoice, METAL_DEFAULTS, METAL_PARAMS, MOD_HOLD_MAX_MS, PARTIALS_DEFAULTS,
-                    PARTIALS_PARAMS, PARTIALS_TABLES, VoiceParams)
+                    PARTIALS_PARAMS, PARTIALS_TABLES, TONE2_DEFAULTS, TONE2_PARAMS, VoiceParams)
 
 
 def voice_seed(channel_id: int) -> int:
@@ -97,6 +97,9 @@ class DrumChannel:
         # Metal section (off while both band levels are 0)
         self.metal = dict(METAL_DEFAULTS)
 
+        # Second tone (off while its level is 0)
+        self.tone2 = dict(TONE2_DEFAULTS)
+
         # Partials section (off while both its tables are empty)
         self.partials = dict(PARTIALS_DEFAULTS)
 
@@ -153,6 +156,7 @@ class DrumChannel:
         n_atk = self._noise_attack_base_ms
         n_dcy = noise.decay_ms
         ovel, nvel, mvel = self.osc_vel_sensitivity, self.noise_vel_sensitivity, self.mod_vel_sensitivity
+        tone2 = self.tone2
         if mod:
             g = mod.get
             if ModTarget.OSC_FREQUENCY in mod:
@@ -193,6 +197,12 @@ class DrumChannel:
                 nvel = min(2.0, max(0.0, nvel + g(ModTarget.NOISE_VEL_SENSITIVITY)))
             if ModTarget.MOD_VEL_SENSITIVITY in mod:
                 mvel = min(2.0, max(0.0, mvel + g(ModTarget.MOD_VEL_SENSITIVITY)))
+            if ModTarget.TONE2_LEVEL in mod or ModTarget.TONE2_RATIO in mod:
+                tone2 = dict(tone2)
+                if ModTarget.TONE2_LEVEL in mod:
+                    tone2['tone2_level'] = min(1.0, max(0.0, tone2['tone2_level'] + g(ModTarget.TONE2_LEVEL)))
+                if ModTarget.TONE2_RATIO in mod:
+                    tone2['tone2_ratio'] = min(8.0, max(0.25, tone2['tone2_ratio'] + g(ModTarget.TONE2_RATIO)))
         return VoiceParams(
             wave=osc.waveform.value,
             osc_freq=float(osc_freq),
@@ -221,6 +231,7 @@ class DrumChannel:
             pitch_ratio=float(2.0 ** (pitch / 12.0)),
             mono=bool(self.mono),
             **self.metal,
+            **tone2,
             **self.partials,
         )
 
@@ -472,8 +483,18 @@ class DrumChannel:
             'lfo2': self.lfo2.get_parameters(),
             'pump': self.pump.get_parameters(),
             **self.metal,
+            **self.tone2,
             **self.partials,
         }
+
+    def set_tone2(self, name: str, value):
+        """Set one second tone parameter (a key of voice.TONE2_DEFAULTS), clamped to its range
+        (its wave to one of the oscillator's)."""
+        if name == 'tone2_wave':
+            self.tone2[name] = int(np.clip(int(round(float(value))), 0, 2))
+            return
+        lo, hi = TONE2_PARAMS[name][3:]
+        self.tone2[name] = float(np.clip(float(value), lo, hi))
 
     def set_metal(self, name: str, value: float):
         """Set one metal section parameter (a key of voice.METAL_PARAMS), clamped to its range."""
@@ -611,6 +632,9 @@ class DrumChannel:
         for name in METAL_PARAMS:
             if name in params:
                 self.set_metal(name, params[name])
+        for name in TONE2_DEFAULTS:
+            if name in params:
+                self.set_tone2(name, params[name])
         for name in PARTIALS_DEFAULTS:
             if name in params:
                 self.set_partials(name, params[name])

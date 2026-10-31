@@ -23,6 +23,10 @@ Perfect for producers, sound designers, and developers interested in audio synth
   - Two band-pass filters, each with its own Q, drive (an asymmetric saturation), decay and level, then a high-pass
   - Decay curve, from exponential to linear (a hold, then a fall)
   - Off while both band levels are at 0: drum patches without it load, sound and save as before
+- **Second Tone** (optional, for drums that ring at two pitches, such as analog snares and rims)
+  - A second oscillator (sine, triangle or saw) at a ratio of the oscillator's pitch, so it follows its pitch modulation and tuning
+  - Its own level and decay (never longer than the oscillator's), under the oscillator envelope
+  - Off while its level is 0: drum patches without it load, sound and save as before; the PO-32 transfer leaves it out
 - **Partials Section** (optional, for hats, cymbals and tambourines fitted to samples)
   - Up to 384 decaying partials, each with its own frequency, level, decay and phase
   - White noise in 32 bands of 24 or 48 dB an octave, each with its own level and decay, and an optional click at the hit (a second, short level and decay)

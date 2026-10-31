@@ -129,6 +129,10 @@ class ModTarget(Enum):
     NOISE_VEL_SENSITIVITY = 'noise_vel_sensitivity'
     MOD_VEL_SENSITIVITY = 'mod_vel_sensitivity'
 
+    # -- Second tone --
+    TONE2_LEVEL = 'tone2_level'
+    TONE2_RATIO = 'tone2_ratio'
+
     # -- Global --
     MASTER_VOLUME = 'master_volume'
     MORPH = 'morph'
@@ -140,6 +144,9 @@ MOD_TARGET_GROUPS = {
         ModTarget.OSC_FREQUENCY, ModTarget.PITCH_SEMITONES,
         ModTarget.PITCH_MOD_AMOUNT, ModTarget.PITCH_MOD_RATE,
         ModTarget.OSC_ATTACK, ModTarget.OSC_DECAY,
+    ],
+    'Second tone': [
+        ModTarget.TONE2_LEVEL, ModTarget.TONE2_RATIO,
     ],
     'Noise': [
         ModTarget.NOISE_FILTER_FREQ, ModTarget.NOISE_FILTER_Q,
@@ -174,6 +181,8 @@ MOD_TARGET_LABELS = {
     ModTarget.PITCH_MOD_RATE: 'Pitch Mod Rate',
     ModTarget.OSC_ATTACK: 'Osc Attack',
     ModTarget.OSC_DECAY: 'Osc Decay',
+    ModTarget.TONE2_LEVEL: 'Tone 2 Level',
+    ModTarget.TONE2_RATIO: 'Tone 2 Ratio',
     ModTarget.NOISE_FILTER_FREQ: 'Noise Freq',
     ModTarget.NOISE_FILTER_Q: 'Noise Q',
     ModTarget.NOISE_ATTACK: 'Noise Attack',
@@ -208,6 +217,8 @@ MOD_TARGET_DEPTH_RANGES = {
     ModTarget.PITCH_MOD_RATE: (0.0, 2000.0, 'Hz'),
     ModTarget.OSC_ATTACK: (0.0, 10000.0, 'ms'),
     ModTarget.OSC_DECAY: (0.0, 10000.0, 'ms'),
+    ModTarget.TONE2_LEVEL: (0.0, 1.0, ''),
+    ModTarget.TONE2_RATIO: (0.0, 8.0, ''),
     ModTarget.NOISE_FILTER_FREQ: (0.0, 20000.0, 'Hz'),
     ModTarget.NOISE_FILTER_Q: (0.0, 10.0, ''),
     ModTarget.NOISE_ATTACK: (0.0, 10000.0, 'ms'),
@@ -517,6 +528,9 @@ class ModulationRouter:
         elif target == ModTarget.OSC_DECAY:
             base = channel.osc_envelope.decay_ms
             channel.osc_envelope.set_decay(max(1.0, base + mod_value))
+        elif target in (ModTarget.TONE2_LEVEL, ModTarget.TONE2_RATIO):
+            name = target.value
+            channel.set_tone2(name, channel.tone2[name] + mod_value)
         elif target == ModTarget.NOISE_FILTER_FREQ:
             base = channel.noise_gen.filter_frequency
             channel.noise_gen.set_filter_frequency(max(20.0, min(20000.0, base + mod_value)))

@@ -20,6 +20,10 @@ _Avoid_: Drum, sound, instrument preset
 The optional part of a drum patch for cymbals, hi-hats and cowbells: six square-wave oscillators that run freely, two band-pass filters each with its own Q, drive, decay and level, and a high-pass. It is off while both band levels are 0, and a drum patch saved with it off is the same file as before it existed.
 _Avoid_: Metal engine, cymbal mode, metal bank (for the whole section)
 
+**Second tone**:
+The optional part of a drum patch for drums that ring at two pitches, such as analog snares and rims: a second oscillator with its own wave, level and decay, at a ratio of the oscillator's pitch, so it follows the oscillator's pitch modulation and tuning. It sounds under the oscillator envelope, and its decay is never longer than the oscillator's. It is off while its level is 0, and a drum patch saved with it off is the same file as before it existed. The PO-32 has no second tone, so a transfer drops it and says so.
+_Avoid_: Oscillator 2, sub oscillator, overtone
+
 **Partials section**:
 The optional part of a drum patch for hats, cymbals and tambourines fitted to samples: up to 384 decaying partials, each with its frequency, level, decay and phase, plus white noise in 32 bands of 24 or 48 dB an octave (the **band slope**), each with its level and decay and an optional **click** (a second, short level and decay at the hit), an optional rise that fades it in and an optional cut that fades it out. While it is on, a hit starts it instead of the oscillator, noise and metal section, which hold the **classic version** of the same sound for engines without the section. It is off while both its tables are empty, and a drum patch saved with it off is the same file as before it existed.
 _Avoid_: Additive engine, resynthesis, sample layer
