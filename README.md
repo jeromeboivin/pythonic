@@ -420,8 +420,10 @@ file name) also gets the partials section (a shaker's fades in over its swell),
 fitted by analysis in a few seconds: noise in 32 bands of 48 dB an octave, each
 band's decay read at about a millisecond and a click per band at the hit; its real
 tones as partials (only peaks that stand out more than noise ever does, and only
-when they carry a real share of the sound); and a cut where the sound holds then
-drops away (a gated closed hat), or where the sample ends. The rest of the
+when they carry a real share of the sound; a short rim's are the clear peaks of its
+first 50 ms); and a cut where the sound holds then drops away (a gated closed hat),
+or where the sample ends. A conga that is one tone swept down (an analog one) keeps
+the classic voice only. The rest of the
 patch holds a classic version of the sound, fitted as above, for engines without
 the section (`--no-partials` leaves it out). `--sections` refits only the section
 of the patches already in the output folder, keeping their classic version.
