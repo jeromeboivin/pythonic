@@ -383,3 +383,52 @@ def test_a_long_sample_without_partials_up_high_has_no_bank():
     freqs, power, _ = F._partials(x)
     assert len(freqs) == 0 and len(power) == 0
     assert F.metal_fundamentals(x) == ()
+
+
+def two_tones(upper=0.8, seconds=0.4, seed=3):
+    """A snare's two decaying tones (175 Hz over 28 ms, 335 Hz over 9 ms, time constants)
+    under a little noise."""
+    t = np.arange(int(seconds * SR)) / SR
+    x = np.sin(2 * np.pi * 175.0 * t) * np.exp(-t / 0.028) + upper * np.sin(2 * np.pi * 335.0 * t) * np.exp(-t / 0.009)
+    return x + 0.01 * np.random.default_rng(seed).standard_normal(len(t)) * np.exp(-t / 0.05)
+
+
+def test_a_hit_of_two_tones_gets_their_ratio_balance_and_decays():
+    m = F.second_tone(two_tones())
+    assert m['osc_freq'] == pytest.approx(175.0, rel=0.01)
+    assert m['osc2_ratio'] == pytest.approx(335.0 / 175.0, rel=0.01)
+    assert m['osc2_balance'] == pytest.approx(0.4, rel=0.15)              # 0.8 of oscillator 1
+    assert m['osc_decay_ms'] == pytest.approx(28.0 * F.T60, rel=0.2)       # to -60 dB
+    assert m['osc2_decay_ms'] == pytest.approx(9.0 * F.T60, rel=0.2)
+
+
+def test_an_upper_tone_louder_than_the_lower_turns_oscillator_1_down():
+    # 12 dB over the lower tone at the hit, as on many TR-808 snares
+    assert F.second_tone(two_tones(upper=4.0))['osc2_balance'] == pytest.approx(1.0 - 0.5 / 4.0, abs=0.03)
+
+
+def test_a_hit_of_one_tone_leaves_oscillator_2_off():
+    assert F.second_tone(two_tones(upper=0.0)) is None
+
+
+def test_a_weak_upper_tone_leaves_oscillator_2_off():
+    # 10 dB under the lower tone at the hit: on such snares the fits with it lost by ear
+    assert F.second_tone(two_tones(upper=0.3)) is None
+
+
+def test_oscillator_2_rides_on_the_vector_after_the_metal_section():
+    p = VoiceParams(osc2_balance=0.4, osc2_ratio=1.9, osc2_decay_ms=60.0, metal_band1_level=0.5)
+    for metal in (False, True):
+        u = F.encode(p, metal=metal, osc2=True)
+        assert len(u) == len(F.controls(metal, True))
+        q = F.decode(u, F.switches_of(p), BANK_606, osc2=True)
+        assert q.metal_band1_level == (pytest.approx(0.5) if metal else 0.0)
+        for name, *_ in F.OSC2_CONTINUOUS:
+            assert getattr(q, name) == pytest.approx(getattr(p, name), rel=1e-6)
+    assert F.decode(F.encode(p), F.switches_of(p)).osc2_balance == 0.0
+
+
+def test_a_fitted_oscillator_2_is_written_to_the_patch():
+    keys = F.patch_dict(VoiceParams(osc2_balance=0.4, osc2_ratio=1.9), 'SD', False)
+    assert keys['Osc2Bal'] == pytest.approx(40.0) and keys['Osc2Ratio'] == pytest.approx(1.9)
+    assert 'Osc2Bal' not in F.patch_dict(VoiceParams(), 'SD', False)

@@ -25,6 +25,13 @@ section on: the six oscillator frequencies are the square-wave fundamentals
 whose odd harmonics explain those partials, and the search adds the
 band-passes, their decays and levels, the Q and the high-pass.
 
+A snare whose first 50 ms ring at two pitches, as an analog snare's two
+oscillators do, the upper one at least 4.4 dB under the lower one or louder,
+gets oscillator 2 (a rim, which gets the partials section, does not): each
+start is tried again with oscillator 1 on the longer of the two tones and
+oscillator 2 at the other's ratio, balance and decay, and the search moves
+them.
+
 1. Starts: patches built on the partials found in the sample, the
    predictions of the model trained by tools/fit_prior.py (fit_prior.pt at the
    repository root), and, with --library-dir, random drum patches of the
@@ -106,6 +113,7 @@ import cma
 import numpy as np
 import scipy.fft
 import scipy.ndimage
+import scipy.optimize
 import scipy.signal
 import soundfile as sf
 
@@ -119,7 +127,7 @@ from pythonic.synthesizer import PythonicSynthesizer  # noqa: E402
 from pythonic.voice import (DrumVoice, FILT_BP, FILT_HP, FILT_LP, METAL_FREQS, MOD_DECAY,  # noqa: E402
                             NENV_EXP, NENV_LINEAR, NENV_MOD, VoiceParams, WAVE_SAW, WAVE_SINE, WAVE_TRI,
                             PARTIALS_DEFAULTS, attack_norm, format_bands, metal_on, params_from_patch, parse_bands,
-                            partials_on)
+                            partials_on, osc2_on)
 
 sys.path.insert(0, str(ROOT / 'tools'))
 import fit_partials  # noqa: E402  (next to this script)
@@ -246,6 +254,22 @@ METAL_CONTINUOUS = [
     ('metal_drive', 0.0, 1.0, 'linear'),
     ('metal_hp_freq', 20.0, 16000.0, 'log'),
 ]
+# An analog snare rings at two pitches, the TR-808's at about 175 and 335 Hz, the upper one
+# dying three times as fast and often hitting louder. The oscillator alone holds one of them,
+# and the fits that took the upper one were heard as "wrong tone". A snare whose first 50 ms
+# ring at two pitches, the upper one at a balance of OSC2_MIN_BALANCE or more (second_tone),
+# gets oscillator 2, started at its measured ratio, balance and decay: 25 such snares won by
+# ear and 13 lost (9 to 1 on the TR-808 snares whose upper tone dominates), where those with
+# a weaker upper tone lost 10 to 4. Not under the partials section: rims fitted on the classic
+# voice with it instead won 9 and lost 10. Its controls are appended to the vector after the
+# metal section's
+OSC2_CATEGORIES = {'sd'}
+OSC2_MIN_BALANCE = 0.3      # the upper tone at least 4.4 dB under the lower one at the hit
+OSC2_CONTINUOUS = [
+    ('osc2_balance', 0.0, 1.0, 'linear'),
+    ('osc2_ratio', 0.25, 8.0, 'log'),
+    ('osc2_decay_ms', 10.0, 10000.0, 'log'),
+]
 SWITCHES = ('wave', 'mod_mode', 'noise_filter', 'noise_env')
 SWITCH_CHOICES = 3
 WAVE_NAMES = ('sine', 'triangle', 'saw')
@@ -275,10 +299,17 @@ def mod_range(mod_mode: int) -> float:
     return 96.0 if mod_mode == MOD_DECAY else 48.0
 
 
-def encode(p: VoiceParams, metal: bool = False) -> np.ndarray:
-    """Unit-cube vector of the continuous controls of p (and of its metal section)."""
+def controls(metal: bool = False, osc2: bool = False) -> list:
+    """The continuous controls of a vector, in order: the classic voice's, then those of the
+    metal section and of oscillator 2 when the fit has them."""
+    return CONTINUOUS + (METAL_CONTINUOUS if metal else []) + (OSC2_CONTINUOUS if osc2 else [])
+
+
+def encode(p: VoiceParams, metal: bool = False, osc2: bool = False) -> np.ndarray:
+    """Unit-cube vector of the continuous controls of p (and of its metal section and
+    oscillator 2)."""
     u = []
-    for name, lo, hi, scale in CONTINUOUS + (METAL_CONTINUOUS if metal else []):
+    for name, lo, hi, scale in controls(metal, osc2):
         v = float(getattr(p, name))
         if not math.isfinite(v):
             v = hi if v > 0 else lo
@@ -302,14 +333,15 @@ METAL_FIXED = {'eq_gain_db': 0.0}
 
 
 def decode(u: np.ndarray, switches: tuple, freqs: tuple = (), bp_q_max: float = NOISE_BP_Q_MAX,
-           dist_max: float = 1.0) -> VoiceParams:
+           dist_max: float = 1.0, osc2: bool = False) -> VoiceParams:
     """VoiceParams from a unit-cube vector and the (wave, mod mode, filter, env) switches;
-    a vector longer than CONTINUOUS carries the metal section, on the oscillator freqs
-    (and leaves METAL_FIXED as it says)."""
+    a vector longer than CONTINUOUS (and oscillator 2's controls, with osc2) carries
+    the metal section, on the oscillator freqs (and leaves METAL_FIXED as it says)."""
     fields = dict(zip(SWITCHES, switches))
-    if len(u) > len(CONTINUOUS):
+    metal = len(u) - (len(OSC2_CONTINUOUS) if osc2 else 0) > len(CONTINUOUS)
+    if metal:
         fields.update(zip(METAL_FREQS, freqs))
-    for x, (name, lo, hi, scale) in zip(np.clip(u, 0.0, 1.0), CONTINUOUS + METAL_CONTINUOUS):
+    for x, (name, lo, hi, scale) in zip(np.clip(u, 0.0, 1.0), controls(metal, osc2)):
         x = float(x)
         if scale == 'log':
             v = lo * (hi / lo) ** x
@@ -321,7 +353,7 @@ def decode(u: np.ndarray, switches: tuple, freqs: tuple = (), bp_q_max: float = 
         else:
             v = lo + x * (hi - lo)
         fields[name] = v
-    if len(u) > len(CONTINUOUS):
+    if metal:
         fields.update(METAL_FIXED)
     if fields['noise_filter'] == FILT_BP:
         fields['noise_q'] = min(fields['noise_q'], bp_q_max)
@@ -620,6 +652,7 @@ class Target:
         self.partial_bins = None
         self.bp_q_max = NOISE_BP_Q_MAX     # fit_one frees it for toms
         self.dist_max = 1.0                # fit_one caps it on toms
+        self.osc2 = False                  # fit_one adds oscillator 2 to a snare that has two tones
 
     def use_metal(self, freqs: tuple):
         """Fit with the metal section on these oscillator frequencies: the render has the
@@ -793,6 +826,78 @@ def seed_starts(x: np.ndarray) -> list:
                                osc_freq=partials[0] if partials else 200.0,
                                noise_filter=filt, noise_freq=min(f, 20000.0), noise_q=q, osc_mix=0.1))
     return out
+
+
+OSC2_ENERGY_DB = -20.0      # a second tone carries at least this much of the first one's energy ...
+OSC2_APART = 0.25           # ... lies at least this many octaves from it (nearer, they beat) ...
+OSC2_TOP_HZ = 2000.0        # ... and under this: higher, a peak of a snare's first 50 ms is its noise's
+T60 = math.log(1000.0)      # time constants of an exponential to -60 dB, as the engine's decays are set
+
+
+def second_tone(x: np.ndarray):
+    """Oscillators 1 and 2 of a hit that rings at two pitches: its two strongest
+    tones (fit_partials: those of its first 50 ms and its real tones, by energy) under
+    OSC2_TOP_HZ and within oscillator 2's ratios, the longer one on oscillator 1.
+    {'osc_freq', 'osc_decay_ms', 'osc2_ratio', 'osc2_balance', 'osc2_decay_ms'}, decays
+    to -60 dB and the balance setting the two levels at the hit; None for a hit of one tone,
+    or whose upper tone is under OSC2_MIN_BALANCE."""
+    rows = np.concatenate([fit_partials.short_tones(x), fit_partials.real_tones(x)])
+    rows = rows[rows[:, 0] < OSC2_TOP_HZ]
+    if len(rows) < 2:
+        return None
+    energy = rows[:, 1] ** 2 * rows[:, 2]
+    a = int(np.argmax(energy))
+    lo, hi = OSC2_CONTINUOUS[1][1:3]
+    ratio = rows[:, 0] / rows[a, 0]
+    near = (ratio >= lo) & (ratio <= hi) & (np.abs(np.log2(ratio)) > OSC2_APART)
+    if not near.any():
+        return None
+    b = int(np.argmax(np.where(near, energy, -1.0)))
+    if 10.0 * math.log10(energy[b] / energy[a]) < OSC2_ENERGY_DB:
+        return None
+    (fa, la, da), (fb, lb, db) = _two_tones(x, rows[a], rows[b])
+    if db > da:
+        (fa, la, da), (fb, lb, db) = (fb, lb, db), (fa, la, da)
+    ms = lambda decay: min(max(decay * T60 * 1000.0, 10.0), 10000.0)
+    louder = lb / max(la, 1e-12)
+    balance = louder / 2.0 if louder <= 1.0 else 1.0 - 0.5 / louder
+    if balance < OSC2_MIN_BALANCE:
+        return None
+    return {'osc_freq': float(fa), 'osc_decay_ms': ms(da), 'osc2_ratio': float(fb / fa),
+            'osc2_balance': float(balance), 'osc2_decay_ms': ms(db)}
+
+
+OSC2_FIT_S = 0.15           # the two tones are fitted to this much of the hit ...
+OSC2_DRIFT = 0.03           # ... each within this share of the frequency found ...
+OSC2_DECAY_SPREAD = 2.0     # ... and this factor of the decay found (shorter, a tone takes the click)
+
+
+def _two_tones(x: np.ndarray, row_a, row_b) -> tuple:
+    """((Hz, level at the hit, decay s), ...) of two decaying sines fitted together to the
+    hit's waveform, from the tones found (fit_partials rows), their levels and phases
+    solved for each frequency and decay. Read off each tone's own envelope instead, the
+    low-pass that parts them smears a fast decay and lets the other tone beat in it."""
+    y = x[:int(OSC2_FIT_S * SR)]
+    t = np.arange(len(y)) / SR
+
+    def basis(q):
+        cols = []
+        for f, decay in zip(q[:2], q[2:]):
+            e = np.exp(-t / decay)
+            cols += [e * np.sin(2 * np.pi * f * t), e * np.cos(2 * np.pi * f * t)]
+        return np.stack(cols, axis=1)
+
+    def residual(q):
+        b = basis(q)
+        return y - b @ np.linalg.lstsq(b, y, rcond=None)[0]
+
+    freqs, decays = np.array([row_a[0], row_b[0]]), np.clip([row_a[2], row_b[2]], 0.002, 1.0)
+    q = scipy.optimize.least_squares(
+        residual, np.concatenate([freqs, decays]),
+        bounds=(np.concatenate([freqs * (1 - OSC2_DRIFT), decays / OSC2_DECAY_SPREAD]),
+                np.concatenate([freqs * (1 + OSC2_DRIFT), decays * OSC2_DECAY_SPREAD]))).x
+    c = np.linalg.lstsq(basis(q), y, rcond=None)[0]
+    return tuple((float(q[i]), float(math.hypot(c[2 * i], c[2 * i + 1])), float(q[2 + i])) for i in (0, 1))
 
 
 def _partials(x: np.ndarray) -> tuple:
@@ -1067,7 +1172,8 @@ def cma_run(target: Target, x0, sw: tuple, sigma: float, evals: int, seed: int, 
     es = cma.CMAEvolutionStrategy(np.asarray(x0, float), sigma, opts)
     while not es.stop():
         xs = es.ask()
-        es.tell(xs, [target.score(decode(x, sw, target.metal_freqs, target.bp_q_max, target.dist_max)) for x in xs])
+        es.tell(xs, [target.score(decode(x, sw, target.metal_freqs, target.bp_q_max, target.dist_max, target.osc2))
+                     for x in xs])
     if es.result.xbest is None:
         return float('inf'), np.asarray(x0, float), es.result.evaluations
     return float(es.result.fbest), np.array(es.result.xbest), es.result.evaluations
@@ -1113,15 +1219,17 @@ def fit_one(job: dict) -> dict:
     # without either section
     target.use_metal(() if section else metal_fundamentals(x, job.get('banks', ())))
     metal = bool(target.metal_freqs)
+    osc2 = second_tone(x) if set(job['cats']) & OSC2_CATEGORIES and not section else None
+    target.osc2 = osc2 is not None
     seeds = itertools.count(job['seed'] + 1)
-    code = lambda p: encode(p, metal)
+    code = lambda p: encode(p, metal, target.osc2)
     target.bp_q_max = math.inf if set(job['cats']) & FREE_Q_CATEGORIES else NOISE_BP_Q_MAX
     # A kick's sweep with one stray half cycle (a ROM's step, a click) is still a sweep
     if target.strike is None and set(job['cats']) & STRIKE_STRAY_CATEGORIES and target.low_share > 0.5 \
             and strike_jitter(x, strays=False) < STRIKE_JITTER:
         target.strike = strike_track(x)
     target.dist_max = TOM_DIST_MAX if set(job['cats']) & DIST_CAP_CATEGORIES else 1.0
-    back = lambda u, sw: decode(u, sw, target.metal_freqs, target.bp_q_max, target.dist_max)
+    back = lambda u, sw: decode(u, sw, target.metal_freqs, target.bp_q_max, target.dist_max, target.osc2)
     waves = job.get('waves') or waves_for(job['cats'])
     envs = noise_envs_for(job['cats'])
     allowed = lambda p: VoiceParams(**{**p.__dict__, 'wave': p.wave if p.wave in waves else waves[0],
@@ -1133,6 +1241,10 @@ def fit_one(job: dict) -> dict:
     sources = {src: [allowed(p) for p in ps] for src, ps in sources.items()}
     if metal:
         sources = {src: [m for p in ps for m in metal_starts(p, x, target.metal_freqs)]
+                   for src, ps in sources.items()}
+    if osc2:
+        # each start as it is, and on the two measured tones
+        sources = {src: [q for p in ps for q in (p, VoiceParams(**{**p.__dict__, **osc2}))]
                    for src, ps in sources.items()}
     cands = [(target.score(p), src, p) for src, ps in sources.items() for p in ps]
     if not cands:
@@ -1314,6 +1426,7 @@ def patch_dict(p: VoiceParams, name: str, choke: bool) -> dict:
         'NVel': 25.0,
         'ModVel': 0.0,
         **(DrumPatchWriter.metal_keys({**p.__dict__, 'metal_vel': 0.25}) if metal_on(p) else {}),
+        **(DrumPatchWriter.osc2_keys(p.__dict__) if osc2_on(p) else {}),
         **(DrumPatchWriter.partials_keys({**p.__dict__, 'partials_vel': 0.25}) if partials_on(p) else {}),
     }
 

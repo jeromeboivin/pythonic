@@ -436,7 +436,9 @@ of the patches already in the output folder, keeping their classic version.
 Another metallic sample (a cowbell) gets the metal section: the six oscillator
 frequencies are the square waves whose harmonics explain its partials, found in
 the longest samples of the folder and shared with the short ones of the same
-machine.
+machine. A snare that rings at two pitches, as an analog one does, its upper tone
+no more than about 4 dB under the lower one at the hit, gets oscillator 2, started
+at the ratio, balance and decays measured on the two tones.
 
 Samples are trimmed to their hit, past any near-silent lead-in before it (a
 recording's noise, or the few milliseconds of silence many captures start with). Level is set so every patch peaks at
