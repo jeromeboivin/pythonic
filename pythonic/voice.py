@@ -104,6 +104,17 @@ OSC2_DEFAULTS['osc2_wave'] = WAVE_SINE
 OSC2_PERCENT = {'osc2_balance'}
 WAVE_KEYS = ('Sine', 'Triangle', 'Saw')     # .mtdrum names of the waves (OscWave, Osc2Wave)
 
+# Noise tail: VoiceParams field -> (default, .mtdrum key, unit, minimum, maximum). A second
+# envelope on the same filtered noise, decaying from the hit alongside the noise envelope, as
+# the TR-808 clap's room after its bursts. It is off while its level is 0, and a drum patch
+# that leaves it off has none of these keys
+TAIL_PARAMS = {
+    'tail_level': (0.0, 'NTailLvl', '%', 0.0, 1.0),               # of the noise envelope's
+    'tail_decay_ms': (500.0, 'NTailDcy', ' ms', 10.0, 10000.0),  # -60 dB at it
+}
+TAIL_DEFAULTS = {name: spec[0] for name, spec in TAIL_PARAMS.items()}
+TAIL_PERCENT = {'tail_level'}
+
 
 # Partials section: VoiceParams field -> (default, .mtdrum key, unit, minimum, maximum).
 PARTIALS_PARAMS = {
@@ -139,6 +150,12 @@ def osc2_on(params) -> bool:
     """True when a VoiceParams or channel-format dict turns oscillator 2 on."""
     get = params.get if isinstance(params, dict) else lambda k, d: getattr(params, k, d)
     return get('osc2_balance', 0.0) > 0.0
+
+
+def tail_on(params) -> bool:
+    """True when a VoiceParams or channel-format dict turns the noise tail on."""
+    get = params.get if isinstance(params, dict) else lambda k, d: getattr(params, k, d)
+    return get('tail_level', 0.0) > 0.0
 
 
 def partials_on(params) -> bool:
@@ -456,6 +473,9 @@ class VoiceParams:
     osc2_ratio: float = 2.0            # of the oscillator's pitch
     osc2_decay_ms: float = 100.0       # at most the oscillator decay
     osc2_wave: int = WAVE_SINE
+    # noise tail (off while its level is 0), see TAIL_PARAMS
+    tail_level: float = 0.0
+    tail_decay_ms: float = 500.0
     # partials section (off while both tables are empty), see PARTIALS_PARAMS / PARTIALS_TABLES
     partials: str = ''                  # format_partials text
     partial_bands: str = ''             # format_bands text
@@ -494,6 +514,11 @@ class _Derived:
             self.osc2_gain, self.osc2_osc = min(2.0 * bal, 1.0), min(2.0 - 2.0 * bal, 1.0)
             self.osc2_ratio = min(max(p.osc2_ratio, 0.25), 8.0)
             self.osc2_wave = int(p.osc2_wave) if int(p.osc2_wave) in (0, 1, 2) else 0
+        # noise tail: its level against the noise envelope's, and its decay per sample
+        self.tail = tail_on(p)
+        if self.tail:
+            self.tail_level = min(max(p.tail_level, 0.0), 1.0)
+            self.tail_c = 1000.0 ** (-1.0 / max(min(max(p.tail_decay_ms, 10.0), 10000.0) / 1000.0 * sr, 1.0))
 
         # pitch modulation
         self.mod_mode = int(p.mod_mode)
@@ -677,6 +702,8 @@ def _pack(d: _Derived):
         p[K.P_O2_OSC] = d.osc2_osc
         p[K.P_O2_RATIO] = d.osc2_ratio
         p[K.P_O2_Q] = d.osc2_q
+    if d.tail:
+        p[K.P_NT_DCY] = d.tail_c
     if d.metal:
         ip[K.IP_METAL] = 1
         p[K.P_M_INC:K.P_M_INC + 6] = d.metal_inc
@@ -799,7 +826,7 @@ class DrumVoice:
     def is_active(self) -> bool:
         # a silent carry (block remainder) is not activity: idle() consumes it as well
         return (self._is[K.I_OSTAGE] != 4 or self._is[K.I_NSTAGE] != 4 or self._is[K.I_MSTAGE] != 0
-                or self._is[K.I_PSTAGE] != 0
+                or self._is[K.I_PSTAGE] != 0 or self._is[K.I_NTSTAGE] != 0
                 or len(self._pending) > 0 or bool(self._is[K.I_EQ_TAIL]) or bool(self._carry.any()))
 
     # ---------------------------------------------------------------- events
@@ -827,6 +854,9 @@ class DrumVoice:
                     st[K.I_MSTAGE] = 2
                 if st[K.I_PSTAGE] == 1:
                     st[K.I_PSTAGE] = 2
+                if st[K.I_NTSTAGE] == 1:
+                    fs[K.S_NT_REL] = -fs[K.S_NT] * self.d.release_slope
+                    st[K.I_NTSTAGE] = 2
             else:
                 self._do_trigger(ev[1])
         self._pending = []
@@ -859,6 +889,9 @@ class DrumVoice:
         else:
             st[K.I_NSTAGE] = 0
             fs[K.S_NSLOPE] = max(fs[K.S_NLVL], 1e-6) * (-1.0 / d.n_fade_n)
+        if d.tail:
+            fs[K.S_NT] = noise_vel * d.tail_level
+            st[K.I_NTSTAGE] = 1
         if d.metal:
             # free-running oscillators: their phases at a hit are unrelated, but copies of a
             # note stand for one oscillator (a cowbell's two notes fill all six) and start
@@ -997,6 +1030,7 @@ def params_from_patch(patch: dict, pitch_ratio: float = 1.0, mono: bool = False)
         mono=mono,
         **metal_from_patch(patch),
         **osc2_from_patch(patch),
+        **tail_from_patch(patch),
         **partials_from_patch(patch),
     )
 
@@ -1023,6 +1057,16 @@ def osc2_from_patch(patch: dict) -> dict:
         out[name] = v / 100.0 if name in OSC2_PERCENT and key in patch else v
     wave = str(patch.get('Osc2Wave', WAVE_KEYS[WAVE_SINE])).strip().strip('"')
     out['osc2_wave'] = WAVE_KEYS.index(wave) if wave in WAVE_KEYS else WAVE_SINE
+    return out
+
+
+def tail_from_patch(patch: dict) -> dict:
+    """Noise tail fields of a parsed .mtdrum / .mtpreset patch (all defaults, so off, when it
+    has none of its keys)."""
+    out = {}
+    for name, (default, key, *_) in TAIL_PARAMS.items():
+        v = _num(patch[key], default) if key in patch else default
+        out[name] = v / 100.0 if name in TAIL_PERCENT and key in patch else v
     return out
 
 

@@ -73,7 +73,8 @@ P_O2_GAIN = 77          # its gain, of the balance
 P_O2_RATIO = 78         # its pitch, as a ratio of the oscillator's
 P_O2_Q = 79             # per-sample factor of its decay on top of the oscillator envelope's
 P_O2_OSC = 80           # the oscillator's own gain, of the balance
-NUM_P = 81
+P_NT_DCY = 81           # noise tail: per-sample factor of its decay (used only while it sounds)
+NUM_P = 82
 
 # ---------------------------------------------------------------- int parameters
 IP_WAVE = 0
@@ -129,7 +130,9 @@ S_O2_PH = 56            # oscillator 2 phase
 S_O2_DEC_X = 57         # its decimator states
 S_O2_DEC_Y = 58
 S_O2_Q = 59             # its decay factor since the oscillator's restart
-NUM_S = 60
+S_NT = 60               # noise tail level (velocity in)
+S_NT_REL = 61           # its release step (choke)
+NUM_S = 62
 
 # ---------------------------------------------------------------- int state
 I_PMODE4 = 0
@@ -146,7 +149,8 @@ I_MSTAGE = 10           # metal section: 0 silent, 1 decaying, 2 released (choke
 I_PSTAGE = 11           # partials section: 0 silent, 1 sounding, 2 released (choke)
 I_PS_T = 12             # samples since its hit
 I_PS_M = 13             # partials still sounding (the first ones: they are sorted by length)
-NUM_I = 14
+I_NTSTAGE = 14          # noise tail: 0 silent, 1 decaying, 2 released (choke)
+NUM_I = 15
 
 MOD_DECAY, MOD_SINE, MOD_NOISE = 0, 1, 2
 NENV_EXP, NENV_LINEAR, NENV_MOD = 0, 1, 2
@@ -453,6 +457,21 @@ def _noise_env_block(p, ip, fs, ist, out):
     if ended:
         fs[S_NRUN] = fs[S_NLVL]
         ist[I_NRUNK] = 0
+
+
+@njit(cache=True, nogil=True)
+def _tail_step(p, fs, ist):
+    """One sample of the noise tail's envelope: exponential (-60 dB at its decay time), or a
+    linear release after a choke; it ends at a millionth."""
+    v = fs[S_NT]
+    if ist[I_NTSTAGE] == 1:
+        v *= p[P_NT_DCY]
+    else:
+        v = max(v - fs[S_NT_REL], 0.0)
+    if v < 1e-6:
+        v = 0.0
+        ist[I_NTSTAGE] = 0
+    fs[S_NT] = v
 
 
 # ---------------------------------------------------------------- oscillator
@@ -852,14 +871,14 @@ def render(p, ip, fs, ist, rng, mod_rng, nb, blk0, out, sp, ss, su):
         out[i, 1] = 0.0
     if ist[I_PSTAGE] != 0:
         _section_run(p, ip, fs, ist, sp, ss, su, n, out)
-    if ist[I_OSTAGE] == 4 and ist[I_NSTAGE] == 4 and ist[I_MSTAGE] == 0:
+    if ist[I_OSTAGE] == 4 and ist[I_NSTAGE] == 4 and ist[I_MSTAGE] == 0 and ist[I_NTSTAGE] == 0:
         if ist[I_EQ_TAIL]:
             _ring_eq(p, ip, fs, ist, out, n)
         return
 
     metal_on = ist[I_MSTAGE] != 0
     osc_alive = ist[I_OSTAGE] != 4
-    noise_on = ist[I_NSTAGE] != 4 and (p[P_GAINS + 1] > 0.0 or fs[S_G + 1] > 0.0)
+    noise_on = (ist[I_NSTAGE] != 4 or ist[I_NTSTAGE] != 0) and (p[P_GAINS + 1] > 0.0 or fs[S_G + 1] > 0.0)
     chans = 2 if ip[IP_STEREO] else 1
     fs[S_ORUN] = fs[S_OLVL]
     ist[I_ORUNK] = 0
@@ -923,12 +942,17 @@ def render(p, ip, fs, ist, rng, mod_rng, nb, blk0, out, sp, ss, su):
             s0 = osc[k] * oe[k] * go * gd
             if metal_on:
                 s0 = s0 + _metal_sample(p, fs, ist) * gd
+            # the noise tail: a second envelope on the same filtered noise, from the hit
+            nek = ne[k]
+            if ist[I_NTSTAGE] != 0:
+                nek = nek + fs[S_NT]
+                _tail_step(p, fs, ist)
             for c in range(chans):
                 s = s0
                 if noise_on:
                     u = rng.uniform(-1.0, 1.0) * noise_gain
                     yn = _biquad(p, P_NF_B, P_NF_A, u, fs, S_NF_ZI + 2 * c)
-                    s = s + yn * ne[k] * gn * gd
+                    s = s + yn * nek * gn * gd
                 s = _shape(s, sh_d, sh_k, sh_dc)
                 if eq_on:
                     s = s + ge * _biquad(p, P_EQ_B, P_EQ_A, s, fs, S_EQ_ZI + 2 * c)

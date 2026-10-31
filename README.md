@@ -18,6 +18,7 @@ Perfect for producers, sound designers, and developers interested in audio synth
   - Low-pass, Band-pass, High-pass filtering
   - Stereo width control
   - Exponential, Linear, and Modulated envelope modes
+  - Noise tail (optional): a second envelope on the same filtered noise, with its own level and decay from the hit, for the room after a clap's bursts; off while its level is 0 (written to a drum patch only when used), and the PO-32 transfer leaves it out
 - **Metal Section** (optional, for cymbals, hi-hats and cowbells)
   - Six free-running square-wave oscillators, each with its own frequency, plus a tune
   - Two band-pass filters, each with its own Q, drive (an asymmetric saturation), decay and level, then a high-pass

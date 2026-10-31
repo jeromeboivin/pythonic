@@ -11,8 +11,8 @@ from typing import Dict, Any, List, Optional
 from .pattern_manager import DEFAULT_VELOCITY, clamp_velocity
 from .voice import (METAL_DEFAULTS, METAL_PARAMS, METAL_PERCENT, PARTIALS_DEFAULTS, PARTIALS_PARAMS,
                     PARTIALS_PERCENT, PARTIALS_TABLES, OSC2_DEFAULTS, OSC2_PARAMS, OSC2_PERCENT,
-                    WAVE_KEYS, metal_from_patch, metal_on, partials_from_patch, partials_on,
-                    osc2_from_patch, osc2_on)
+                    TAIL_DEFAULTS, TAIL_PARAMS, TAIL_PERCENT, WAVE_KEYS, metal_from_patch, metal_on,
+                    partials_from_patch, partials_on, osc2_from_patch, osc2_on, tail_from_patch, tail_on)
 
 
 # ─────────────────────────────────────────────
@@ -72,6 +72,7 @@ def convert_drum_patch_data(patch: Dict) -> Dict:
         **({'choke_enabled': bool(patch['Choke'])} if 'Choke' in patch else {}),
         **metal_from_patch(patch),
         **osc2_from_patch(patch),
+        **tail_from_patch(patch),
         **partials_from_patch(patch),
     }
 
@@ -160,11 +161,13 @@ def apply_drum_patch_to_channel(channel, data: Dict):
     channel.mod_vel_sensitivity = data.get('mod_vel_sensitivity', 0.0)
     if 'choke_enabled' in data:
         channel.choke_enabled = bool(data['choke_enabled'])
-    # a patch without the metal section, oscillator 2 or partials section turns it off
+    # a patch without the metal section, oscillator 2, noise tail or partials section turns it off
     for name, default in METAL_DEFAULTS.items():
         channel.set_metal(name, data.get(name, default))
     for name, default in OSC2_DEFAULTS.items():
         channel.set_osc2(name, data.get(name, default))
+    for name, default in TAIL_DEFAULTS.items():
+        channel.set_tail(name, data.get(name, default))
     for name, default in PARTIALS_DEFAULTS.items():
         channel.set_partials(name, data.get(name, default))
 
@@ -848,6 +851,7 @@ class DrumPatchWriter:
         'EQGain': ' dB', 'Level': ' dB', 'OscVel': '%', 'NVel': '%', 'ModVel': '%', 'ModHold': ' ms',
         **{spec[1]: spec[2] for spec in METAL_PARAMS.values()},
         **{spec[1]: spec[2] for spec in OSC2_PARAMS.values()},
+        **{spec[1]: spec[2] for spec in TAIL_PARAMS.values()},
         **{spec[1]: spec[2] for spec in PARTIALS_PARAMS.values()},
     }
 
@@ -889,6 +893,8 @@ class DrumPatchWriter:
             **(DrumPatchWriter.metal_keys(channel.metal) if metal_on(channel.metal) else {}),
             # and so oscillator 2
             **(DrumPatchWriter.osc2_keys(channel.osc2) if osc2_on(channel.osc2) else {}),
+            # and so the noise tail
+            **(DrumPatchWriter.tail_keys(channel.tail) if tail_on(channel.tail) else {}),
             # and so the partials section (the oscillator and noise above then hold its
             # classic version, for engines without it)
             **(DrumPatchWriter.partials_keys(channel.partials) if partials_on(channel.partials) else {}),
@@ -901,6 +907,11 @@ class DrumPatchWriter:
         return {**{spec[1]: partials[name] * (100.0 if name in PARTIALS_PERCENT else 1.0)
                    for name, spec in PARTIALS_PARAMS.items()},
                 **{key: str(partials[name]) for name, key in PARTIALS_TABLES.items()}}
+
+    @staticmethod
+    def tail_keys(tail: Dict[str, Any]) -> Dict[str, Any]:
+        """The .mtdrum keys and display values of a noise tail (VoiceParams field names)."""
+        return {spec[1]: tail[name] * (100.0 if name in TAIL_PERCENT else 1.0) for name, spec in TAIL_PARAMS.items()}
 
     @staticmethod
     def osc2_keys(osc2: Dict[str, Any]) -> Dict[str, Any]:

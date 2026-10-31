@@ -304,7 +304,7 @@ the default state block. Channels not chosen are sent as a silent patch.
 
 | Verb | Arguments | Result |
 |---|---|---|
-| `po32.prepare` | bank=0 (0: PO-32 sounds 1-8, 1: 9-16), chain=None (a `po32.chain_options` label, a letter or a list of letters / indexes; default the first option), channels=None (1..8 to send; default the unmuted channels) | `{'seconds', 'bank', 'chain', 'slots', 'channels', 'metal_dropped', 'osc2_dropped', 'partials_dropped'}`: renders the signal of the current sounds (the PO-32 has none of these sections: the channels listed are sent without their metal section or oscillator 2, or as the classic version of their partials section) |
+| `po32.prepare` | bank=0 (0: PO-32 sounds 1-8, 1: 9-16), chain=None (a `po32.chain_options` label, a letter or a list of letters / indexes; default the first option), channels=None (1..8 to send; default the unmuted channels) | `{'seconds', 'bank', 'chain', 'slots', 'channels', 'metal_dropped', 'osc2_dropped', 'tail_dropped', 'partials_dropped'}`: renders the signal of the current sounds (the PO-32 has none of these sections: the channels listed are sent without their metal section, oscillator 2 or noise tail, or as the classic version of their partials section) |
 | `po32.send` | as `po32.prepare` | renders again and plays it; `progress` events, then `{'sent': True, 'seconds'}`, or status `cancelled` (`po32.cancel`), or an error (the stream stopped) |
 | `po32.cancel` | | `{'cancelled'}` |
 | `po32.save_wav` | path, overwrite=False, and the `po32.prepare` arguments | `{'saved', 'exists', 'path', 'seconds'}`: mono 16-bit 44.1 kHz |

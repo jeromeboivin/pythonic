@@ -21,7 +21,8 @@ from .vintage import VintageProcessor
 from .reverb import FastStereoReverb
 from .delay import FastStereoDelay, DelayTime
 from .voice import (DrumVoice, METAL_DEFAULTS, METAL_PARAMS, MOD_HOLD_MAX_MS, PARTIALS_DEFAULTS,
-                    PARTIALS_PARAMS, PARTIALS_TABLES, OSC2_DEFAULTS, OSC2_PARAMS, VoiceParams)
+                    PARTIALS_PARAMS, PARTIALS_TABLES, OSC2_DEFAULTS, OSC2_PARAMS, TAIL_DEFAULTS, TAIL_PARAMS,
+                    VoiceParams)
 
 
 def voice_seed(channel_id: int) -> int:
@@ -100,6 +101,9 @@ class DrumChannel:
         # Oscillator 2 (off while its balance is 0)
         self.osc2 = dict(OSC2_DEFAULTS)
 
+        # Noise tail (off while its level is 0)
+        self.tail = dict(TAIL_DEFAULTS)
+
         # Partials section (off while both its tables are empty)
         self.partials = dict(PARTIALS_DEFAULTS)
 
@@ -157,6 +161,7 @@ class DrumChannel:
         n_dcy = noise.decay_ms
         ovel, nvel, mvel = self.osc_vel_sensitivity, self.noise_vel_sensitivity, self.mod_vel_sensitivity
         osc2 = self.osc2
+        tail = self.tail
         if mod:
             g = mod.get
             if ModTarget.OSC_FREQUENCY in mod:
@@ -203,6 +208,8 @@ class DrumChannel:
                     osc2['osc2_balance'] = min(1.0, max(0.0, osc2['osc2_balance'] + g(ModTarget.OSC2_BALANCE)))
                 if ModTarget.OSC2_RATIO in mod:
                     osc2['osc2_ratio'] = min(8.0, max(0.25, osc2['osc2_ratio'] + g(ModTarget.OSC2_RATIO)))
+            if ModTarget.TAIL_LEVEL in mod:
+                tail = {**tail, 'tail_level': min(1.0, max(0.0, tail['tail_level'] + g(ModTarget.TAIL_LEVEL)))}
         return VoiceParams(
             wave=osc.waveform.value,
             osc_freq=float(osc_freq),
@@ -232,6 +239,7 @@ class DrumChannel:
             mono=bool(self.mono),
             **self.metal,
             **osc2,
+            **tail,
             **self.partials,
         )
 
@@ -484,6 +492,7 @@ class DrumChannel:
             'pump': self.pump.get_parameters(),
             **self.metal,
             **self.osc2,
+            **self.tail,
             **self.partials,
         }
 
@@ -495,6 +504,11 @@ class DrumChannel:
             return
         lo, hi = OSC2_PARAMS[name][3:]
         self.osc2[name] = float(np.clip(float(value), lo, hi))
+
+    def set_tail(self, name: str, value: float):
+        """Set one noise tail parameter (a key of voice.TAIL_PARAMS), clamped to its range."""
+        lo, hi = TAIL_PARAMS[name][3:]
+        self.tail[name] = float(np.clip(float(value), lo, hi))
 
     def set_metal(self, name: str, value: float):
         """Set one metal section parameter (a key of voice.METAL_PARAMS), clamped to its range."""
@@ -635,6 +649,9 @@ class DrumChannel:
         for name in OSC2_DEFAULTS:
             if name in params:
                 self.set_osc2(name, params[name])
+        for name in TAIL_DEFAULTS:
+            if name in params:
+                self.set_tail(name, params[name])
         for name in PARTIALS_DEFAULTS:
             if name in params:
                 self.set_partials(name, params[name])

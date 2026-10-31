@@ -124,6 +124,7 @@ export function mountRack({ store, client, ctx, display, stage, slot, drawer, fi
   const metal = rack.querySelector('.sec-metal');
   const METAL_LEVELS = ['metal.band1_level', 'metal.band2_level'];
   const osc2 = [...rack.querySelectorAll('[data-suffix^="osc2."]')];
+  const tailDecay = rack.querySelector('[data-suffix="noise.tail_decay"]');
 
   let armed = null; // the source whose destination click to assign sets
   let swallowClick = false;
@@ -157,12 +158,15 @@ export function mountRack({ store, client, ctx, display, stage, slot, drawer, fi
       store.watch(`ch${n}.osc2.balance`, (balance) => {
         for (const node of osc2) if (node.dataset.suffix !== 'osc2.balance') node.classList.toggle('off', !(balance > 0));
       }),
+      // and the noise tail's decay while its level is 0
+      store.watch(`ch${n}.noise.tail_level`, (level) => tailDecay.classList.toggle('off', !(level > 0))),
       // The outline of the current destination follows the target
       ...MOD_SOURCES.map((src) => store.watch(`ch${n}.${src}.target`, () => { if (armed) mark(); },
         { now: false })),
     ];
     for (const a of [`ch${n}.name`, ...rows.map((row) => `ch${n}.${row.dataset.source}.on`),
-      ...METAL_LEVELS.map((suffix) => `ch${n}.${suffix}`), `ch${n}.osc2.balance`]) ctx.ensure(a);
+      ...METAL_LEVELS.map((suffix) => `ch${n}.${suffix}`), `ch${n}.osc2.balance`,
+      `ch${n}.noise.tail_level`]) ctx.ensure(a);
   };
   bindChannel(selected());
   watch('global.channel', (n) => bindChannel(n || 1));

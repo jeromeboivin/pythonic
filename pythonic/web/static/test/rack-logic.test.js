@@ -34,7 +34,7 @@ test('other controls refuse with a reason for the display', () => {
 });
 
 test('every engine target has a name and an address, none is off', () => {
-  assert.equal(TARGET_LABELS.length, 30);
+  assert.equal(TARGET_LABELS.length, 31);
   assert.equal(targetAddress('osc2_ratio', 4), 'ch4.osc2.ratio');
   assert.equal(TARGET_LABELS[0], 'none');
   assert.equal(targetName('none'), 'off');
@@ -84,7 +84,8 @@ test('the rack holds every sound parameter once, except those on the face', () =
   assert.deepEqual(FACE_ONLY, ['osc.pitch', 'osc.decay', 'mix.level']);
   for (const s of ['osc.attack', 'noise.attack', 'noise.decay', 'mix.pan', 'mix.output', 'fx.delay_time',
     'lfo1.target', 'lfo2.phase', 'pump.sync', 'pump.target', 'vel.mod', 'vel.metal', 'metal.freq6',
-    'metal.band2_level', 'metal.hp', 'osc2.wave', 'osc2.ratio', 'osc2.decay', 'osc2.balance']) {
+    'metal.band2_level', 'metal.hp', 'osc2.wave', 'osc2.ratio', 'osc2.decay', 'osc2.balance',
+    'noise.tail_level', 'noise.tail_decay']) {
     assert.ok(suffixes.includes(s), s);
   }
   assert.deepEqual(RACK_SECTIONS.map((s) => s.title),

@@ -24,6 +24,10 @@ _Avoid_: Metal engine, cymbal mode, metal bank (for the whole section)
 The optional part of a drum patch for drums that ring at two pitches, such as analog snares and rims: a second oscillator (OSC 2) with its own wave and decay, at a ratio of the pitch of the drum patch's oscillator (oscillator 1, OSC 1), so it follows its pitch modulation and tuning. Its **balance** against oscillator 1 runs from oscillator 1 alone through both at full (50 %) to oscillator 2 alone. It sounds under oscillator 1's envelope, and its decay is never longer than oscillator 1's. It is off while its balance is 0, and a drum patch saved with it off is the same file as before it existed. The PO-32 has no oscillator 2, so a transfer drops it and says so.
 _Avoid_: Second tone, tone 2, sub oscillator, overtone
 
+**Noise tail**:
+The optional part of a drum patch for claps: a second envelope on the same filtered noise as the noise envelope, decaying from the hit at its own rate and level, so the noise rings on as a room after the bursts, as on the TR-808 clap. It is off while its level is 0, and a drum patch saved with it off is the same file as before it existed. The PO-32 has none, so a transfer drops it and says so.
+_Avoid_: Reverb, room, clap tail, second noise envelope
+
 **Partials section**:
 The optional part of a drum patch for hats, cymbals and tambourines fitted to samples: up to 384 decaying partials, each with its frequency, level, decay and phase, plus white noise in 32 bands of 24 or 48 dB an octave (the **band slope**), each with its level and decay and an optional **click** (a second, short level and decay at the hit), an optional rise that fades it in and an optional cut that fades it out. While it is on, a hit starts it instead of the oscillator, noise and metal section, which hold the **classic version** of the same sound for engines without the section. It is off while both its tables are empty, and a drum patch saved with it off is the same file as before it existed.
 _Avoid_: Additive engine, resynthesis, sample layer

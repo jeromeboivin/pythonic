@@ -19,7 +19,7 @@ import copy
 import numpy as np
 from typing import Dict, List, Any, Optional
 
-from .voice import METAL_DEFAULTS, PARTIALS_PARAMS, PARTIALS_TABLES, OSC2_PARAMS
+from .voice import METAL_DEFAULTS, PARTIALS_PARAMS, PARTIALS_TABLES, OSC2_PARAMS, TAIL_PARAMS
 
 
 # Parameters that can be linearly interpolated
@@ -37,6 +37,7 @@ INTERPOLATABLE_PARAMS = {
     'delay_feedback', 'delay_mix',
     *METAL_DEFAULTS,
     *OSC2_PARAMS,
+    *TAIL_PARAMS,
     *PARTIALS_PARAMS,
 }
 

@@ -42,7 +42,8 @@ def apply(gui):
 def test_every_sound_widget_has_an_address(app):
     assert set(app._sound_widgets) <= SOUND_SUFFIXES
     # Not on the tkinter panel: LFO phase offsets, the pump tempo sync, the pitch hold, the metal
-    # section, oscillator 2 and the partials section (new controls are on the web panel only)
+    # section, oscillator 2, the noise tail and the partials section (new controls are on the web
+    # panel only)
     metal = {s for s in SOUND_SUFFIXES if s.startswith('metal.')} | {'vel.metal'}
     assert len(metal) == 19
     osc2 = {s for s in SOUND_SUFFIXES if s.startswith('osc2.')}
@@ -50,6 +51,7 @@ def test_every_sound_widget_has_an_address(app):
     partials = {s for s in SOUND_SUFFIXES if s.startswith('partials.')}
     assert len(partials) == 8
     assert SOUND_SUFFIXES - set(app._sound_widgets) == {'lfo1.phase', 'lfo2.phase', 'pump.sync', 'osc.mod_hold',
+                                                        'noise.tail_level', 'noise.tail_decay',
                                                         *metal, *osc2, *partials}
 
 

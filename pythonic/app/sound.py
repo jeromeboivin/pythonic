@@ -21,7 +21,7 @@ from pythonic.delay import DelayTime
 from pythonic.lfo import LFOPolarity, LFORetrigger, LFOWaveform, ModTarget, SyncDivision
 from pythonic.noise import NoiseEnvelopeMode, NoiseFilterMode
 from pythonic.oscillator import PitchModMode, WaveformType
-from pythonic.voice import METAL_PARAMS, MOD_HOLD_MAX_MS, PARTIALS_PARAMS, OSC2_PARAMS
+from pythonic.voice import METAL_PARAMS, MOD_HOLD_MAX_MS, PARTIALS_PARAMS, OSC2_PARAMS, TAIL_PARAMS
 
 
 @dataclass(frozen=True)
@@ -219,6 +219,11 @@ SOUND_PARAMS = tuple([
             lambda ch, v: ch.set_noise_decay(v), 10.0, 10000.0, 'ms', 'log'),
     *METAL_SOUND_PARAMS,
     *OSC2_SOUND_PARAMS,
+    # the noise tail (off while its level is 0)
+    _ratio('noise.tail_level', 'tail_level', lambda ch: ch.tail['tail_level'],
+           lambda ch, v: ch.set_tail('tail_level', v)),
+    _number('noise.tail_decay', 'tail_decay_ms', lambda ch: ch.tail['tail_decay_ms'],
+            lambda ch, v: ch.set_tail('tail_decay_ms', v), *TAIL_PARAMS['tail_decay_ms'][3:], 'ms', 'log'),
     *PARTIALS_SOUND_PARAMS,
     # Mixing (1 = all oscillator, 0 = all noise)
     _ratio('mix.osc_noise', 'osc_noise_mix', lambda ch: ch.osc_noise_mix,

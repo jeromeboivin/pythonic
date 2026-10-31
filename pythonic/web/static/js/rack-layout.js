@@ -66,6 +66,8 @@ export const RACK_SECTIONS = [
   { key: 'noise', title: 'noise', rows: [
     [sw('noise.filter', 'filter', 'noise filter', 'LP,BP,HP'), toggle('noise.stereo', 'stereo', 'noise stereo')],
     [knob('noise.freq', 'freq', 'noise freq'), knob('noise.q', 'Q', 'noise q')],
+    // the noise tail: a second envelope on the same noise (its level at 0 turns it off)
+    [mk('noise.tail_level', 'tail', 'noise tail level'), mk('noise.tail_decay', 'tail dcy', 'noise tail decay')],
   ] },
   // Six square oscillators into two band-passes (each with its decay and
   // level: both levels at 0 turn the section off), then a high-pass

@@ -133,6 +133,9 @@ class ModTarget(Enum):
     OSC2_BALANCE = 'osc2_balance'
     OSC2_RATIO = 'osc2_ratio'
 
+    # -- Noise tail (after the Noise group's, appended so stored targets keep their order) --
+    TAIL_LEVEL = 'tail_level'
+
     # -- Global --
     MASTER_VOLUME = 'master_volume'
     MORPH = 'morph'
@@ -150,7 +153,7 @@ MOD_TARGET_GROUPS = {
     ],
     'Noise': [
         ModTarget.NOISE_FILTER_FREQ, ModTarget.NOISE_FILTER_Q,
-        ModTarget.NOISE_ATTACK, ModTarget.NOISE_DECAY,
+        ModTarget.NOISE_ATTACK, ModTarget.NOISE_DECAY, ModTarget.TAIL_LEVEL,
     ],
     'Mix': [
         ModTarget.OSC_NOISE_MIX, ModTarget.LEVEL_DB,
@@ -183,6 +186,7 @@ MOD_TARGET_LABELS = {
     ModTarget.OSC_DECAY: 'Osc Decay',
     ModTarget.OSC2_BALANCE: 'Osc Balance',
     ModTarget.OSC2_RATIO: 'Osc 2 Ratio',
+    ModTarget.TAIL_LEVEL: 'Noise Tail Level',
     ModTarget.NOISE_FILTER_FREQ: 'Noise Freq',
     ModTarget.NOISE_FILTER_Q: 'Noise Q',
     ModTarget.NOISE_ATTACK: 'Noise Attack',
@@ -219,6 +223,7 @@ MOD_TARGET_DEPTH_RANGES = {
     ModTarget.OSC_DECAY: (0.0, 10000.0, 'ms'),
     ModTarget.OSC2_BALANCE: (0.0, 1.0, ''),
     ModTarget.OSC2_RATIO: (0.0, 8.0, ''),
+    ModTarget.TAIL_LEVEL: (0.0, 1.0, ''),
     ModTarget.NOISE_FILTER_FREQ: (0.0, 20000.0, 'Hz'),
     ModTarget.NOISE_FILTER_Q: (0.0, 10.0, ''),
     ModTarget.NOISE_ATTACK: (0.0, 10000.0, 'ms'),
@@ -531,6 +536,8 @@ class ModulationRouter:
         elif target in (ModTarget.OSC2_BALANCE, ModTarget.OSC2_RATIO):
             name = target.value
             channel.set_osc2(name, channel.osc2[name] + mod_value)
+        elif target == ModTarget.TAIL_LEVEL:
+            channel.set_tail('tail_level', channel.tail['tail_level'] + mod_value)
         elif target == ModTarget.NOISE_FILTER_FREQ:
             base = channel.noise_gen.filter_frequency
             channel.noise_gen.set_filter_frequency(max(20.0, min(20000.0, base + mod_value)))
