@@ -229,6 +229,8 @@ SOUND_PARAMS = tuple([
             lambda ch, v: setattr(ch, 'pan', v), -100.0, 100.0, 'pan'),
     _ratio('mix.distortion', 'distortion', lambda ch: ch.distortion,
            lambda ch, v: ch.set_distortion(v)),
+    _ratio('mix.saturation', 'saturation', lambda ch: ch.saturation,
+           lambda ch, v: ch.set_saturation(v)),
     _flag('mix.choke', 'choke_enabled', lambda ch: ch.choke_enabled,
           lambda ch, v: setattr(ch, 'choke_enabled', v)),
     SoundParam('mix.output', 'output_pair', lambda ch: ch.output_pair,

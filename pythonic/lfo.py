@@ -133,6 +133,9 @@ class ModTarget(Enum):
     OSC2_BALANCE = 'osc2_balance'
     OSC2_RATIO = 'osc2_ratio'
 
+    # -- Saturation (after the Mix group's, appended so stored targets keep their order) --
+    SATURATION = 'saturation'
+
     # -- Global --
     MASTER_VOLUME = 'master_volume'
     MORPH = 'morph'
@@ -154,7 +157,7 @@ MOD_TARGET_GROUPS = {
     ],
     'Mix': [
         ModTarget.OSC_NOISE_MIX, ModTarget.LEVEL_DB,
-        ModTarget.PAN, ModTarget.DISTORTION,
+        ModTarget.PAN, ModTarget.DISTORTION, ModTarget.SATURATION,
     ],
     'EQ': [
         ModTarget.EQ_FREQUENCY, ModTarget.EQ_GAIN_DB,
@@ -191,6 +194,7 @@ MOD_TARGET_LABELS = {
     ModTarget.LEVEL_DB: 'Level',
     ModTarget.PAN: 'Pan',
     ModTarget.DISTORTION: 'Distortion',
+    ModTarget.SATURATION: 'Saturation',
     ModTarget.EQ_FREQUENCY: 'EQ Freq',
     ModTarget.EQ_GAIN_DB: 'EQ Gain',
     ModTarget.VINTAGE_AMOUNT: 'Vintage',
@@ -227,6 +231,7 @@ MOD_TARGET_DEPTH_RANGES = {
     ModTarget.LEVEL_DB: (0.0, 40.0, 'dB'),
     ModTarget.PAN: (0.0, 100.0, ''),
     ModTarget.DISTORTION: (0.0, 1.0, ''),
+    ModTarget.SATURATION: (0.0, 1.0, ''),
     ModTarget.EQ_FREQUENCY: (0.0, 20000.0, 'Hz'),
     ModTarget.EQ_GAIN_DB: (0.0, 40.0, 'dB'),
     ModTarget.VINTAGE_AMOUNT: (0.0, 1.0, ''),
@@ -555,6 +560,8 @@ class ModulationRouter:
         elif target == ModTarget.DISTORTION:
             base = channel.distortion
             channel.set_distortion_immediate(np.clip(base + mod_value, 0.0, 1.0))
+        elif target == ModTarget.SATURATION:
+            channel.set_saturation(np.clip(channel.saturation + mod_value, 0.0, 1.0))
         elif target == ModTarget.EQ_FREQUENCY:
             base = channel.eq_frequency
             channel.set_eq_frequency_immediate(max(20.0, min(20000.0, base + mod_value)))

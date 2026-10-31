@@ -28,7 +28,7 @@ INTERPOLATABLE_PARAMS = {
     'osc_attack', 'osc_decay',
     'noise_filter_freq', 'noise_filter_q',
     'noise_attack', 'noise_decay',
-    'osc_noise_mix', 'distortion',
+    'osc_noise_mix', 'distortion', 'saturation',
     'eq_frequency', 'eq_gain_db',
     'level_db', 'pan',
     'osc_vel_sensitivity', 'noise_vel_sensitivity', 'mod_vel_sensitivity',

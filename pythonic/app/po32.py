@@ -481,6 +481,8 @@ class Po32:
                 'metal_dropped': [c for c in channels if metal_on(sounds[c - 1])],
                 # nor oscillator 2
                 'osc2_dropped': [c for c in channels if osc2_on(sounds[c - 1])],
+                # nor the saturation
+                'saturation_dropped': [c for c in channels if sounds[c - 1].get('saturation', 0.0) > 0.0],
                 # nor a partials section: these send its classic version instead
                 'partials_dropped': [c for c in channels if partials_on(sounds[c - 1])]}
         return sounds, silent, len(indexes), info
@@ -898,18 +900,18 @@ class Po32:
         current = core.undo.capture((CHANNELS, PATTERNS))
         channels = current[CHANNELS]
         drums = 0
-        # PO-32 sounds have no metal section, oscillator 2, partials section nor pitch hold: an
-        # imported one turns them off
+        # PO-32 sounds have no metal section, oscillator 2, saturation, partials section nor pitch
+        # hold: an imported one turns them off
         for d, params in enumerate(self._bank_sounds()):
             if params:
                 channels[d].update(METAL_DEFAULTS, **OSC2_DEFAULTS, **PARTIALS_DEFAULTS, pitch_mod_hold=0.0,
-                                   **copy.deepcopy(params))
+                                   saturation=0.0, **copy.deepcopy(params))
                 drums += 1
         endpoint_b = copy.deepcopy(channels)
         for d, params in enumerate(self._bank_sounds(right=True)):
             if params:
                 endpoint_b[d].update(METAL_DEFAULTS, **OSC2_DEFAULTS, **PARTIALS_DEFAULTS, pitch_mod_hold=0.0,
-                                     **copy.deepcopy(params))
+                                     saturation=0.0, **copy.deepcopy(params))
         morph = {'position': 0.0, 'endpoint_a': copy.deepcopy(channels),
                  'endpoint_b': endpoint_b}
         patterns = current[PATTERNS]

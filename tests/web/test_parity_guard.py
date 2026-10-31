@@ -78,8 +78,8 @@ def test_the_rack_binds_every_sound_address_of_every_channel(panel, core_table):
     bound = bound_on_every_channel(panel)
     sound = {name for name in core_table['describe']
              if name.startswith('ch') and name.split('.')[1] in
-             ('osc', 'noise', 'metal', 'mix', 'eq', 'fx', 'vel', 'lfo1', 'lfo2', 'pump')}
-    assert len(sound) == 8 * 79
+             ('osc', 'osc2', 'noise', 'metal', 'mix', 'eq', 'fx', 'vel', 'lfo1', 'lfo2', 'pump')}
+    assert len(sound) == 8 * 84
     assert sound <= bound
     assert 'global.edit_all' in bound
 
