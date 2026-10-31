@@ -129,9 +129,9 @@ class ModTarget(Enum):
     NOISE_VEL_SENSITIVITY = 'noise_vel_sensitivity'
     MOD_VEL_SENSITIVITY = 'mod_vel_sensitivity'
 
-    # -- Second tone --
-    TONE2_BALANCE = 'tone2_balance'
-    TONE2_RATIO = 'tone2_ratio'
+    # -- Oscillator 2 --
+    OSC2_BALANCE = 'osc2_balance'
+    OSC2_RATIO = 'osc2_ratio'
 
     # -- Global --
     MASTER_VOLUME = 'master_volume'
@@ -145,8 +145,8 @@ MOD_TARGET_GROUPS = {
         ModTarget.PITCH_MOD_AMOUNT, ModTarget.PITCH_MOD_RATE,
         ModTarget.OSC_ATTACK, ModTarget.OSC_DECAY,
     ],
-    'Second tone': [
-        ModTarget.TONE2_BALANCE, ModTarget.TONE2_RATIO,
+    'Oscillator 2': [
+        ModTarget.OSC2_BALANCE, ModTarget.OSC2_RATIO,
     ],
     'Noise': [
         ModTarget.NOISE_FILTER_FREQ, ModTarget.NOISE_FILTER_Q,
@@ -181,8 +181,8 @@ MOD_TARGET_LABELS = {
     ModTarget.PITCH_MOD_RATE: 'Pitch Mod Rate',
     ModTarget.OSC_ATTACK: 'Osc Attack',
     ModTarget.OSC_DECAY: 'Osc Decay',
-    ModTarget.TONE2_BALANCE: 'Tone 2 Balance',
-    ModTarget.TONE2_RATIO: 'Tone 2 Ratio',
+    ModTarget.OSC2_BALANCE: 'Osc Balance',
+    ModTarget.OSC2_RATIO: 'Osc 2 Ratio',
     ModTarget.NOISE_FILTER_FREQ: 'Noise Freq',
     ModTarget.NOISE_FILTER_Q: 'Noise Q',
     ModTarget.NOISE_ATTACK: 'Noise Attack',
@@ -217,8 +217,8 @@ MOD_TARGET_DEPTH_RANGES = {
     ModTarget.PITCH_MOD_RATE: (0.0, 2000.0, 'Hz'),
     ModTarget.OSC_ATTACK: (0.0, 10000.0, 'ms'),
     ModTarget.OSC_DECAY: (0.0, 10000.0, 'ms'),
-    ModTarget.TONE2_BALANCE: (0.0, 1.0, ''),
-    ModTarget.TONE2_RATIO: (0.0, 8.0, ''),
+    ModTarget.OSC2_BALANCE: (0.0, 1.0, ''),
+    ModTarget.OSC2_RATIO: (0.0, 8.0, ''),
     ModTarget.NOISE_FILTER_FREQ: (0.0, 20000.0, 'Hz'),
     ModTarget.NOISE_FILTER_Q: (0.0, 10.0, ''),
     ModTarget.NOISE_ATTACK: (0.0, 10000.0, 'ms'),
@@ -528,9 +528,9 @@ class ModulationRouter:
         elif target == ModTarget.OSC_DECAY:
             base = channel.osc_envelope.decay_ms
             channel.osc_envelope.set_decay(max(1.0, base + mod_value))
-        elif target in (ModTarget.TONE2_BALANCE, ModTarget.TONE2_RATIO):
+        elif target in (ModTarget.OSC2_BALANCE, ModTarget.OSC2_RATIO):
             name = target.value
-            channel.set_tone2(name, channel.tone2[name] + mod_value)
+            channel.set_osc2(name, channel.osc2[name] + mod_value)
         elif target == ModTarget.NOISE_FILTER_FREQ:
             base = channel.noise_gen.filter_frequency
             channel.noise_gen.set_filter_frequency(max(20.0, min(20000.0, base + mod_value)))

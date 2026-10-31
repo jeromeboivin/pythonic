@@ -468,19 +468,19 @@ def test_the_po32_has_no_partials_section(make_core, card_wav):
     assert core.synth.channels[2].partials['partials'] == ''
 
 
-def test_the_po32_has_no_second_tone(make_core, card_wav):
+def test_the_po32_has_no_oscillator_2(make_core, card_wav):
     core = make_core()
-    core.set('ch4.tone2.balance', 0.6)
+    core.set('ch4.osc2.balance', 0.6)
     # sent without it, and said so
-    assert run(core, 'po32.prepare')['tone2_dropped'] == [4]
+    assert run(core, 'po32.prepare')['osc2_dropped'] == [4]
     # the transfer is the same as without it, byte for byte
     plain = DrumChannel(3).get_parameters()
-    toned = {**plain, 'tone2_balance': 0.6, 'tone2_ratio': 1.5}
+    toned = {**plain, 'osc2_balance': 0.6, 'osc2_ratio': 1.5}
     assert np.array_equal(po32_module.transfer_signal([toned] * 16), po32_module.transfer_signal([plain] * 16))
     # an imported sound turns it off
     run(core, 'po32.decode', path=str(card_wav))
     run(core, 'po32.import')
-    assert core.get('ch4.tone2.balance') == 0.0
+    assert core.get('ch4.osc2.balance') == 0.0
 
 
 def test_import_sets_the_morph_endpoints(make_core, card_wav):

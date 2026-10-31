@@ -88,21 +88,21 @@ METAL_FREQS = tuple(f'metal_freq{i}' for i in range(1, 7))
 METAL_GAIN = 0.6        # a band at level 1 is about as loud (RMS) as the noise at full mix
 
 
-# Second tone: VoiceParams field -> (default, .mtdrum key, unit, minimum, maximum). A
+# Oscillator 2: VoiceParams field -> (default, .mtdrum key, unit, minimum, maximum). A
 # second oscillator at a ratio of the first one's pitch, under its own decay, added to it
 # before the oscillator envelope. Its balance against the oscillator runs from the
-# oscillator alone (0) through both at full (50 %) to the second tone alone (100 %), as the
+# oscillator alone (0) through both at full (50 %) to oscillator 2 alone (100 %), as the
 # TR-808 snare's tone knob does: there the upper tone can hit 20 dB over the lower. It is
 # off while its balance is 0, and a drum patch that leaves it off has none of these keys
-TONE2_PARAMS = {
-    'tone2_balance': (0.0, 'Tone2Bal', '%', 0.0, 1.0),
-    'tone2_ratio': (2.0, 'Tone2Ratio', '', 0.25, 8.0),          # of the oscillator's pitch
-    'tone2_decay_ms': (100.0, 'Tone2Dcy', ' ms', 10.0, 10000.0),  # at most the oscillator's
+OSC2_PARAMS = {
+    'osc2_balance': (0.0, 'Osc2Bal', '%', 0.0, 1.0),
+    'osc2_ratio': (2.0, 'Osc2Ratio', '', 0.25, 8.0),          # of the oscillator's pitch
+    'osc2_decay_ms': (100.0, 'Osc2Dcy', ' ms', 10.0, 10000.0),  # at most the oscillator's
 }
-TONE2_DEFAULTS = {name: spec[0] for name, spec in TONE2_PARAMS.items()}
-TONE2_DEFAULTS['tone2_wave'] = WAVE_SINE
-TONE2_PERCENT = {'tone2_balance'}
-WAVE_KEYS = ('Sine', 'Triangle', 'Saw')     # .mtdrum names of the waves (OscWave, Tone2Wave)
+OSC2_DEFAULTS = {name: spec[0] for name, spec in OSC2_PARAMS.items()}
+OSC2_DEFAULTS['osc2_wave'] = WAVE_SINE
+OSC2_PERCENT = {'osc2_balance'}
+WAVE_KEYS = ('Sine', 'Triangle', 'Saw')     # .mtdrum names of the waves (OscWave, Osc2Wave)
 
 
 # Partials section: VoiceParams field -> (default, .mtdrum key, unit, minimum, maximum).
@@ -135,10 +135,10 @@ def metal_on(params) -> bool:
     return get('metal_band1_level', 0.0) > 0.0 or get('metal_band2_level', 0.0) > 0.0
 
 
-def tone2_on(params) -> bool:
-    """True when a VoiceParams or channel-format dict turns the second tone on."""
+def osc2_on(params) -> bool:
+    """True when a VoiceParams or channel-format dict turns oscillator 2 on."""
     get = params.get if isinstance(params, dict) else lambda k, d: getattr(params, k, d)
-    return get('tone2_balance', 0.0) > 0.0
+    return get('osc2_balance', 0.0) > 0.0
 
 
 def partials_on(params) -> bool:
@@ -451,11 +451,11 @@ class VoiceParams:
     metal_drive: float = 0.0            # band saturation, 0..1 (0 = clean)
     metal_hp_freq: float = 2000.0       # Hz
     metal_vel: float = 0.0              # 1.0 == 100 %
-    # second tone (off while its level is 0), see TONE2_PARAMS
-    tone2_balance: float = 0.0          # 0..1, 0.5 == both at full
-    tone2_ratio: float = 2.0            # of the oscillator's pitch
-    tone2_decay_ms: float = 100.0       # at most the oscillator decay
-    tone2_wave: int = WAVE_SINE
+    # oscillator 2 (off while its balance is 0), see OSC2_PARAMS
+    osc2_balance: float = 0.0          # 0..1, 0.5 == both at full
+    osc2_ratio: float = 2.0            # of the oscillator's pitch
+    osc2_decay_ms: float = 100.0       # at most the oscillator decay
+    osc2_wave: int = WAVE_SINE
     # partials section (off while both tables are empty), see PARTIALS_PARAMS / PARTIALS_TABLES
     partials: str = ''                  # format_partials text
     partial_bands: str = ''             # format_bands text
@@ -485,15 +485,15 @@ class _Derived:
         self.osc_atk_c = 1000.0 ** (1.0 / max(self.osc_atk_n, 1.0))
         t_dcy = min(max(p.osc_decay_ms, 10.0), 10000.0) / 1000.0
         self.osc_dcy_c = 1000.0 ** (-1.0 / max(t_dcy * sr, 1.0))
-        # second tone: its decay as a per-sample factor on top of the oscillator envelope's
-        self.tone2 = tone2_on(p)
-        if self.tone2:
-            t2 = min(max(p.tone2_decay_ms, 10.0), 10000.0) / 1000.0
-            self.tone2_q = min(1000.0 ** (-1.0 / max(min(t2, t_dcy) * sr, 1.0)) / self.osc_dcy_c, 1.0)
-            bal = min(max(p.tone2_balance, 0.0), 1.0)
-            self.tone2_gain, self.tone2_osc = min(2.0 * bal, 1.0), min(2.0 - 2.0 * bal, 1.0)
-            self.tone2_ratio = min(max(p.tone2_ratio, 0.25), 8.0)
-            self.tone2_wave = int(p.tone2_wave) if int(p.tone2_wave) in (0, 1, 2) else 0
+        # oscillator 2: its decay as a per-sample factor on top of the oscillator envelope's
+        self.osc2 = osc2_on(p)
+        if self.osc2:
+            t2 = min(max(p.osc2_decay_ms, 10.0), 10000.0) / 1000.0
+            self.osc2_q = min(1000.0 ** (-1.0 / max(min(t2, t_dcy) * sr, 1.0)) / self.osc_dcy_c, 1.0)
+            bal = min(max(p.osc2_balance, 0.0), 1.0)
+            self.osc2_gain, self.osc2_osc = min(2.0 * bal, 1.0), min(2.0 - 2.0 * bal, 1.0)
+            self.osc2_ratio = min(max(p.osc2_ratio, 0.25), 8.0)
+            self.osc2_wave = int(p.osc2_wave) if int(p.osc2_wave) in (0, 1, 2) else 0
 
         # pitch modulation
         self.mod_mode = int(p.mod_mode)
@@ -671,12 +671,12 @@ def _pack(d: _Derived):
     ip[K.IP_STEREO] = int(d.stereo)
     ip[K.IP_MOD_HOLD8] = int(d.mod_hold8)
     ip[K.IP_N_BURSTS] = d.n_bursts
-    if d.tone2:
-        ip[K.IP_T2_WAVE] = d.tone2_wave
-        p[K.P_T2_GAIN] = d.tone2_gain
-        p[K.P_T2_OSC] = d.tone2_osc
-        p[K.P_T2_RATIO] = d.tone2_ratio
-        p[K.P_T2_Q] = d.tone2_q
+    if d.osc2:
+        ip[K.IP_O2_WAVE] = d.osc2_wave
+        p[K.P_O2_GAIN] = d.osc2_gain
+        p[K.P_O2_OSC] = d.osc2_osc
+        p[K.P_O2_RATIO] = d.osc2_ratio
+        p[K.P_O2_Q] = d.osc2_q
     if d.metal:
         ip[K.IP_METAL] = 1
         p[K.P_M_INC:K.P_M_INC + 6] = d.metal_inc
@@ -996,7 +996,7 @@ def params_from_patch(patch: dict, pitch_ratio: float = 1.0, mono: bool = False)
         pitch_ratio=pitch_ratio,
         mono=mono,
         **metal_from_patch(patch),
-        **tone2_from_patch(patch),
+        **osc2_from_patch(patch),
         **partials_from_patch(patch),
     )
 
@@ -1014,15 +1014,15 @@ def partials_from_patch(patch: dict) -> dict:
     return out
 
 
-def tone2_from_patch(patch: dict) -> dict:
-    """Second tone fields of a parsed .mtdrum / .mtpreset patch (all defaults, so off, when
+def osc2_from_patch(patch: dict) -> dict:
+    """Oscillator 2 fields of a parsed .mtdrum / .mtpreset patch (all defaults, so off, when
     it has none of its keys)."""
     out = {}
-    for name, (default, key, *_) in TONE2_PARAMS.items():
+    for name, (default, key, *_) in OSC2_PARAMS.items():
         v = _num(patch[key], default) if key in patch else default
-        out[name] = v / 100.0 if name in TONE2_PERCENT and key in patch else v
-    wave = str(patch.get('Tone2Wave', WAVE_KEYS[WAVE_SINE])).strip().strip('"')
-    out['tone2_wave'] = WAVE_KEYS.index(wave) if wave in WAVE_KEYS else WAVE_SINE
+        out[name] = v / 100.0 if name in OSC2_PERCENT and key in patch else v
+    wave = str(patch.get('Osc2Wave', WAVE_KEYS[WAVE_SINE])).strip().strip('"')
+    out['osc2_wave'] = WAVE_KEYS.index(wave) if wave in WAVE_KEYS else WAVE_SINE
     return out
 
 

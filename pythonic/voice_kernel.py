@@ -68,11 +68,11 @@ P_PS_FADE = 73          # samples of the cut's fade (-60 dB at its end, then sil
 P_PS_REL = 74           # per-sample step of the release (choke)
 P_PS_END = 75           # a band gain under this has ended
 P_PS_RISE = 76          # samples the section fades in over from the hit (0 = at once)
-# second tone (used only while its balance is above 0)
-P_T2_GAIN = 77          # its gain, of the balance
-P_T2_RATIO = 78         # its pitch, as a ratio of the oscillator's
-P_T2_Q = 79             # per-sample factor of its decay on top of the oscillator envelope's
-P_T2_OSC = 80           # the oscillator's own gain, of the balance
+# oscillator 2 (used only while its balance is above 0)
+P_O2_GAIN = 77          # its gain, of the balance
+P_O2_RATIO = 78         # its pitch, as a ratio of the oscillator's
+P_O2_Q = 79             # per-sample factor of its decay on top of the oscillator envelope's
+P_O2_OSC = 80           # the oscillator's own gain, of the balance
 NUM_P = 81
 
 # ---------------------------------------------------------------- int parameters
@@ -88,7 +88,7 @@ IP_PS_N = 8             # partials
 IP_PS_NB = 9            # noise bands
 IP_PS_NSEC = 10         # second-order sections a noise band has (4: 24 dB an octave each side, 8: 48)
 IP_PS_CLICK = 11        # 1 when the noise bands have click envelopes
-IP_T2_WAVE = 12         # the second tone's wave
+IP_O2_WAVE = 12         # oscillator 2's wave
 NUM_IP = 13
 
 # ---------------------------------------------------------------- float state
@@ -125,10 +125,10 @@ S_PHOLD = 52            # blocks of pitch-modulation hold left at the segment st
 S_PS_VEL = 53           # partials section velocity gain
 S_PS_REL = 54           # its release gain (1 until a choke)
 S_PS_DRIFT = 55         # pitch drift its rotations were computed for (0 = not yet)
-S_T2_PH = 56            # second tone phase
-S_T2_DEC_X = 57         # its decimator states
-S_T2_DEC_Y = 58
-S_T2_Q = 59             # its decay factor since the oscillator's restart
+S_O2_PH = 56            # oscillator 2 phase
+S_O2_DEC_X = 57         # its decimator states
+S_O2_DEC_Y = 58
+S_O2_Q = 59             # its decay factor since the oscillator's restart
 NUM_S = 60
 
 # ---------------------------------------------------------------- int state
@@ -304,10 +304,10 @@ def reset_osc(p, ip, fs, ist, mod_rng):
     """Restart the oscillator (phase, decimator, pitch modulation)."""
     fs[S_PHASE] = 0.125
     fs[S_DEC_Y] = 0.0
-    fs[S_T2_PH] = 0.125
-    fs[S_T2_DEC_X] = 0.0
-    fs[S_T2_DEC_Y] = 0.0
-    fs[S_T2_Q] = 1.0
+    fs[S_O2_PH] = 0.125
+    fs[S_O2_DEC_X] = 0.0
+    fs[S_O2_DEC_Y] = 0.0
+    fs[S_O2_Q] = 1.0
     fs[S_LFO] = 0.0
     fs[S_PENV] = 1.0
     fs[S_PHOLD] = p[P_MOD_HOLD]
@@ -570,17 +570,17 @@ def _osc_block(p, ip, fs, ist, mod_rng, j, blk, w, out):
         fs[S_DEC_Y] = y
         out[k] = y
     fs[S_ACC] = acc
-    gain = p[P_T2_GAIN]
+    gain = p[P_O2_GAIN]
     if gain > 0.0:
-        # the second tone: the oscillator's increments times its ratio, its own phase and
+        # oscillator 2: the oscillator's increments times its ratio, its own phase and
         # decimator, under its decay factor, balanced against the oscillator
-        osc = p[P_T2_OSC]
-        wave2 = ip[IP_T2_WAVE]
-        ratio = p[P_T2_RATIO]
+        osc = p[P_O2_OSC]
+        wave2 = ip[IP_O2_WAVE]
+        ratio = p[P_O2_RATIO]
         max_inc = p[P_MAX_INC]
-        ph = fs[S_T2_PH]
-        q = fs[S_T2_Q]
-        qs = p[P_T2_Q]
+        ph = fs[S_O2_PH]
+        q = fs[S_O2_Q]
+        qs = p[P_O2_Q]
         for k in range(4):
             we = min(w[2 * k] * ratio, max_inc)
             xe = _wave(wave2, ph, we)
@@ -588,14 +588,14 @@ def _osc_block(p, ip, fs, ist, mod_rng, j, blk, w, out):
             wo = min(w[2 * k + 1] * ratio, max_inc)
             xo = _wave(wave2, ph, wo)
             ph = (ph + wo) % 1.0
-            u = DEC_A * (xe + fs[S_T2_DEC_X]) + xo + xe
-            y = u + a2 * fs[S_T2_DEC_Y]
-            fs[S_T2_DEC_X] = xo
-            fs[S_T2_DEC_Y] = y
+            u = DEC_A * (xe + fs[S_O2_DEC_X]) + xo + xe
+            y = u + a2 * fs[S_O2_DEC_Y]
+            fs[S_O2_DEC_X] = xo
+            fs[S_O2_DEC_Y] = y
             out[k] = osc * out[k] + gain * q * y
             q *= qs
-        fs[S_T2_PH] = ph
-        fs[S_T2_Q] = q
+        fs[S_O2_PH] = ph
+        fs[S_O2_Q] = q
 
 
 # ---------------------------------------------------------------- metal section

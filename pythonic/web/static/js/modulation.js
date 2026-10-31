@@ -32,8 +32,8 @@ export const MOD_TARGETS = {
   osc_vel_sensitivity: 'vel.osc',
   noise_vel_sensitivity: 'vel.noise',
   mod_vel_sensitivity: 'vel.mod',
-  tone2_balance: 'tone2.balance',
-  tone2_ratio: 'tone2.ratio',
+  osc2_balance: 'osc2.balance',
+  osc2_ratio: 'osc2.ratio',
 };
 
 /** Global mod targets -> their addresses (any channel may aim at them). */
@@ -51,7 +51,7 @@ export const TARGET_LABELS = [
   'pitch_semitones', 'noise_filter_freq', 'noise_filter_q', 'noise_attack', 'noise_decay',
   'osc_noise_mix', 'level_db', 'pan', 'distortion', 'eq_frequency', 'eq_gain_db', 'vintage_amount',
   'reverb_decay', 'reverb_mix', 'reverb_width', 'delay_feedback', 'delay_mix', 'osc_vel_sensitivity',
-  'noise_vel_sensitivity', 'mod_vel_sensitivity', 'tone2_balance', 'tone2_ratio', 'master_volume', 'morph',
+  'noise_vel_sensitivity', 'mod_vel_sensitivity', 'osc2_balance', 'osc2_ratio', 'master_volume', 'morph',
 ];
 
 /** Short names of the targets (the → buttons and the display). */
@@ -63,7 +63,7 @@ const TARGET_NAMES = {
   distortion: 'distort', eq_frequency: 'eq freq', eq_gain_db: 'eq gain', vintage_amount: 'vintage',
   reverb_decay: 'rvb time', reverb_mix: 'rvb mix', reverb_width: 'rvb wide', delay_feedback: 'dly fdbk',
   delay_mix: 'dly mix', osc_vel_sensitivity: 'osc vel', noise_vel_sensitivity: 'noise vel',
-  mod_vel_sensitivity: 'mod vel', tone2_balance: 'tone2 bal', tone2_ratio: 'tone2 ratio',
+  mod_vel_sensitivity: 'mod vel', osc2_balance: 'osc bal', osc2_ratio: 'osc2 ratio',
   master_volume: 'master', morph: 'morph',
 };
 

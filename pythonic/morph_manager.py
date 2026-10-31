@@ -19,7 +19,7 @@ import copy
 import numpy as np
 from typing import Dict, List, Any, Optional
 
-from .voice import METAL_DEFAULTS, PARTIALS_PARAMS, PARTIALS_TABLES, TONE2_PARAMS
+from .voice import METAL_DEFAULTS, PARTIALS_PARAMS, PARTIALS_TABLES, OSC2_PARAMS
 
 
 # Parameters that can be linearly interpolated
@@ -36,7 +36,7 @@ INTERPOLATABLE_PARAMS = {
     'reverb_decay', 'reverb_mix', 'reverb_width',
     'delay_feedback', 'delay_mix',
     *METAL_DEFAULTS,
-    *TONE2_PARAMS,
+    *OSC2_PARAMS,
     *PARTIALS_PARAMS,
 }
 
@@ -46,12 +46,12 @@ LOG_INTERPOLATABLE_PARAMS = {
     'pitch_mod_rate',
     'metal_freq1', 'metal_freq2', 'metal_freq3', 'metal_freq4', 'metal_freq5', 'metal_freq6',
     'metal_band1_freq', 'metal_band2_freq', 'metal_hp_freq',
-    'tone2_ratio',
+    'osc2_ratio',
 }
 
 # Discrete params: use nearest-endpoint value (snap at midpoint)
 DISCRETE_PARAMS = {
-    'osc_waveform', 'pitch_mod_mode', 'noise_filter_mode', 'tone2_wave',
+    'osc_waveform', 'pitch_mod_mode', 'noise_filter_mode', 'osc2_wave',
     'noise_envelope_mode', 'noise_stereo', 'choke_enabled',
     'output_pair', 'delay_time', 'delay_ping_pong',
     # partial tables of different sounds do not blend: each endpoint's up to the midpoint

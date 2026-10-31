@@ -123,7 +123,7 @@ export function mountRack({ store, client, ctx, display, stage, slot, drawer, fi
   const rows = [...rack.querySelectorAll('.modrow')];
   const metal = rack.querySelector('.sec-metal');
   const METAL_LEVELS = ['metal.band1_level', 'metal.band2_level'];
-  const tone2 = [...rack.querySelectorAll('[data-suffix^="tone2."]')];
+  const osc2 = [...rack.querySelectorAll('[data-suffix^="osc2."]')];
 
   let armed = null; // the source whose destination click to assign sets
   let swallowClick = false;
@@ -153,16 +153,16 @@ export function mountRack({ store, client, ctx, display, stage, slot, drawer, fi
       ...METAL_LEVELS.map((suffix) => store.watch(`ch${n}.${suffix}`, () => {
         metal.classList.toggle('off', METAL_LEVELS.every((s) => !(store.value(`ch${n}.${s}`) > 0)));
       })),
-      // and so the second tone's controls, but for its balance, while that is 0
-      store.watch(`ch${n}.tone2.balance`, (balance) => {
-        for (const node of tone2) if (node.dataset.suffix !== 'tone2.balance') node.classList.toggle('off', !(balance > 0));
+      // and so oscillator 2's controls, but for its balance, while that is 0
+      store.watch(`ch${n}.osc2.balance`, (balance) => {
+        for (const node of osc2) if (node.dataset.suffix !== 'osc2.balance') node.classList.toggle('off', !(balance > 0));
       }),
       // The outline of the current destination follows the target
       ...MOD_SOURCES.map((src) => store.watch(`ch${n}.${src}.target`, () => { if (armed) mark(); },
         { now: false })),
     ];
     for (const a of [`ch${n}.name`, ...rows.map((row) => `ch${n}.${row.dataset.source}.on`),
-      ...METAL_LEVELS.map((suffix) => `ch${n}.${suffix}`), `ch${n}.tone2.balance`]) ctx.ensure(a);
+      ...METAL_LEVELS.map((suffix) => `ch${n}.${suffix}`), `ch${n}.osc2.balance`]) ctx.ensure(a);
   };
   bindChannel(selected());
   watch('global.channel', (n) => bindChannel(n || 1));

@@ -21,7 +21,7 @@ from pythonic.delay import DelayTime
 from pythonic.lfo import LFOPolarity, LFORetrigger, LFOWaveform, ModTarget, SyncDivision
 from pythonic.noise import NoiseEnvelopeMode, NoiseFilterMode
 from pythonic.oscillator import PitchModMode, WaveformType
-from pythonic.voice import METAL_PARAMS, MOD_HOLD_MAX_MS, PARTIALS_PARAMS, TONE2_PARAMS
+from pythonic.voice import METAL_PARAMS, MOD_HOLD_MAX_MS, PARTIALS_PARAMS, OSC2_PARAMS
 
 
 @dataclass(frozen=True)
@@ -139,22 +139,22 @@ METAL_SOUND_PARAMS = (
 )
 
 
-def _tone2(suffix, name, unit, curve='linear'):
-    """One second tone parameter (a VoiceParams field of voice.TONE2_PARAMS)."""
-    lo, hi = TONE2_PARAMS[name][3:]
-    return _number(suffix, name, lambda ch: ch.tone2[name],
-                   lambda ch, v: ch.set_tone2(name, v), lo, hi, unit, curve)
+def _osc2(suffix, name, unit, curve='linear'):
+    """One oscillator 2 parameter (a VoiceParams field of voice.OSC2_PARAMS)."""
+    lo, hi = OSC2_PARAMS[name][3:]
+    return _number(suffix, name, lambda ch: ch.osc2[name],
+                   lambda ch, v: ch.set_osc2(name, v), lo, hi, unit, curve)
 
 
-# Second tone: a second oscillator at a ratio of the first one's pitch, under its own
+# Oscillator 2: a second oscillator at a ratio of the first one's pitch, under its own
 # level and decay (its level at 0 turns it off)
-TONE2_SOUND_PARAMS = (
-    _enum('tone2.wave', 'tone2_wave', WaveformType, lambda ch: WaveformType(ch.tone2['tone2_wave']),
-          lambda ch, v: ch.set_tone2('tone2_wave', v.value)),
-    _tone2('tone2.ratio', 'tone2_ratio', '', 'log'),
-    _tone2('tone2.decay', 'tone2_decay_ms', 'ms', 'log'),
-    _ratio('tone2.balance', 'tone2_balance', lambda ch: ch.tone2['tone2_balance'],
-           lambda ch, v: ch.set_tone2('tone2_balance', v)),
+OSC2_SOUND_PARAMS = (
+    _enum('osc2.wave', 'osc2_wave', WaveformType, lambda ch: WaveformType(ch.osc2['osc2_wave']),
+          lambda ch, v: ch.set_osc2('osc2_wave', v.value)),
+    _osc2('osc2.ratio', 'osc2_ratio', '', 'log'),
+    _osc2('osc2.decay', 'osc2_decay_ms', 'ms', 'log'),
+    _ratio('osc2.balance', 'osc2_balance', lambda ch: ch.osc2['osc2_balance'],
+           lambda ch, v: ch.set_osc2('osc2_balance', v)),
 )
 
 
@@ -218,7 +218,7 @@ SOUND_PARAMS = tuple([
     _number('noise.decay', 'noise_decay', lambda ch: ch.noise_gen.decay_ms,
             lambda ch, v: ch.set_noise_decay(v), 10.0, 10000.0, 'ms', 'log'),
     *METAL_SOUND_PARAMS,
-    *TONE2_SOUND_PARAMS,
+    *OSC2_SOUND_PARAMS,
     *PARTIALS_SOUND_PARAMS,
     # Mixing (1 = all oscillator, 0 = all noise)
     _ratio('mix.osc_noise', 'osc_noise_mix', lambda ch: ch.osc_noise_mix,
