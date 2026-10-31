@@ -483,21 +483,6 @@ def test_the_po32_has_no_oscillator_2(make_core, card_wav):
     assert core.get('ch4.osc2.balance') == 0.0
 
 
-def test_the_po32_has_no_saturation(make_core, card_wav):
-    core = make_core()
-    core.set('ch2.mix.saturation', 0.4)
-    # sent without it, and said so
-    assert run(core, 'po32.prepare')['saturation_dropped'] == [2]
-    # the transfer is the same as without it, byte for byte
-    plain = DrumChannel(1).get_parameters()
-    assert np.array_equal(po32_module.transfer_signal([{**plain, 'saturation': 0.4}] * 16),
-                          po32_module.transfer_signal([plain] * 16))
-    # an imported sound turns it off
-    run(core, 'po32.decode', path=str(card_wav))
-    run(core, 'po32.import')
-    assert core.get('ch2.mix.saturation') == 0.0
-
-
 def test_import_sets_the_morph_endpoints(make_core, card_wav):
     core = make_core()
     run(core, 'po32.decode', path=str(card_wav))

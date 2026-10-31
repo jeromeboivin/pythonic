@@ -34,7 +34,7 @@ test('other controls refuse with a reason for the display', () => {
 });
 
 test('every engine target has a name and an address, none is off', () => {
-  assert.equal(TARGET_LABELS.length, 31);
+  assert.equal(TARGET_LABELS.length, 30);
   assert.equal(targetAddress('osc2_ratio', 4), 'ch4.osc2.ratio');
   assert.equal(TARGET_LABELS[0], 'none');
   assert.equal(targetName('none'), 'off');

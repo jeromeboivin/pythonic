@@ -89,8 +89,7 @@ export const RACK_SECTIONS = [
   { key: 'mix', title: 'mix', rows: [
     [{ s: 'mix.osc_noise', type: 'hfader', label: '', name: 'osc / noise mix', length: 112,
       ends: 'osc,noise' }],
-    [knob('eq.freq', 'eq freq'), knob('eq.gain', 'eq gain'), knob('mix.distortion', 'distort', 'distortion'),
-      knob('mix.saturation', 'sat', 'saturation')],
+    [knob('eq.freq', 'eq freq'), knob('eq.gain', 'eq gain'), knob('mix.distortion', 'distort', 'distortion')],
     [knob('mix.pan', 'pan'), sw('mix.output', 'out', 'output', 'A,B'), toggle('mix.choke', 'choke', 'choke')],
   ] },
   { key: 'vel', title: 'velocity', rows: [

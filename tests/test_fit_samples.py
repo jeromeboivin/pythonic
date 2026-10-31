@@ -432,8 +432,3 @@ def test_a_fitted_oscillator_2_is_written_to_the_patch():
     keys = F.patch_dict(VoiceParams(osc2_balance=0.4, osc2_ratio=1.9), 'SD', False)
     assert keys['Osc2Bal'] == pytest.approx(40.0) and keys['Osc2Ratio'] == pytest.approx(1.9)
     assert 'Osc2Bal' not in F.patch_dict(VoiceParams(), 'SD', False)
-
-
-def test_a_saturation_is_written_to_the_patch():
-    assert F.patch_dict(VoiceParams(saturation=0.3), 'BD', False)['SatAmt'] == pytest.approx(30.0)
-    assert 'SatAmt' not in F.patch_dict(VoiceParams(), 'BD', False)

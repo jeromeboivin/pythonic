@@ -566,8 +566,6 @@ class PythonicSynthesizer:
         if 'channels' in data:
             for i, ch_data in enumerate(data['channels']):
                 if i < self.NUM_CHANNELS:
-                    # sounds saved before the metal section, oscillator 2, the saturation or partials
-                    # section leave it off
-                    self.channels[i].set_parameters({'pitch_mod_hold': 0.0, 'saturation': 0.0,
-                                                     **METAL_DEFAULTS, **OSC2_DEFAULTS,
+                    # sounds saved before the metal section, oscillator 2 or partials section leave it off
+                    self.channels[i].set_parameters({'pitch_mod_hold': 0.0, **METAL_DEFAULTS, **OSC2_DEFAULTS,
                                                      **PARTIALS_DEFAULTS, **ch_data})

@@ -94,9 +94,6 @@ class DrumChannel:
         # Decay pitch modulation: ms the start pitch holds before it decays
         self.pitch_mod_hold = 0.0
 
-        # Saturation after the envelopes (oscillators, metal bands), 0..1 (0 = off)
-        self.saturation = 0.0
-
         # Metal section (off while both band levels are 0)
         self.metal = dict(METAL_DEFAULTS)
 
@@ -148,7 +145,6 @@ class DrumChannel:
         eq_freq = self.eq_frequency
         eq_gain = self.eq_gain_db
         dist = self.distortion
-        sat = self.saturation
         mix = self.osc_noise_mix
         level = self.level_db
         pan = self.pan
@@ -175,8 +171,6 @@ class DrumChannel:
                 eq_gain = min(40.0, max(-40.0, eq_gain + g(ModTarget.EQ_GAIN_DB)))
             if ModTarget.DISTORTION in mod:
                 dist = min(1.0, max(0.0, dist + g(ModTarget.DISTORTION)))
-            if ModTarget.SATURATION in mod:
-                sat = min(1.0, max(0.0, sat + g(ModTarget.SATURATION)))
             if ModTarget.OSC_NOISE_MIX in mod:
                 mix = min(1.0, max(0.0, mix + g(ModTarget.OSC_NOISE_MIX)))
             if ModTarget.LEVEL_DB in mod:
@@ -227,7 +221,6 @@ class DrumChannel:
             noise_decay_ms=float(n_dcy),
             osc_mix=float(mix),
             distortion=float(dist),
-            saturation=float(sat),
             eq_freq=float(eq_freq),
             eq_gain_db=float(eq_gain),
             level_db=float(level),
@@ -443,9 +436,6 @@ class DrumChannel:
     def set_distortion_immediate(self, amount: float):
         self.set_distortion(amount)
 
-    def set_saturation(self, amount: float):
-        self.saturation = float(np.clip(amount, 0.0, 1.0))
-
     def set_bpm(self, bpm: float):
         """Set BPM for the tempo-synced delay effect."""
         self.delay.set_bpm(bpm)
@@ -472,7 +462,6 @@ class DrumChannel:
             'noise_decay': self.noise_gen.decay_ms,
             'osc_noise_mix': self.osc_noise_mix,
             'distortion': self.distortion,
-            'saturation': self.saturation,
             'eq_frequency': self.eq_frequency,
             'eq_gain_db': self.eq_gain_db,
             'level_db': self.level_db,
@@ -600,8 +589,6 @@ class DrumChannel:
             self.set_osc_noise_mix(params['osc_noise_mix'])
         if 'distortion' in params:
             self.set_distortion(params['distortion'])
-        if 'saturation' in params:
-            self.set_saturation(params['saturation'])
         if 'eq_frequency' in params:
             self.set_eq_frequency(params['eq_frequency'])
         if 'eq_gain_db' in params:

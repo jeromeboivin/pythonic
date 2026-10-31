@@ -73,12 +73,7 @@ P_O2_GAIN = 77          # its gain, of the balance
 P_O2_RATIO = 78         # its pitch, as a ratio of the oscillator's
 P_O2_Q = 79             # per-sample factor of its decay on top of the oscillator envelope's
 P_O2_OSC = 80           # the oscillator's own gain, of the balance
-# saturation after the envelopes (off while its gain is 0)
-P_SAT_G = 81            # gain into the curve
-P_SAT_GB = 82           # gain times the bias (the asymmetry)
-P_SAT_T = 83            # tanh of that: the curve's value at 0, taken away
-P_SAT_N = 84            # 1 / its slope at 0, so a small signal passes at unity gain
-NUM_P = 85
+NUM_P = 81
 
 # ---------------------------------------------------------------- int parameters
 IP_WAVE = 0
@@ -627,14 +622,6 @@ def _saturate(u, g):
 
 
 @njit(cache=True, nogil=True)
-def _sat(p, u):
-    """The saturation of a signal under its envelope: a tanh curve off centre by a fixed bias,
-    0 at 0 and of slope 1 there, so its even harmonics grow with the level and fade with it,
-    as in the analog machines' VCAs."""
-    return (math.tanh(p[P_SAT_G] * u + p[P_SAT_GB]) - p[P_SAT_T]) * p[P_SAT_N]
-
-
-@njit(cache=True, nogil=True)
 def _metal_sample(p, fs, ist):
     """One sample of the metal section: six free-running squares into two band-passes,
     each saturated (drive) then under its own decay envelope, summed into a high-pass. A band
@@ -662,13 +649,8 @@ def _metal_sample(p, fs, ist):
     e1 = x1 * (1.0 - c) + l1 * c
     e2 = x2 * (1.0 - c) + l2 * c
     g = p[P_M_DRIVE]
-    y1 = _saturate(_biquad(p, P_M_B1, P_M_A1, x, fs, S_M_Z1), g) * e1 * p[P_M_LVL]
-    y2 = _saturate(_biquad(p, P_M_B2, P_M_A2, x, fs, S_M_Z2), g) * e2 * p[P_M_LVL + 1]
-    if p[P_SAT_G] != 0.0:
-        # the saturation, after each band's envelope (on the band-pass's scale)
-        y1 = _sat(p, y1 / METAL_SCALE) * METAL_SCALE
-        y2 = _sat(p, y2 / METAL_SCALE) * METAL_SCALE
-    y = y1 + y2
+    y = (_saturate(_biquad(p, P_M_B1, P_M_A1, x, fs, S_M_Z1), g) * e1 * p[P_M_LVL]
+         + _saturate(_biquad(p, P_M_B2, P_M_A2, x, fs, S_M_Z2), g) * e2 * p[P_M_LVL + 1])
     y = _biquad(p, P_M_HB, P_M_HA, y, fs, S_M_ZH) * fs[S_M_VEL]
     if st == 1:
         x1 *= p[P_M_DCY]
@@ -914,7 +896,6 @@ def render(p, ip, fs, ist, rng, mod_rng, nb, blk0, out, sp, ss, su):
     sh_d = p[P_SH_D]
     sh_k = p[P_SH_K]
     sh_dc = p[P_SH_DC]
-    sat = p[P_SAT_G] != 0.0
     seg_j = 0
     if osc_alive:
         _segment_start(fs, ist)
@@ -939,10 +920,7 @@ def render(p, ip, fs, ist, rng, mod_rng, nb, blk0, out, sp, ss, su):
                 g[i] = g0[i]
         go, gn, gd, gl, gr, ge = g[0], g[1], g[2], g[3], g[4], g[5]
         for k in range(4):
-            s0 = osc[k] * oe[k]
-            if sat:
-                s0 = _sat(p, s0)
-            s0 = s0 * go * gd
+            s0 = osc[k] * oe[k] * go * gd
             if metal_on:
                 s0 = s0 + _metal_sample(p, fs, ist) * gd
             for c in range(chans):

@@ -61,7 +61,6 @@ def convert_drum_patch_data(patch: Dict) -> Dict:
         'noise_decay': patch.get('NEnvDcy', 316.0) / 1000.0,
         'osc_noise_mix': osc_mix,
         'distortion': patch.get('DistAmt', 0.0) / 100.0,
-        'saturation': patch.get('SatAmt', 0.0) / 100.0,
         'eq_frequency': patch.get('EQFreq', 1000.0),
         'eq_gain_db': patch.get('EQGain', 0.0),
         'level_db': patch.get('Level', 0.0),
@@ -150,7 +149,6 @@ def apply_drum_patch_to_channel(channel, data: Dict):
 
     channel.set_osc_noise_mix(data.get('osc_noise_mix', 0.5))
     channel.set_distortion(data.get('distortion', 0.0))
-    channel.set_saturation(data.get('saturation', 0.0))
     channel.set_eq_frequency(data.get('eq_frequency', 1000.0))
     channel.set_eq_gain(data.get('eq_gain_db', 0.0))
     channel.level_db = data.get('level_db', 0.0)
@@ -527,7 +525,6 @@ class PythonicPresetParser:
             'noise_decay': self._to_float(patch.get('NEnvDcy', 316.0)),
             'osc_noise_mix': float(mix_raw) / 100.0,
             'distortion': self._to_float(patch.get('DistAmt', 0.0)) / 100.0,
-            'saturation': self._to_float(patch.get('SatAmt', 0.0)) / 100.0,
             'eq_frequency': self._to_float(patch.get('EQFreq', 1000.0)),
             'eq_gain_db': self._to_float(patch.get('EQGain', 0.0)),
             'level_db': self._to_float(patch.get('Level', 0.0)),
@@ -849,7 +846,6 @@ class DrumPatchWriter:
         'OscFreq': ' Hz', 'OscAtk': ' ms', 'OscDcy': ' ms', 'ModAmt': ' sm',
         'NFilFrq': ' Hz', 'NEnvAtk': ' ms', 'NEnvDcy': ' ms', 'EQFreq': ' Hz',
         'EQGain': ' dB', 'Level': ' dB', 'OscVel': '%', 'NVel': '%', 'ModVel': '%', 'ModHold': ' ms',
-        'SatAmt': '%',
         **{spec[1]: spec[2] for spec in METAL_PARAMS.values()},
         **{spec[1]: spec[2] for spec in OSC2_PARAMS.values()},
         **{spec[1]: spec[2] for spec in PARTIALS_PARAMS.values()},
@@ -880,8 +876,6 @@ class DrumPatchWriter:
             'NEnvDcy': noise.decay_ms,
             'Mix': (channel.osc_noise_mix * 100.0, (1.0 - channel.osc_noise_mix) * 100.0),
             'DistAmt': channel.distortion * 100.0,
-            # and the saturation only when it is used
-            **({'SatAmt': channel.saturation * 100.0} if channel.saturation > 0.0 else {}),
             'EQFreq': channel.eq_frequency,
             'EQGain': channel.eq_gain_db,
             'Level': channel.level_db,

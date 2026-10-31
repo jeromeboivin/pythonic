@@ -37,7 +37,6 @@ Perfect for producers, sound designers, and developers interested in audio synth
 - **Advanced Mixing**
   - Oscillator/Noise blend control
   - Soft-clipping distortion
-  - Saturation after the envelopes (oscillators and metal bands): even harmonics that follow the level as the hit dies, as in the analog machines' VCAs; off at 0, and the PO-32 transfer leaves it out
   - Parametric EQ per channel
   - Level and Pan controls
   - Choke groups for realistic hi-hat behavior

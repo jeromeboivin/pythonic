@@ -60,10 +60,6 @@ NENV_EXP, NENV_LINEAR, NENV_MOD = K.NENV_EXP, K.NENV_LINEAR, K.NENV_MOD
 # section is off while both band levels are 0, and a patch that leaves it off
 # has none of these keys.
 MOD_HOLD_MAX_MS = 100.0  # longest hold of the decay pitch modulation
-# Saturation: a tanh curve after the envelopes, off centre by SAT_BIAS, so even harmonics
-# follow the level as the hit dies (the analog machines' VCAs); SAT_GAIN at 100 %
-SAT_BIAS = 0.35
-SAT_GAIN = 4.0
 
 METAL_PARAMS = {
     'metal_freq1': (205.3, 'MetalFreq1', ' Hz', 20.0, 2000.0),
@@ -417,7 +413,6 @@ class VoiceParams:
     mod_rate: float = 353.33            # ms (decay) or Hz (sine / noise)
     mod_amount: float = 0.0             # semitones
     mod_hold_ms: float = 0.0            # decay mode: the start pitch holds this long, then decays
-    saturation: float = 0.0             # 0..1, after the envelopes (oscillators, metal bands)
     noise_filter: int = FILT_LP
     noise_freq: float = 20000.0         # Hz
     noise_q: float = 0.70710683
@@ -564,7 +559,6 @@ class _Derived:
         self.mix_osc = math.exp(u * -2.878231525) * (1.0 - u) if u > 0.0 else 1.0
         self.mix_noise = math.exp(u * 2.878231525) * (1.0 + u) if u < 0.0 else 1.0
         self.sh_d, self.sh_k, self.sh_dc, self.drive, post = shaper_params(min(max(p.distortion, 0.0), 1.0))
-        self.sat_g = min(max(p.saturation, 0.0), 1.0) * SAT_GAIN
 
         gnorm = (min(max(p.eq_gain_db, -40.0), 40.0) / 40.0 + 1.0) / 2.0
         G = 10.0 ** (2.0 * gnorm - 1.0)
@@ -666,9 +660,6 @@ def _pack(d: _Derived):
     p[K.P_SH_D] = d.sh_d
     p[K.P_SH_K] = d.sh_k
     p[K.P_SH_DC] = d.sh_dc
-    if d.sat_g > 0.0:
-        t = math.tanh(d.sat_g * SAT_BIAS)
-        p[K.P_SAT_G:K.P_SAT_N + 1] = (d.sat_g, d.sat_g * SAT_BIAS, t, 1.0 / (d.sat_g * (1.0 - t * t)))
     p[K.P_EQ_B:K.P_EQ_B + 3] = d.eq_b
     p[K.P_EQ_A:K.P_EQ_A + 3] = d.eq_a
     p[K.P_SMOOTH] = d.smooth
@@ -995,7 +986,6 @@ def params_from_patch(patch: dict, pitch_ratio: float = 1.0, mono: bool = False)
         noise_decay_ms=_num(g('NEnvDcy', 316.23)),
         osc_mix=osc_pct / 100.0,
         distortion=_num(g('DistAmt', 0.0)) / 100.0,
-        saturation=_num(g('SatAmt', 0.0)) / 100.0,
         eq_freq=_num(g('EQFreq', 632.46)),
         eq_gain_db=_num(g('EQGain', 0.0)),
         level_db=_num(g('Level', 0.0)),
