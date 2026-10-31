@@ -166,6 +166,32 @@ def real_tones(x, n: int = PARTIALS) -> np.ndarray:
     return rows
 
 
+SHORT_S = 0.05          # a short hit's tones are the peaks of its first 50 ms ...
+SHORT_PROM_DB = 6.0     # ... standing this far out of their neighbourhood ...
+SHORT_RANGE_DB = 20.0   # ... within this much of the strongest
+SHORT_TONES = 6
+
+
+def short_tones(x, n: int = SHORT_TONES) -> np.ndarray:
+    """(m, 4) partial rows of a short hit's tones, from 100 Hz to 12 kHz: the clear peaks of
+    its first SHORT_S, where real_tones finds none (a 25-50 ms rim leaves too few cycles
+    above the median); level and decay from each one's envelope, as in real_tones."""
+    w = x[:int(SHORT_S * SR)]
+    db = 20.0 * np.log10(np.abs(np.fft.rfft(w * np.hanning(len(w)), FINE)) + 1e-12)
+    f = np.fft.rfftfreq(FINE, 1.0 / SR)
+    pk, _ = signal.find_peaks(db, prominence=SHORT_PROM_DB)
+    pk = pk[(f[pk] > 100.0) & (f[pk] < 12000.0) & (db[pk] > db.max() - SHORT_RANGE_DB)]
+    freqs = np.sort(f[pk[np.argsort(-db[pk])][:n]])
+    rows = []
+    for i, fq in enumerate(freqs):
+        near = np.min(np.abs(np.delete(freqs, i) - fq)) if len(freqs) > 1 else 200.0
+        a = _envelope(x, fq, float(np.clip(0.45 * near, 12.0, 90.0)))
+        k = int(np.argmax(a))
+        amp, decay = _decay_fit(a[k:], np.arange(len(a) - k) / SR, min_points=3, short=0.003)
+        rows.append([fq, amp, decay, -np.pi / 2.0])
+    return np.array(rows).reshape(-1, 4)
+
+
 def gate(x):
     """(cut s, fade s) where x holds and then drops away fast, or None: a two-line fit of
     its level above 2 kHz (1 ms RMS, dB) from the peak to 60 dB under it, the second line at
@@ -261,13 +287,15 @@ def click_bands(x, cut, fade, y=None) -> np.ndarray:
 
 
 
-def fit(x: np.ndarray) -> tuple:
+def fit(x: np.ndarray, short: bool = False) -> tuple:
     """(VoiceParams fields of the section, description) for sample x, level 0 dB (the caller
-    sets it)."""
+    sets it); `short`: a short hit, whose tones are its short_tones when it has no real ones."""
     x = x / max(float(np.abs(x).max()), 1e-12)     # a quiet recording would need more level than the knob has
     g = gate(x)
     cut, fade = g if g else (len(x) / SR, CUT_FADE_MS / 1000.0)
     tones = real_tones(x)
+    if short and not len(tones):
+        tones = short_tones(x)
     y = render_rows(tones, len(x)) if len(tones) else None
     bands = engine_bands(click_bands(x, cut, fade, y), NOISE_SLOPE)
     fields = {'partials': format_partials(tones), 'partial_bands': format_bands(bands),

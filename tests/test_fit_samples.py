@@ -127,14 +127,28 @@ def test_a_tom_is_never_distorted_past_its_cap():
     assert F.decode(u, sw).distortion == pytest.approx(0.6)
 
 
-def test_hand_drums_and_wood_get_the_partials_section_but_not_plain_toms():
+def test_hand_drums_wood_and_rims_get_the_partials_section_but_not_plain_toms():
     assert F.gets_section(['tom', 'perc']) and F.gets_section(['wood', 'perc']) and F.gets_section(['shaker'])
-    assert not F.gets_section(['tom']) and not F.gets_section(['perc', 'sd']) and not F.gets_section(['cowbell'])
+    assert F.gets_section(['perc', 'sd'])
+    assert not F.gets_section(['tom']) and not F.gets_section(['perc']) and not F.gets_section(['cowbell'])
 
 
-def test_wood_and_hand_drums_get_quieter_noise_bands():
+def test_wood_hand_drums_and_rims_get_quieter_noise_bands():
     assert F.bands_db(['wood', 'perc']) == F.WOOD_BANDS_DB < F.bands_db(['tom', 'perc']) == F.HAND_DRUM_BANDS_DB < 0.0
+    assert F.bands_db(['perc', 'sd']) == F.HAND_DRUM_BANDS_DB
     assert F.bands_db(['ch']) == F.bands_db(['shaker']) == F.bands_db(['tom']) == 0.0
+
+
+def test_an_analog_conga_keeps_the_classic_voice_but_a_sampled_one_does_not():
+    t = np.arange(int(0.4 * SR)) / SR
+    # one tone slowly swept down 5 % to its note, like a bridged-T conga: a row of tones
+    swept = np.sin(2 * np.pi * np.cumsum(375.0 * (1.0 + 0.05 * np.exp(-t / 0.1))) / SR) * np.exp(-t / 0.1)
+    assert F.swept_tone(swept)
+    assert not F.wants_section(['tom', 'perc'], swept) and F.wants_section(['shaker'], swept)
+    # a skin's modes, spread over more than an octave
+    modes = sum(a * np.sin(2 * np.pi * f * t) * np.exp(-t / d)
+                for f, a, d in ((300.0, 1.0, 0.12), (459.0, 0.8, 0.08), (690.0, 0.7, 0.06), (900.0, 0.6, 0.05)))
+    assert not F.swept_tone(modes) and F.wants_section(['tom', 'perc'], modes)
 
 
 def test_a_shaker_fades_in_over_its_time_to_peak():
@@ -142,6 +156,18 @@ def test_a_shaker_fades_in_over_its_time_to_peak():
     t = np.arange(int(0.15 * SR)) / SR
     shake = rng.standard_normal(len(t)) * np.minimum(t / 0.035, 1.0) * np.exp(-np.maximum(t - 0.035, 0.0) / 0.02)
     assert F.time_to_peak(shake) == pytest.approx(35.0, abs=5.0)
+
+
+def test_a_maraca_holds_to_its_top_then_falls_as_fast_as_it():
+    rng = np.random.default_rng(5)
+    t = np.arange(int(0.1 * SR)) / SR
+    noise = rng.standard_normal(len(t))
+    maraca = noise * np.minimum(t / 0.018, 1.0) * np.exp(-np.maximum(t - 0.018, 0.0) / 0.003)
+    assert F.swells(maraca, {'partials': ''})
+    assert F.fall_ms(maraca) == pytest.approx(2.0 * 3.0 * 1.5 * math.log(10.0), rel=0.2)    # -30 dB, doubled
+    # a shake loud from its first millisecond, or one with tones (a tambourine's jingles), does not hold
+    assert not F.swells(noise * np.exp(-t / 0.03), {'partials': ''})
+    assert not F.swells(maraca, {'partials': '5000.0 -20.0 50 0.0'})
 
 
 def test_a_metal_fit_leaves_the_eq_flat():

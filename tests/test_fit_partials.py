@@ -66,6 +66,17 @@ def test_noise_has_no_tones():
     assert len(FP.real_tones(x)) == 0
 
 
+def test_a_short_rim_gets_its_two_tones():
+    rng = np.random.default_rng(6)
+    t = np.arange(int(0.025 * SR)) / SR
+    rim = (np.sin(2 * np.pi * 460.0 * t) * np.exp(-t / 0.005) + 0.8 * np.sin(2 * np.pi * 1750.0 * t) * np.exp(-t / 0.004)
+           + 0.05 * rng.standard_normal(len(t)) * np.exp(-t / 0.002))
+    rows = FP.short_tones(rim)
+    for f0 in (460.0, 1750.0):
+        assert np.min(np.abs(rows[:, 0] - f0)) < 25.0
+    assert 'tones' in FP.fit(rim, short=True)[1]
+
+
 def test_a_weak_line_in_the_noise_is_left_out():
     x = render({'partials': format_partials(TONES[:1] * [1, 0.004, 1, 1]),
                 'partial_bands': format_bands(bands({k: 0.01 for k in range(18, 30)}))})

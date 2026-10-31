@@ -5,12 +5,14 @@ Fit a .mtdrum drum patch to each one-shot WAV in a folder.
 
 Each sample is matched in four steps:
 
-A hat, cymbal, shaker, hand drum or timbale (tom and percussion at once), or
-a block or clave (by its folder or file name) gets the partials section,
+A hat, cymbal, shaker, hand drum or timbale (tom and percussion at once), rim,
+or a block or clave (by its folder or file name) gets the partials section,
 fitted by analysis in tools/fit_partials.py: noise in 32 bands of 48 dB an
 octave, each with a level, a decay and a click at the hit, its real tones as
-partials, and a cut where the sound drops away or the sample ends; a shaker's
-fades in over its time to peak. The
+partials (a rim's: the peaks of its first 50 ms), and a cut where the sound
+drops away or the sample ends; a shaker's fades in over its time to peak, and
+one that swells holds there, then falls as fast as the sample. A hand drum
+that is one swept tone (an analog conga) keeps the classic voice only. The
 oscillator and noise of the patch then hold a classic version of the same
 sound, fitted as below without the metal section, for engines that have
 neither section (the PO-32 among them); --no-partials leaves the section out,
@@ -147,13 +149,40 @@ PARTIAL_CATEGORIES = {'ch', 'oh', 'cy', 'shaker', 'wood'}     # get the partials
 # the classic voice cannot copy (on the TR-727, 13 of 13 bongos and timbales won with the
 # section). Not plain toms: the section's partials cannot sweep down like an analog tom
 SECTION_PAIR = {'tom', 'perc'}
+# ... and rims (percussion and snare at once), whose two or three tones the classic voice
+# cannot hold either; their tones are found as a short hit's (fit_partials.short_tones).
+# 7 of 14 won, the TR-808's 3 of 4
+RIM_PAIR = {'perc', 'sd'}
 # A shaker swells into its shake (its loudest 6-45 ms in), where a section starts at its
 # loudest: "sounds like a closed hat". Its section fades in over that time (8 of 9 won)
 SWELL_CATEGORIES = {'shaker'}
 
 
 def gets_section(cats) -> bool:
-    return bool(set(cats) & PARTIAL_CATEGORIES) or SECTION_PAIR <= set(cats)
+    return bool(set(cats) & PARTIAL_CATEGORIES) or SECTION_PAIR <= set(cats) or RIM_PAIR <= set(cats)
+
+
+# An analog conga is one tone swept down, which the section copies as a row of partials
+# around it that beat ("robotic"): on the classic voice 28 of 30 TR-808 congas won. Such a
+# hand drum has SWEPT_TONES or more tones with SWEPT_SHARE of their energy within
+# SWEPT_OCTAVES of the strongest; a sampled conga's modes spread wider (0.58-0.94)
+SWEPT_TONES = 4
+SWEPT_SHARE = 0.97
+SWEPT_OCTAVES = 0.35
+
+
+def swept_tone(x: np.ndarray) -> bool:
+    rows = fit_partials.real_tones(x)
+    if len(rows) < SWEPT_TONES:
+        return False
+    energy = rows[:, 1] ** 2 * rows[:, 2]
+    near = np.abs(np.log2(rows[:, 0] / rows[np.argmax(energy), 0])) < SWEPT_OCTAVES
+    return float(energy[near].sum() / energy.sum()) >= SWEPT_SHARE
+
+
+def wants_section(cats, x: np.ndarray) -> bool:
+    """Whether a sample of these categories gets the partials section."""
+    return gets_section(cats) and not (SECTION_PAIR <= set(cats) and swept_tone(x))
 
 
 # On a short hit of wood or skin the analysis underrates the fast-dying tones, and the noise
@@ -167,7 +196,7 @@ def bands_db(cats) -> float:
     """How far under the analysis a section's noise bands are set for these categories."""
     if 'wood' in cats:
         return WOOD_BANDS_DB
-    return HAND_DRUM_BANDS_DB if SECTION_PAIR <= set(cats) else 0.0
+    return HAND_DRUM_BANDS_DB if SECTION_PAIR <= set(cats) or RIM_PAIR <= set(cats) else 0.0
 
 # Continuous controls: (VoiceParams field, low, high, scale). 'knob' attacks
 # are fitted as the knob position of the attack curve; 'amount' is the
@@ -1074,7 +1103,7 @@ def fit_one(job: dict) -> dict:
     t0 = time.time()
     x = load_target(job['path'], job['max_seconds'])
     target = Target(x, ended=len(x) < int(job['max_seconds'] * SR))
-    section = job.get('partials', True) and gets_section(job['cats'])
+    section = job.get('partials', True) and wants_section(job['cats'], x)
     # Only a sample whose partials are those of six squares gets the metal section: on an
     # acoustic cymbal, six squares sound like a drum machine, however well they score. A
     # sample with the partials section gets none: its classic version is for engines
@@ -1169,14 +1198,25 @@ SECTION_SECONDS = 10.0     # of a sample the partials section is analysed over (
 def fit_section(classic: VoiceParams, path: str, target: 'Target', peak_db: float, cats=()):
     """(classic with the partials section fitted to the sample by analysis over it,
     description): the section peaks at the same peak_db as the classic version; a
-    sample of SWELL_CATEGORIES fades in over its time to peak (time_to_peak)."""
+    sample of SWELL_CATEGORIES fades in over its time to peak (time_to_peak), and one that
+    swells (swells) holds its bands there and then falls as fast as the sample (fall_ms)."""
     base = VoiceParams(**{**classic.__dict__, **PARTIALS_DEFAULTS})
     with_section = lambda fields: render(VoiceParams(**{**base.__dict__, **fields}), target.n)
     x = load_target(path, SECTION_SECONDS)
-    fields, how = fit_partials.fit(x)
+    fields, how = fit_partials.fit(x, short=RIM_PAIR <= set(cats))
     if set(cats) & SWELL_CATEGORIES:
-        fields['partials_rise_ms'] = time_to_peak(x)
-        how += f', rise {fields["partials_rise_ms"]:g} ms'
+        rise = time_to_peak(x)
+        if swells(x, fields):
+            fields, how = fit_partials.fit(x[int(rise / 1000.0 * SR):])     # the bands as they are at the peak
+            rows = parse_bands(fields['partial_bands']).copy()
+            rows[:, 1] = SWELL_HOLD_S
+            rows[:, 2] = 0.0
+            fields['partial_bands'] = format_bands(rows)
+            fields['partials_cut_ms'] = rise
+            fields['partials_fade_ms'] = fall_ms(x)
+            how += f', held, fade {fields["partials_fade_ms"]:g} ms'
+        fields['partials_rise_ms'] = rise
+        how += f', rise {rise:g} ms'
     quieter = bands_db(cats)
     if quieter:
         rows = parse_bands(fields['partial_bands']).copy()
@@ -1185,6 +1225,32 @@ def fit_section(classic: VoiceParams, path: str, target: 'Target', peak_db: floa
         how += f', bands {quieter:g} dB'
     fields['partials_level_db'] = fit_partials.peak_level_db(fields, with_section, peak_db)
     return VoiceParams(**{**base.__dict__, **fields}), how
+
+
+# Bands that die from the hit peak before a swell's top; a maraca rises 15-28 ms, then falls
+# 30 dB in 4-17 ms ("pitch low", "too long" from the lows that outlast the highs). Held to its
+# top, then cut at the sample's own fall: 13 of 18 shakers won, the TR-808's 8 of 9; the five
+# that lost (TR-626, TR-727 04, TR-808 07) were golden. A tambourine's jingles are tones and
+# its swell is no hold (5 of 5 lost), nor is a shake within 15 dB of its top at once (3 lost)
+SWELL_HOLD_S = 8.0     # band decay of a held section: the cut fades it
+SWELL_START_DB = -15.0  # a swell's first millisecond is at least this far under its loudest
+
+
+def swells(x: np.ndarray, fields: dict) -> bool:
+    """Whether a shaker's section (fields) without tones starts SWELL_START_DB under its top."""
+    n = int(0.001 * SR)
+    rms = np.sqrt(np.convolve(np.asarray(x, float) ** 2, np.ones(n) / n, 'same'))
+    return not fields['partials'] and rms[n] <= rms.max() * 10.0 ** (SWELL_START_DB / 20.0)
+
+
+def fall_ms(x: np.ndarray) -> float:
+    """Milliseconds x's 1 ms RMS takes from its peak to 30 dB under it, doubled: the fade
+    of an exponential cut (-60 dB at its end) that falls as fast, to 0.1 ms."""
+    n = int(0.001 * SR)
+    rms = np.sqrt(np.convolve(np.asarray(x, float) ** 2, np.ones(n) / n, 'same'))
+    k = int(np.argmax(rms))
+    below = np.nonzero(rms[k:] < rms[k] * 10.0 ** (-30.0 / 20.0))[0]
+    return round(2.0 * (below[0] if len(below) else len(rms) - k) / SR * 1000.0, 1)
 
 
 def time_to_peak(x: np.ndarray) -> float:
@@ -1202,6 +1268,11 @@ def section_one(job: dict) -> dict:
     target = Target(x, ended=len(x) < int(job['max_seconds'] * SR))
     classic = params_from_patch(DrumPatchParser().parse_file(job['patch']))
     start = target.score(classic) if partials_on(classic) else float('nan')
+    if not wants_section(job['cats'], x):
+        best = VoiceParams(**{**classic.__dict__, **PARTIALS_DEFAULTS})
+        return {'path': job['path'], 'name': job['name'], 'cats': job['cats'], 'params': best,
+                'start_loss': start, 'loss': target.score(best), 'source': 'classic only (one swept tone)',
+                'seconds': time.time() - t0, 'target': target.x, 'n': target.n}
     best, how = fit_section(classic, job['path'], target, job['peak_db'], job['cats'])
     return {'path': job['path'], 'name': job['name'], 'cats': job['cats'], 'params': best,
             'start_loss': start, 'loss': target.score(best), 'source': f'partials ({how}), classic kept',
