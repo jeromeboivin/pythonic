@@ -1416,6 +1416,7 @@ def patch_dict(p: VoiceParams, name: str, choke: bool) -> dict:
         'NEnvDcy': p.noise_decay_ms,
         'Mix': (p.osc_mix * 100.0, (1.0 - p.osc_mix) * 100.0),
         'DistAmt': p.distortion * 100.0,
+        **({'SatAmt': p.saturation * 100.0} if p.saturation > 0.0 else {}),
         'EQFreq': p.eq_freq,
         'EQGain': p.eq_gain_db,
         'Level': p.level_db,

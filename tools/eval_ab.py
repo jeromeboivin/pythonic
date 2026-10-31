@@ -441,7 +441,11 @@ def make_ladder(store: Store, sample_id: int, steps, label: str) -> int:
 
 def make_bench(store: Store, sample_id: int, candidates, label: str) -> int:
     """Queue a blind pick among named candidates [(name, fit id)] for a sample; shown in the
-    Pitch ladder page, the original also played as the reference."""
+    Pitch ladder page, the original also played as the reference. Candidates that are the same
+    fit (the same patch and render) would leave nothing to pick from, so they are refused."""
+    ids = [fit_id for _, fit_id in candidates]
+    if len(set(ids)) < len(ids):
+        raise ValueError(f'candidates share a fit: {candidates}')
     ladder = store.run('INSERT INTO ladders(sample_id, base_fit, label) VALUES(?,?,?)',
                        sample_id, candidates[0][1], label)
     for i, (name, fit_id) in enumerate(candidates):

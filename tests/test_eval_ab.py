@@ -430,6 +430,16 @@ def test_a_bench_is_a_blind_pick_among_named_candidates(world):
     assert any('other' in line and 'Kick 01' in line for line in out)
 
 
+def test_a_bench_whose_candidates_are_one_fit_is_refused(world):
+    # two candidates saved as the same patch would leave one to pick from
+    store, *_ = world
+    sample_id = store.one("SELECT id FROM samples WHERE rel LIKE '%Kick 01'")['id']
+    fit = store.one('SELECT id FROM fits')['id']
+    with pytest.raises(ValueError):
+        E.make_bench(store, sample_id, [('current fit', fit), ('the same', fit)], 'bench')
+    assert store.one('SELECT COUNT(*) FROM ladders')[0] == 0
+
+
 def test_a_sample_of_several_strikes_is_marked_and_set_aside(world):
     store, samples, fits, names = world
     api = make_api(store)
